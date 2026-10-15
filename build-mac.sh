@@ -115,8 +115,10 @@ fi
 
 $SUDO rm -rf "$DEST_APP"
 $SUDO ditto "$APP_SRC" "$DEST_APP"
-# Locally built apps aren't quarantined, but clear it just in case.
-$SUDO xattr -cr "$DEST_APP" 2>/dev/null || true
+# Locally built apps aren't quarantined, but clear the flag if present.
+# NOTE: macOS `xattr` has no `-r` option (that's Linux); the quarantine flag
+# lives on the bundle root, so a plain `-c` on the .app is enough.
+$SUDO xattr -c "$DEST_APP" >/dev/null 2>&1 || true
 
 echo "✔ Installed: $DEST_APP"
 
