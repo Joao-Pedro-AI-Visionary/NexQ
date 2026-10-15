@@ -401,6 +401,20 @@ pub async fn generate_assist(
                     }
                 }
             }
+
+            // Context-stuffing fallback: if RAG produced no chunks (empty index,
+            // Ollama unreachable, or the "stuffing" strategy is selected), include
+            // the attached documents directly so the AI still receives the context.
+            if parts.is_empty() {
+                if let Some(ctx_mgr) = state.context.as_ref() {
+                    if let Ok(ctx) = ctx_mgr.lock() {
+                        let stuffed = ctx.get_resources_context();
+                        if !stuffed.trim().is_empty() {
+                            parts.push(stuffed);
+                        }
+                    }
+                }
+            }
         }
 
         parts.join("\n\n")
