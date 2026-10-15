@@ -3,6 +3,7 @@ import { load, Store } from "@tauri-apps/plugin-store";
 import type {
   ThemeMode,
   LLMProviderType,
+  CustomLlmAuthType,
   STTProviderType,
   HotkeyConfig,
   MeetingAudioConfig,
@@ -86,6 +87,10 @@ interface ConfigState {
   sttLanguage: string;
   llmProvider: LLMProviderType;
   llmModel: string;
+  // Custom LLM provider (persisted so a custom endpoint survives restarts).
+  // The auth token itself is stored via the credential manager under "custom".
+  customLlmBaseUrl: string;
+  customLlmAuthType: CustomLlmAuthType;
 
   // Audio (legacy — kept for backward compat, new code uses meetingAudioConfig)
   micDeviceId: string | null;
@@ -188,6 +193,7 @@ interface ConfigState {
   setSTTLanguage: (language: string) => void;
   setLLMProvider: (provider: LLMProviderType) => void;
   setLLMModel: (model: string) => void;
+  setCustomLlmConfig: (baseUrl: string, authType: CustomLlmAuthType) => void;
   setMicDeviceId: (id: string | null) => void;
   setSystemDeviceId: (id: string | null) => void;
   setRecordingEnabled: (enabled: boolean) => void;
@@ -244,6 +250,8 @@ export const useConfigStore = create<ConfigState>((set) => ({
   sttLanguage: "en-US",
   llmProvider: "ollama",
   llmModel: "",
+  customLlmBaseUrl: "",
+  customLlmAuthType: "none",
   micDeviceId: null,
   systemDeviceId: null,
   recordingEnabled: false,
@@ -336,6 +344,11 @@ export const useConfigStore = create<ConfigState>((set) => ({
   setLLMModel: (model) => {
     set({ llmModel: model });
     persistValue("llmModel", model);
+  },
+  setCustomLlmConfig: (baseUrl, authType) => {
+    set({ customLlmBaseUrl: baseUrl, customLlmAuthType: authType });
+    persistValue("customLlmBaseUrl", baseUrl);
+    persistValue("customLlmAuthType", authType);
   },
   setMicDeviceId: (id) => {
     set({ micDeviceId: id });
@@ -648,6 +661,8 @@ export const useConfigStore = create<ConfigState>((set) => ({
       const sttLanguage = await store.get<string>("sttLanguage");
       const llmProvider = await store.get<LLMProviderType>("llmProvider");
       const llmModel = await store.get<string>("llmModel");
+      const customLlmBaseUrl = await store.get<string>("customLlmBaseUrl");
+      const customLlmAuthType = await store.get<CustomLlmAuthType>("customLlmAuthType");
       const micDeviceId = await store.get<string | null>("micDeviceId");
       const systemDeviceId = await store.get<string | null>("systemDeviceId");
       const recordingEnabled = await store.get<boolean>("recordingEnabled");
@@ -797,6 +812,8 @@ export const useConfigStore = create<ConfigState>((set) => ({
         ...(sttLanguage != null && { sttLanguage }),
         ...(llmProvider != null && { llmProvider }),
         ...(llmModel != null && { llmModel }),
+        ...(customLlmBaseUrl != null && { customLlmBaseUrl }),
+        ...(customLlmAuthType != null && { customLlmAuthType }),
         ...(micDeviceId !== undefined && { micDeviceId }),
         ...(systemDeviceId !== undefined && { systemDeviceId }),
         ...(recordingEnabled != null && { recordingEnabled }),
@@ -941,17 +958,28 @@ export const useConfigStore = create<ConfigState>((set) => ({
 
       // Sync persisted LLM provider + model to Rust backend on startup.
       // The Rust side starts with Ollama as default; this pushes the user's saved provider.
+      // For the "custom" provider we must also restore base_url/auth_type/auth_value,
+      // otherwise the user's custom endpoint is silently lost on restart.
       const loadedLLMProvider = llmProvider ?? "ollama";
       const loadedLLMModel = llmModel ?? "";
+      const loadedCustomBaseUrl = customLlmBaseUrl ?? "";
+      const loadedCustomAuthType = customLlmAuthType ?? "none";
       if (loadedLLMProvider) {
         import("../lib/ipc").then(async ({ setLLMProvider: ipcSetLLM, setActiveModel: ipcSetModel, getApiKey: ipcGetKey }) => {
           try {
-            const apiKey = await ipcGetKey(loadedLLMProvider).catch(() => null);
-            const config = JSON.stringify({
-              provider_type: loadedLLMProvider,
-              ...(apiKey && { api_key: apiKey }),
-            });
-            await ipcSetLLM(config);
+            const configObj: Record<string, unknown> = { provider_type: loadedLLMProvider };
+            if (loadedLLMProvider === "custom") {
+              if (loadedCustomBaseUrl) configObj.base_url = loadedCustomBaseUrl;
+              if (loadedCustomAuthType !== "none") {
+                const customAuth = await ipcGetKey("custom").catch(() => null);
+                configObj.auth_type = loadedCustomAuthType;
+                if (customAuth) configObj.auth_value = customAuth;
+              }
+            } else {
+              const apiKey = await ipcGetKey(loadedLLMProvider).catch(() => null);
+              if (apiKey) configObj.api_key = apiKey;
+            }
+            await ipcSetLLM(JSON.stringify(configObj));
             if (loadedLLMModel) {
               await ipcSetModel(loadedLLMProvider, loadedLLMModel);
             }

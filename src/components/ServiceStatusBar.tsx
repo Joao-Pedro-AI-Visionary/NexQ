@@ -230,12 +230,20 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
             currentModel={llmModel}
             onApply={async (provider, model) => {
               try {
-                const key = await getApiKey(provider).catch(() => null);
-                const config = JSON.stringify({
-                  provider_type: provider,
-                  ...(key && { api_key: key }),
-                });
-                await setLLMProvider(config);
+                const configObj: Record<string, unknown> = { provider_type: provider };
+                if (provider === "custom") {
+                  const cfg = useConfigStore.getState();
+                  if (cfg.customLlmBaseUrl) configObj.base_url = cfg.customLlmBaseUrl;
+                  if (cfg.customLlmAuthType !== "none") {
+                    const customAuth = await getApiKey("custom").catch(() => null);
+                    configObj.auth_type = cfg.customLlmAuthType;
+                    if (customAuth) configObj.auth_value = customAuth;
+                  }
+                } else {
+                  const key = await getApiKey(provider).catch(() => null);
+                  if (key) configObj.api_key = key;
+                }
+                await setLLMProvider(JSON.stringify(configObj));
                 setConfigProvider(provider as LLMProviderType);
                 await setActiveModel(provider, model);
                 setConfigModel(model);

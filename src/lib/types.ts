@@ -266,6 +266,9 @@ export type LLMProviderType =
   | "openrouter"
   | "custom";
 
+/** Auth mode for a user-supplied (custom) LLM endpoint. */
+export type CustomLlmAuthType = "none" | "bearer" | "api_key";
+
 export interface LLMProviderConfig {
   type: LLMProviderType;
   name: string;
