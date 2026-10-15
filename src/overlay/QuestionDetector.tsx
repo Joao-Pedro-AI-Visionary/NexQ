@@ -3,6 +3,7 @@ import { HelpCircle, Sparkles, Check, Clock, X } from "lucide-react";
 import { onQuestionDetected } from "../lib/events";
 import { generateAssist } from "../lib/ipc";
 import { useTranscriptStore } from "../stores/transcriptStore";
+import { useMeetingStore } from "../stores/meetingStore";
 import type { DetectedQuestion } from "../lib/types";
 
 function looksLikeQuestion(text: string): boolean {
@@ -25,6 +26,14 @@ export function QuestionDetector() {
   const [questions, setQuestions] = useState<TrackedQuestion[]>([]);
   const processedIdsRef = useRef<Set<string>>(new Set());
   const segments = useTranscriptStore((s) => s.segments);
+  const activeMeetingId = useMeetingStore((s) => s.activeMeeting?.id ?? "");
+
+  // Clear detected questions when a new meeting starts so a question from the
+  // previous meeting doesn't linger in the overlay.
+  useEffect(() => {
+    setQuestions([]);
+    processedIdsRef.current = new Set();
+  }, [activeMeetingId]);
 
   const addQuestion = useCallback((q: DetectedQuestion) => {
     setQuestions((prev) => {

@@ -11,6 +11,7 @@ import {
 } from "../lib/ipc";
 import { useConfigStore } from "./configStore";
 import { useTranscriptStore } from "./transcriptStore";
+import { resetMeetingScopedStores } from "./resetMeeting";
 
 interface MeetingState {
   // View state
@@ -124,6 +125,15 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
       const resolvedMode: AudioMode = audioMode ?? get().audioMode;
       const resolvedScenario: AIScenario = scenario ?? get().aiScenario;
 
+      // 0. Flush ALL meeting-scoped state up-front, before the speaker store is
+      // initialized below, so nothing from the previous meeting leaks in.
+      // The overlay window does the same when it receives nexq:meeting_started.
+      try {
+        await resetMeetingScopedStores();
+      } catch (e) {
+        console.warn("[meetingStore] Failed to reset meeting-scoped stores:", e);
+      }
+
       // 1. Create meeting record in SQLite
       const meeting = await ipcStartMeeting(title);
 
@@ -209,38 +219,6 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
         // Continue anyway — meeting is created, user can still use AI features
       }
 
-      // 3. Clear previous transcript segments and leftover AI state
-      useTranscriptStore.getState().clearSegments();
-
-      // Clear AI response history, dev log, and call log from any prior meeting
-      try {
-        const { useStreamStore } = await import("./streamStore");
-        useStreamStore.getState().clearCurrent();
-        useStreamStore.setState({ responseHistory: [], pinnedResponses: [] });
-      } catch { /* non-critical */ }
-      try {
-        const { useDevLogStore } = await import("./devLogStore");
-        useDevLogStore.getState().clear();
-      } catch { /* non-critical */ }
-      try {
-        const { useCallLogStore } = await import("./callLogStore");
-        useCallLogStore.getState().clearAll();
-      } catch { /* non-critical */ }
-
-      // 3b. Clear new feature stores
-      try {
-        const { useBookmarkStore } = await import("./bookmarkStore");
-        useBookmarkStore.getState().clearBookmarks();
-      } catch { /* non-critical */ }
-      try {
-        const { useActionItemStore } = await import("./actionItemStore");
-        useActionItemStore.getState().clearItems();
-      } catch { /* non-critical */ }
-      try {
-        const { useTopicSectionStore } = await import("./topicSectionStore");
-        useTopicSectionStore.getState().clearSections();
-      } catch { /* non-critical */ }
-
       // 4. Set meeting state
       const now = Date.now();
       set({
@@ -249,6 +227,10 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
         meetingStartTime: now,
         elapsedMs: 0,
         lastPersistedIndex: 0,
+        // Reset lingering per-view state from the previous meeting
+        selectedMeetingId: null,
+        unfinishedMeeting: null,
+        settingsOpen: false,
       });
 
       // 5. Start timer
