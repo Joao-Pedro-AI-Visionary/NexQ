@@ -339,3 +339,13 @@ pub fn override_default_capture_device(_cpal_device_name: &str) -> Result<Option
 pub fn restore_default_capture_device(_original_endpoint_id: &str) -> Result<(), String> {
     Err("IPolicyConfig is only available on Windows".to_string())
 }
+
+#[cfg(not(target_os = "windows"))]
+pub fn find_capture_endpoint_id_by_name(_cpal_name: &str) -> Result<String, String> {
+    Err("IPolicyConfig is only available on Windows".to_string())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn set_default_capture_endpoint(_endpoint_id: &str) -> Result<(), String> {
+    Err("IPolicyConfig is only available on Windows".to_string())
+}

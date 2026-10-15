@@ -1,0 +1,13 @@
+{
+  "bundle": {
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
+    "resources": {
+      "ort/onnxruntime.dll": "onnxruntime.dll",
+      "ort/msvcp140.dll": "msvcp140.dll",
+      "ort/msvcp140_1.dll": "msvcp140_1.dll",
+      "ort/vcruntime140.dll": "vcruntime140.dll",
+      "ort/vcruntime140_1.dll": "vcruntime140_1.dll"
+    }
+  }
+}

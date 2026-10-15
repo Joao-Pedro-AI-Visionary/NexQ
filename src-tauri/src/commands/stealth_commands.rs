@@ -48,11 +48,46 @@ pub async fn set_stealth_mode(app: AppHandle, enabled: bool) -> Result<(), Strin
         );
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::msg_send;
+        use objc2::runtime::AnyObject;
+
+        // NSWindowSharingType: 0 = NSWindowSharingNone (excluded from capture),
+        // 1 = NSWindowSharingReadOnly, 2 = NSWindowSharingReadWrite.
+        // Setting `sharingType = NSWindowSharingNone` hides the window from screen
+        // recording / screen sharing (Zoom, Meet, Teams, QuickTime, screenshots)
+        // while it stays visible on the physical display — the macOS analogue of
+        // Windows' SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE).
+        let sharing_type: usize = if enabled { 0 } else { 1 };
+        let overlay = _overlay.clone();
+
+        // AppKit must only be touched from the main thread.
+        app.run_on_main_thread(move || match overlay.ns_window() {
+            Ok(ptr) if !ptr.is_null() => {
+                let window: &AnyObject = unsafe { &*(ptr as *const AnyObject) };
+                // SAFETY: `ptr` is the live NSWindow backing the Tauri overlay window.
+                unsafe {
+                    let _: () = msg_send![window, setSharingType: sharing_type];
+                }
+                log::info!(
+                    "Stealth mode {}: macOS overlay NSWindow.sharingType = {}",
+                    if sharing_type == 0 { "enabled" } else { "disabled" },
+                    sharing_type
+                );
+            }
+            Ok(_) => log::warn!("Stealth mode: overlay NSWindow pointer was null"),
+            Err(e) => log::warn!("Stealth mode: failed to get overlay NSWindow: {}", e),
+        })
+        .map_err(|e| format!("Failed to dispatch stealth change to main thread: {}", e))?;
+    }
+
+    // Other platforms (Linux): stealth is not implemented.
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
     {
         if enabled {
-            log::warn!("Stealth mode is only supported on Windows");
-            return Err("Stealth mode is only supported on Windows".to_string());
+            log::warn!("Stealth mode is only supported on Windows and macOS");
+            return Err("Stealth mode is only supported on Windows and macOS".to_string());
         }
     }
 
