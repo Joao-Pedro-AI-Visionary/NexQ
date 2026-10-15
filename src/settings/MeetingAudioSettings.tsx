@@ -158,6 +158,7 @@ const STT_LANGUAGES = [
   { value: "ar-SA", label: "Arabic" },
   { value: "tr-TR", label: "Turkish" },
   { value: "pl-PL", label: "Polish" },
+  { value: "cs-CZ", label: "Czech" },
   { value: "sv-SE", label: "Swedish" },
 ];
 
