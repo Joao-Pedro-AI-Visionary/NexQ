@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use tauri::{command, AppHandle, Emitter, State};
 use crate::intelligence::IntelligenceEngine;
 use crate::rag::{self, RagManager, config::RagConfig, embedder::OllamaEmbedder};
@@ -371,7 +370,7 @@ pub async fn test_rag_answer(
     };
 
     // 4. Call LLM with streaming (reuses existing llm_stream_* events)
-    let cancel_flag = Arc::new(AtomicBool::new(false));
+    let cancel_flag = Arc::new(crate::llm::provider::CancelToken::new());
     let system_prompt = crate::intelligence::prompt_templates::get_system_prompt("AskQuestion");
     IntelligenceEngine::generate_assist(
         system_prompt,

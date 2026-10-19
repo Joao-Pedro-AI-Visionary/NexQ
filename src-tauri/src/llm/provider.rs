@@ -1,9 +1,11 @@
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use thiserror::Error;
+use tokio::sync::Notify;
 
 /// Per-request generation parameters.
 /// `None` fields mean "use provider default" — they won't be sent in the HTTP body.
@@ -25,10 +27,11 @@ pub struct GenerationParams {
     /// When true, tokens go only to the caller's `TokenSink` and no `llm_stream_*`
     /// event is emitted (used by internal callers such as LLM translation).
     pub silent: bool,
-    /// Cooperative cancel flag. Providers check it before emitting each token and
-    /// return `LLMError::Cancelled` once it is set. Never serialized.
+    /// Awaitable cancel token. Providers race their network awaits against it (see
+    /// `cancellable`) and check it before emitting each token, returning
+    /// `LLMError::Cancelled` once it fires. Never serialized.
     #[serde(skip)]
-    pub cancel: Option<Arc<AtomicBool>>,
+    pub cancel: Option<Arc<CancelToken>>,
 }
 
 impl Default for GenerationParams {
@@ -45,13 +48,65 @@ impl Default for GenerationParams {
     }
 }
 
+/// Cancellation signal that can be polled (`is_cancelled`) or awaited (`cancelled`).
+#[derive(Debug, Default)]
+pub struct CancelToken {
+    flag: AtomicBool,
+    notify: Notify,
+}
+
+impl CancelToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Fires the token and wakes every task currently awaiting `cancelled()`.
+    pub fn cancel(&self) {
+        self.flag.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.flag.load(Ordering::SeqCst)
+    }
+
+    /// Resolves once the token is cancelled; immediately if it already is.
+    pub async fn cancelled(&self) {
+        // Register for the wakeup before checking the flag so a `cancel()` landing
+        // between the check and the await cannot be missed.
+        let notified = self.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if self.is_cancelled() {
+            return;
+        }
+        notified.await;
+    }
+}
+
 /// True when the caller asked this stream to stop.
 pub fn is_cancelled(params: &GenerationParams) -> bool {
     params
         .cancel
         .as_ref()
-        .map(|flag| flag.load(Ordering::SeqCst))
+        .map(|token| token.is_cancelled())
         .unwrap_or(false)
+}
+
+/// Runs `fut` (a request send, or the next chunk of a response stream) but gives up with
+/// `Err(LLMError::Cancelled)` the moment the stream is cancelled, even if `fut` is stalled.
+pub async fn cancellable<F: Future>(
+    params: &GenerationParams,
+    fut: F,
+) -> Result<F::Output, LLMError> {
+    let Some(token) = params.cancel.as_ref() else {
+        return Ok(fut.await);
+    };
+    tokio::select! {
+        biased;
+        _ = token.cancelled() => Err(LLMError::Cancelled),
+        out = fut => Ok(out),
+    }
 }
 
 /// `Err(LLMError::Cancelled)` when the stream was cancelled; providers call this
@@ -122,7 +177,8 @@ pub fn emit_end(app: &AppHandle, params: &GenerationParams, total_tokens: u64, l
 /// Emits `llm_stream_error` for this request (nothing for silent streams — the
 /// caller gets the error from the returned `Result`).
 pub fn emit_error(app: &AppHandle, params: &GenerationParams, message: &str) {
-    if params.silent {
+    // A stopped stream already got its cancelled end event; no error on top of it.
+    if params.silent || is_cancelled(params) {
         return;
     }
     let _ = app.emit(
@@ -340,13 +396,13 @@ mod tests {
 
     #[test]
     fn is_cancelled_follows_the_flag() {
-        let flag = Arc::new(AtomicBool::new(false));
+        let token = Arc::new(CancelToken::new());
         let params = GenerationParams {
-            cancel: Some(flag.clone()),
+            cancel: Some(token.clone()),
             ..Default::default()
         };
         assert!(!is_cancelled(&params));
-        flag.store(true, Ordering::SeqCst);
+        token.cancel();
         assert!(is_cancelled(&params));
         assert!(matches!(check_cancelled(&params), Err(LLMError::Cancelled)));
         assert!(!is_cancelled(&GenerationParams::default()));
@@ -367,19 +423,13 @@ mod tests {
         use crate::llm::stream_parser::{LineBuffer, SSEParser};
 
         let chunks = [
-            "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}
-
-",
-            "data: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}
-
-",
-            "data: [DONE]
-
-",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}\n\n",
+            "data: [DONE]\n\n",
         ];
-        let flag = Arc::new(AtomicBool::new(false));
+        let cancel_token = Arc::new(CancelToken::new());
         let params = GenerationParams {
-            cancel: Some(flag.clone()),
+            cancel: Some(cancel_token.clone()),
             ..Default::default()
         };
 
@@ -394,7 +444,7 @@ mod tests {
                             check_cancelled(&params)?;
                             collected.push(token);
                             // The user presses Stop right after the first token.
-                            flag.store(true, Ordering::SeqCst);
+                            cancel_token.cancel();
                         }
                     }
                 }
@@ -404,5 +454,53 @@ mod tests {
 
         assert_eq!(collected, vec!["Hel".to_string()]);
         assert!(matches!(result, Err(LLMError::Cancelled)));
+    }
+
+    #[tokio::test]
+    async fn cancellable_returns_cancelled_promptly_for_a_stalled_future() {
+        let token = Arc::new(CancelToken::new());
+        let params = GenerationParams {
+            cancel: Some(token.clone()),
+            ..Default::default()
+        };
+        let canceller = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            canceller.cancel();
+        });
+
+        let stalled = std::future::pending::<()>();
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(2), cancellable(&params, stalled))
+                .await
+                .expect("cancellable must return promptly after cancel()");
+        assert!(matches!(result, Err(LLMError::Cancelled)));
+    }
+
+    #[tokio::test]
+    async fn cancellable_returns_cancelled_when_already_cancelled() {
+        let token = Arc::new(CancelToken::new());
+        token.cancel();
+        let params = GenerationParams {
+            cancel: Some(token),
+            ..Default::default()
+        };
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            cancellable(&params, std::future::pending::<()>()),
+        )
+        .await
+        .expect("must not wait");
+        assert!(matches!(result, Err(LLMError::Cancelled)));
+    }
+
+    #[tokio::test]
+    async fn cancellable_passes_through_output_when_not_cancelled() {
+        let params = GenerationParams {
+            cancel: Some(Arc::new(CancelToken::new())),
+            ..Default::default()
+        };
+        assert_eq!(cancellable(&params, async { 7 }).await.unwrap(), 7);
+        assert_eq!(cancellable(&GenerationParams::default(), async { 8 }).await.unwrap(), 8);
     }
 }

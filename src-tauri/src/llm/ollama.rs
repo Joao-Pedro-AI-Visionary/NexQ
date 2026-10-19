@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use super::provider::{
     CompletionStats, GenerationParams, LLMError, LLMMessage, LLMProvider, ModelInfo,
-    check_cancelled, emit_end, emit_error, emit_token, TokenSink,
+    cancellable, check_cancelled, is_cancelled, emit_end, emit_error, emit_token, TokenSink,
 };
 use super::stream_parser::{LineBuffer, NDJSONParser};
 
@@ -147,15 +147,20 @@ impl LLMProvider for OllamaClient {
         // NOTE: llm_stream_start is emitted by IntelligenceEngine::generate_assist()
         // with the correct mode. Do NOT emit it here — it would overwrite the mode.
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                emit_error(&app_handle, &params, &e.to_string());
+        let response = cancellable(
+            &params,
+            self.client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send(),
+        )
+        .await?
+        .map_err(|e| {
+            if is_cancelled(&params) {
+                return LLMError::Cancelled;
+            }
+            emit_error(&app_handle, &params, &e.to_string());
                 LLMError::ConnectionFailed(format!("Failed to connect to Ollama: {}", e))
             })?;
 
@@ -163,6 +168,7 @@ impl LLMProvider for OllamaClient {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             let err_msg = format!("Ollama completion failed ({}): {}", status, body);
+            check_cancelled(&params)?;
             emit_error(&app_handle, &params, &err_msg);
             return Err(LLMError::ProviderError(err_msg));
         }
@@ -173,10 +179,12 @@ impl LLMProvider for OllamaClient {
         let mut prompt_tokens: u64 = 0;
         let mut completion_tokens: u64 = 0;
 
-        while let Some(chunk_result) = stream.next().await {
-
+        while let Some(chunk_result) = cancellable(&params, stream.next()).await? {
             check_cancelled(&params)?;
             let chunk = chunk_result.map_err(|e| {
+                if is_cancelled(&params) {
+                    return LLMError::Cancelled;
+                }
                 emit_error(&app_handle, &params, &e.to_string());
                 LLMError::HttpError(e)
             })?;
@@ -247,6 +255,7 @@ impl LLMProvider for OllamaClient {
             latency_ms,
         };
 
+        check_cancelled(&params)?;
         emit_end(&app_handle, &params, total, latency_ms);
 
         Ok(stats)

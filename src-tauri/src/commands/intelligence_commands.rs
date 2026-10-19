@@ -121,7 +121,7 @@ pub async fn generate_assist(
     let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     // Extract what we need from the intelligence engine under its lock
-    let (generation_guard, last_question, cancel_flag, action_config_snapshot, composed_instructions) = {
+    let (generation_guard, last_question, cancel_token, action_config_snapshot, composed_instructions) = {
         let intel = state
             .intelligence
             .as_ref()
@@ -148,7 +148,7 @@ pub async fn generate_assist(
         );
 
         let question = engine.last_detected_question().cloned();
-        let cancel = engine.cancel_flag();
+        let cancel = guard.cancel_token();
 
         (guard, question, cancel, (action_cfg, global_defaults), composed)
     };
@@ -287,7 +287,7 @@ pub async fn generate_assist(
         enable_web_search,
         request_id: Some(request_id),
         silent: false,
-        cancel: Some(cancel_flag.clone()),
+        cancel: Some(cancel_token.clone()),
     };
 
     // RAG metadata for StreamStartEvent
@@ -469,7 +469,7 @@ pub async fn generate_assist(
         included_segments,
         total_segments,
         app_handle,
-        cancel_flag,
+        cancel_token,
     )
     .await;
 

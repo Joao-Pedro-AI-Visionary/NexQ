@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use super::provider::{
     CompletionStats, GenerationParams, LLMError, LLMMessage, LLMProvider, ModelInfo,
-    check_cancelled, emit_end, emit_error, emit_token, TokenSink,
+    cancellable, check_cancelled, is_cancelled, emit_end, emit_error, emit_token, TokenSink,
 };
 use super::stream_parser::{LineBuffer, NDJSONParser, SSEParser};
 
@@ -284,7 +284,7 @@ impl LLMProvider for CustomClient {
             .header("Content-Type", "application/json")
             .json(&body);
 
-        let response = match request.send().await {
+        let response = match cancellable(&params, request.send()).await? {
             Ok(resp) if resp.status().is_success() => resp,
             _ => {
                 // Fall back to Ollama-compatible endpoint
@@ -300,7 +300,10 @@ impl LLMProvider for CustomClient {
                     .header("Content-Type", "application/json")
                     .json(&body);
 
-                request.send().await.map_err(|e| {
+                cancellable(&params, request.send()).await?.map_err(|e| {
+                    if is_cancelled(&params) {
+                        return LLMError::Cancelled;
+                    }
                     emit_error(&app_handle, &params, &e.to_string());
                     LLMError::ConnectionFailed(format!(
                         "Failed to connect to custom endpoint: {}",
@@ -314,6 +317,7 @@ impl LLMProvider for CustomClient {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             let err_msg = format!("Custom endpoint request failed ({}): {}", status, body);
+            check_cancelled(&params)?;
             emit_error(&app_handle, &params, &err_msg);
             return Err(LLMError::ProviderError(err_msg));
         }
@@ -322,10 +326,12 @@ impl LLMProvider for CustomClient {
         let mut line_buffer = LineBuffer::new();
         let mut token_count: u64 = 0;
 
-        while let Some(chunk_result) = stream.next().await {
-
+        while let Some(chunk_result) = cancellable(&params, stream.next()).await? {
             check_cancelled(&params)?;
             let chunk = chunk_result.map_err(|e| {
+                if is_cancelled(&params) {
+                    return LLMError::Cancelled;
+                }
                 emit_error(&app_handle, &params, &e.to_string());
                 LLMError::HttpError(e)
             })?;
@@ -369,6 +375,7 @@ impl LLMProvider for CustomClient {
             latency_ms,
         };
 
+        check_cancelled(&params)?;
         emit_end(&app_handle, &params, token_count, latency_ms);
 
         Ok(stats)

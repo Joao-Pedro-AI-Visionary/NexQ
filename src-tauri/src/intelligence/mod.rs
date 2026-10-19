@@ -15,7 +15,7 @@ use context_builder::ContextBuilder;
 use question_detector::{DetectedQuestion, QuestionDetector};
 use transcript_buffer::TranscriptBuffer;
 
-use crate::llm::provider::GenerationParams;
+use crate::llm::provider::{CancelToken, GenerationParams};
 
 /// Event payload for question detection events emitted to the frontend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,18 +23,29 @@ pub struct QuestionDetectedPayload {
     pub question: DetectedQuestion,
 }
 
+/// The generation currently in flight: its request id and cancel token.
+type InFlight = Option<(String, Arc<CancelToken>)>;
+
 /// RAII hold on the engine's "generating" state. Dropping it (on any exit path of
 /// `generate_assist`, including early `?` returns) marks the engine idle again and
-/// forgets the in-flight request id.
+/// forgets the in-flight generation. Owns the fresh `CancelToken` of this generation.
 pub struct GenerationGuard {
     is_generating: Arc<AtomicBool>,
-    current_request_id: Arc<Mutex<Option<String>>>,
+    in_flight: Arc<Mutex<InFlight>>,
+    cancel_token: Arc<CancelToken>,
+}
+
+impl GenerationGuard {
+    /// Token that `cancel_generation` fires to stop this generation.
+    pub fn cancel_token(&self) -> Arc<CancelToken> {
+        self.cancel_token.clone()
+    }
 }
 
 impl Drop for GenerationGuard {
     fn drop(&mut self) {
-        if let Ok(mut id) = self.current_request_id.lock() {
-            *id = None;
+        if let Ok(mut slot) = self.in_flight.lock() {
+            *slot = None;
         }
         self.is_generating.store(false, Ordering::SeqCst);
     }
@@ -46,9 +57,8 @@ pub struct IntelligenceEngine {
     question_detector: QuestionDetector,
     auto_trigger: AtomicBool,
     is_generating: Arc<AtomicBool>,
-    cancel_requested: Arc<AtomicBool>,
-    /// Request id of the generation currently in flight (for the cancelled end event).
-    current_request_id: Arc<Mutex<Option<String>>>,
+    /// Request id + cancel token of the generation in flight (for the cancelled end event).
+    in_flight: Arc<Mutex<InFlight>>,
     last_detected_question: Option<DetectedQuestion>,
     action_configs: AllActionConfigs,
 }
@@ -60,8 +70,7 @@ impl IntelligenceEngine {
             question_detector: QuestionDetector::new(),
             auto_trigger: AtomicBool::new(true),
             is_generating: Arc::new(AtomicBool::new(false)),
-            cancel_requested: Arc::new(AtomicBool::new(false)),
-            current_request_id: Arc::new(Mutex::new(None)),
+            in_flight: Arc::new(Mutex::new(None)),
             last_detected_question: None,
             action_configs: AllActionConfigs::default(),
         }
@@ -131,12 +140,12 @@ impl IntelligenceEngine {
         transcript_segments_count: usize,
         transcript_segments_total: usize,
         app_handle: tauri::AppHandle,
-        cancel_flag: Arc<AtomicBool>,
+        cancel_token: Arc<CancelToken>,
     ) -> Result<(), String> {
-        // The cancel flag is reset by `begin_generation` (before the guard is handed out),
+        // The token is created by `begin_generation` (before the guard is handed out),
         // so a Stop pressed while the prompt is still being assembled is not lost.
         let params = GenerationParams {
-            cancel: Some(cancel_flag.clone()),
+            cancel: Some(cancel_token.clone()),
             ..params
         };
 
@@ -156,7 +165,7 @@ impl IntelligenceEngine {
         );
 
         // Check for cancellation before starting
-        if cancel_flag.load(Ordering::SeqCst) {
+        if cancel_token.is_cancelled() {
             return Ok(());
         }
 
@@ -203,42 +212,38 @@ impl IntelligenceEngine {
 
         // The provider already emitted llm_stream_end / llm_stream_error for this request.
         // A cancelled stream is a normal stop: `cancel_generation` emitted the end event.
+        // An error that merely surfaced because the stream was stopped is not a failure.
         match result {
             Ok(_) | Err(crate::llm::provider::LLMError::Cancelled) => Ok(()),
+            Err(_) if cancel_token.is_cancelled() => Ok(()),
             Err(e) => Err(e.to_string()),
         }
     }
 
     /// Claim the engine for a new generation. Returns `None` if one is already running.
-    /// Resets the cancel flag and records `request_id` so `cancel_generation` can
-    /// address its cancelled end event. The returned guard releases the engine on drop.
+    /// Creates a fresh cancel token and records it with `request_id` so `cancel_generation`
+    /// can stop it and address its cancelled end event. The guard releases the engine on drop.
     pub fn begin_generation(&self, request_id: &str) -> Option<GenerationGuard> {
         self.is_generating
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .ok()?;
-        self.cancel_requested.store(false, Ordering::SeqCst);
-        if let Ok(mut id) = self.current_request_id.lock() {
-            *id = Some(request_id.to_string());
+        let cancel_token = Arc::new(CancelToken::new());
+        if let Ok(mut slot) = self.in_flight.lock() {
+            *slot = Some((request_id.to_string(), cancel_token.clone()));
         }
         Some(GenerationGuard {
             is_generating: self.is_generating.clone(),
-            current_request_id: self.current_request_id.clone(),
+            in_flight: self.in_flight.clone(),
+            cancel_token,
         })
     }
 
     /// Ask the in-flight generation to stop. Returns its request id when one is running
     /// (consuming it, so the cancelled end event is emitted once).
     pub fn cancel(&self) -> Option<String> {
-        if !self.is_generating() {
-            return None;
-        }
-        self.cancel_requested.store(true, Ordering::SeqCst);
-        self.current_request_id.lock().ok().and_then(|mut id| id.take())
-    }
-
-    /// Get the cancel flag for passing to async tasks.
-    pub fn cancel_flag(&self) -> Arc<AtomicBool> {
-        self.cancel_requested.clone()
+        let (request_id, token) = self.in_flight.lock().ok()?.take()?;
+        token.cancel();
+        Some(request_id)
     }
 
     /// Check if currently generating.
@@ -297,8 +302,6 @@ impl IntelligenceEngine {
     pub fn clear_session(&mut self) {
         self.transcript_buffer.clear();
         self.last_detected_question = None;
-        self.cancel_requested.store(false, std::sync::atomic::Ordering::SeqCst);
-        self.is_generating.store(false, std::sync::atomic::Ordering::SeqCst);
         log::info!("[intelligence] session cleared for new meeting");
     }
 }
@@ -331,22 +334,25 @@ mod tests {
     }
 
     #[test]
-    fn cancel_returns_request_id_once_and_sets_flag() {
+    fn cancel_returns_request_id_once_and_fires_token() {
         let engine = IntelligenceEngine::new();
         assert_eq!(engine.cancel(), None); // nothing running
-        let _guard = engine.begin_generation("req-1").unwrap();
-        let flag = engine.cancel_flag();
-        assert!(!flag.load(Ordering::SeqCst));
+        let guard = engine.begin_generation("req-1").unwrap();
+        let token = guard.cancel_token();
+        assert!(!token.is_cancelled());
         assert_eq!(engine.cancel(), Some("req-1".to_string()));
-        assert!(flag.load(Ordering::SeqCst));
+        assert!(token.is_cancelled());
         assert_eq!(engine.cancel(), None);
     }
 
     #[test]
-    fn begin_generation_resets_a_stale_cancel_flag() {
+    fn each_generation_gets_a_fresh_cancel_token() {
         let engine = IntelligenceEngine::new();
-        engine.cancel_flag().store(true, Ordering::SeqCst);
-        let _guard = engine.begin_generation("req-1").unwrap();
-        assert!(!engine.cancel_flag().load(Ordering::SeqCst));
+        let first = engine.begin_generation("req-1").unwrap();
+        engine.cancel();
+        assert!(first.cancel_token().is_cancelled());
+        drop(first);
+        let second = engine.begin_generation("req-2").unwrap();
+        assert!(!second.cancel_token().is_cancelled());
     }
 }
