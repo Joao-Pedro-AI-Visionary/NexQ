@@ -5,7 +5,7 @@ pub mod question_detector;
 pub mod transcript_buffer;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
@@ -23,13 +23,32 @@ pub struct QuestionDetectedPayload {
     pub question: DetectedQuestion,
 }
 
+/// RAII hold on the engine's "generating" state. Dropping it (on any exit path of
+/// `generate_assist`, including early `?` returns) marks the engine idle again and
+/// forgets the in-flight request id.
+pub struct GenerationGuard {
+    is_generating: Arc<AtomicBool>,
+    current_request_id: Arc<Mutex<Option<String>>>,
+}
+
+impl Drop for GenerationGuard {
+    fn drop(&mut self) {
+        if let Ok(mut id) = self.current_request_id.lock() {
+            *id = None;
+        }
+        self.is_generating.store(false, Ordering::SeqCst);
+    }
+}
+
 /// Orchestrates: read transcript -> detect question -> load context -> build prompt -> LLM stream
 pub struct IntelligenceEngine {
     pub transcript_buffer: TranscriptBuffer,
     question_detector: QuestionDetector,
     auto_trigger: AtomicBool,
-    is_generating: AtomicBool,
+    is_generating: Arc<AtomicBool>,
     cancel_requested: Arc<AtomicBool>,
+    /// Request id of the generation currently in flight (for the cancelled end event).
+    current_request_id: Arc<Mutex<Option<String>>>,
     last_detected_question: Option<DetectedQuestion>,
     action_configs: AllActionConfigs,
 }
@@ -40,8 +59,9 @@ impl IntelligenceEngine {
             transcript_buffer: TranscriptBuffer::new(),
             question_detector: QuestionDetector::new(),
             auto_trigger: AtomicBool::new(true),
-            is_generating: AtomicBool::new(false),
+            is_generating: Arc::new(AtomicBool::new(false)),
             cancel_requested: Arc::new(AtomicBool::new(false)),
+            current_request_id: Arc::new(Mutex::new(None)),
             last_detected_question: None,
             action_configs: AllActionConfigs::default(),
         }
@@ -113,8 +133,12 @@ impl IntelligenceEngine {
         app_handle: tauri::AppHandle,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<(), String> {
-        // Reset cancel flag
-        cancel_flag.store(false, Ordering::SeqCst);
+        // The cancel flag is reset by `begin_generation` (before the guard is handed out),
+        // so a Stop pressed while the prompt is still being assembled is not lost.
+        let params = GenerationParams {
+            cancel: Some(cancel_flag.clone()),
+            ..params
+        };
 
         // Build the prompt using configurable flags.
         // The system prompt IS the only instruction (per-action editable + composed instructions).
@@ -178,12 +202,38 @@ impl IntelligenceEngine {
             .await;
 
         // The provider already emitted llm_stream_end / llm_stream_error for this request.
-        result.map(|_stats| ()).map_err(|e| e.to_string())
+        // A cancelled stream is a normal stop: `cancel_generation` emitted the end event.
+        match result {
+            Ok(_) | Err(crate::llm::provider::LLMError::Cancelled) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
     }
 
-    /// Cancel the current generation.
-    pub fn cancel(&self) {
+    /// Claim the engine for a new generation. Returns `None` if one is already running.
+    /// Resets the cancel flag and records `request_id` so `cancel_generation` can
+    /// address its cancelled end event. The returned guard releases the engine on drop.
+    pub fn begin_generation(&self, request_id: &str) -> Option<GenerationGuard> {
+        self.is_generating
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .ok()?;
+        self.cancel_requested.store(false, Ordering::SeqCst);
+        if let Ok(mut id) = self.current_request_id.lock() {
+            *id = Some(request_id.to_string());
+        }
+        Some(GenerationGuard {
+            is_generating: self.is_generating.clone(),
+            current_request_id: self.current_request_id.clone(),
+        })
+    }
+
+    /// Ask the in-flight generation to stop. Returns its request id when one is running
+    /// (consuming it, so the cancelled end event is emitted once).
+    pub fn cancel(&self) -> Option<String> {
+        if !self.is_generating() {
+            return None;
+        }
         self.cancel_requested.store(true, Ordering::SeqCst);
+        self.current_request_id.lock().ok().and_then(|mut id| id.take())
     }
 
     /// Get the cancel flag for passing to async tasks.
@@ -194,11 +244,6 @@ impl IntelligenceEngine {
     /// Check if currently generating.
     pub fn is_generating(&self) -> bool {
         self.is_generating.load(Ordering::SeqCst)
-    }
-
-    /// Set the generating state.
-    pub fn set_generating(&self, generating: bool) {
-        self.is_generating.store(generating, Ordering::SeqCst);
     }
 
     /// Toggle auto-detection of questions.
@@ -255,5 +300,53 @@ impl IntelligenceEngine {
         self.cancel_requested.store(false, std::sync::atomic::Ordering::SeqCst);
         self.is_generating.store(false, std::sync::atomic::Ordering::SeqCst);
         log::info!("[intelligence] session cleared for new meeting");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guard_blocks_second_generation_until_dropped() {
+        let engine = IntelligenceEngine::new();
+        let guard = engine.begin_generation("req-1").expect("first claim succeeds");
+        assert!(engine.is_generating());
+        assert!(engine.begin_generation("req-2").is_none());
+        drop(guard);
+        assert!(!engine.is_generating());
+        assert!(engine.begin_generation("req-3").is_some());
+    }
+
+    #[test]
+    fn guard_releases_on_early_error_return() {
+        fn failing(engine: &IntelligenceEngine) -> Result<(), String> {
+            let _guard = engine.begin_generation("req-1").ok_or("busy")?;
+            Err("no active provider".to_string())
+        }
+        let engine = IntelligenceEngine::new();
+        assert!(failing(&engine).is_err());
+        assert!(!engine.is_generating());
+        assert!(engine.begin_generation("req-2").is_some());
+    }
+
+    #[test]
+    fn cancel_returns_request_id_once_and_sets_flag() {
+        let engine = IntelligenceEngine::new();
+        assert_eq!(engine.cancel(), None); // nothing running
+        let _guard = engine.begin_generation("req-1").unwrap();
+        let flag = engine.cancel_flag();
+        assert!(!flag.load(Ordering::SeqCst));
+        assert_eq!(engine.cancel(), Some("req-1".to_string()));
+        assert!(flag.load(Ordering::SeqCst));
+        assert_eq!(engine.cancel(), None);
+    }
+
+    #[test]
+    fn begin_generation_resets_a_stale_cancel_flag() {
+        let engine = IntelligenceEngine::new();
+        engine.cancel_flag().store(true, Ordering::SeqCst);
+        let _guard = engine.begin_generation("req-1").unwrap();
+        assert!(!engine.cancel_flag().load(Ordering::SeqCst));
     }
 }

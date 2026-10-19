@@ -65,7 +65,8 @@ export function useSummaryGeneration(
         requestIdRef.current = null;
 
         // Persist summary to DB and refresh sidebar
-        if (meeting && contentRef.current) {
+        // A stopped stream is a normal stop: its partial output is not parsed or saved.
+        if (!event.cancelled && meeting && contentRef.current) {
           try {
             await updateMeetingSummary(meeting.id, contentRef.current);
             onSummaryGenerated?.(contentRef.current);

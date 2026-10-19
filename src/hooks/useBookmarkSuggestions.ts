@@ -295,7 +295,8 @@ export function useBookmarkSuggestions(
         requestIdRef.current = null;
 
         // Parse accumulated response into BookmarkSuggestion[]
-        if (meeting && contentRef.current) {
+        // A stopped stream is a normal stop: its partial output is not parsed or saved.
+        if (!event.cancelled && meeting && contentRef.current) {
           try {
             const items = parseSuggestionsJSON(contentRef.current, allSegments);
             if (items.length === 0) {

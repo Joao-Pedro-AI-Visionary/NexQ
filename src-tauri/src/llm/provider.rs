@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,10 @@ pub struct GenerationParams {
     /// When true, tokens go only to the caller's `TokenSink` and no `llm_stream_*`
     /// event is emitted (used by internal callers such as LLM translation).
     pub silent: bool,
+    /// Cooperative cancel flag. Providers check it before emitting each token and
+    /// return `LLMError::Cancelled` once it is set. Never serialized.
+    #[serde(skip)]
+    pub cancel: Option<Arc<AtomicBool>>,
 }
 
 impl Default for GenerationParams {
@@ -35,7 +40,28 @@ impl Default for GenerationParams {
             enable_web_search: false,
             request_id: None,
             silent: false,
+            cancel: None,
         }
+    }
+}
+
+/// True when the caller asked this stream to stop.
+pub fn is_cancelled(params: &GenerationParams) -> bool {
+    params
+        .cancel
+        .as_ref()
+        .map(|flag| flag.load(Ordering::SeqCst))
+        .unwrap_or(false)
+}
+
+/// `Err(LLMError::Cancelled)` when the stream was cancelled; providers call this
+/// before emitting each token. A cancelled stream emits no `llm_stream_error` and
+/// no `llm_stream_end` of its own: `cancel_generation` already emitted the end.
+pub fn check_cancelled(params: &GenerationParams) -> Result<(), LLMError> {
+    if is_cancelled(params) {
+        Err(LLMError::Cancelled)
+    } else {
+        Ok(())
     }
 }
 
@@ -88,6 +114,7 @@ pub fn emit_end(app: &AppHandle, params: &GenerationParams, total_tokens: u64, l
             total_tokens,
             latency_ms,
             request_id: params.request_id.clone(),
+            cancelled: false,
         },
     );
 }
@@ -224,6 +251,9 @@ pub struct StreamEndPayload {
     pub total_tokens: u64,
     pub latency_ms: u64,
     pub request_id: Option<String>,
+    /// True when the stream was stopped by the user rather than finishing.
+    #[serde(default)]
+    pub cancelled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -306,5 +336,73 @@ mod tests {
         assert_eq!(route_token(&global, "!", Some(&sink)), Route::Global);
         // A sink attached to a non-silent stream still receives tokens.
         assert_eq!(collected.lock().unwrap().as_str(), "hi!");
+    }
+
+    #[test]
+    fn is_cancelled_follows_the_flag() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let params = GenerationParams {
+            cancel: Some(flag.clone()),
+            ..Default::default()
+        };
+        assert!(!is_cancelled(&params));
+        flag.store(true, Ordering::SeqCst);
+        assert!(is_cancelled(&params));
+        assert!(matches!(check_cancelled(&params), Err(LLMError::Cancelled)));
+        assert!(!is_cancelled(&GenerationParams::default()));
+        assert!(check_cancelled(&GenerationParams::default()).is_ok());
+    }
+
+    #[test]
+    fn stream_end_payload_cancelled_defaults_to_false() {
+        let payload: StreamEndPayload =
+            serde_json::from_str(r#"{"total_tokens":1,"latency_ms":2,"request_id":null}"#).unwrap();
+        assert!(!payload.cancelled);
+    }
+
+    /// Mirrors a provider's stream loop (chunk -> lines -> SSE events -> token) over a
+    /// canned OpenAI-style body and stops as soon as the flag is set.
+    #[test]
+    fn stream_loop_stops_after_cancel_flag_set_mid_stream() {
+        use crate::llm::stream_parser::{LineBuffer, SSEParser};
+
+        let chunks = [
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}
+
+",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}
+
+",
+            "data: [DONE]
+
+",
+        ];
+        let flag = Arc::new(AtomicBool::new(false));
+        let params = GenerationParams {
+            cancel: Some(flag.clone()),
+            ..Default::default()
+        };
+
+        let mut collected: Vec<String> = Vec::new();
+        let mut line_buffer = LineBuffer::new();
+        let result: Result<(), LLMError> = (|| {
+            for chunk in chunks {
+                check_cancelled(&params)?;
+                for line in line_buffer.push(chunk) {
+                    for event in SSEParser::parse_chunk(&line).into_iter().flatten() {
+                        if let Some(token) = SSEParser::extract_openai_token(&event) {
+                            check_cancelled(&params)?;
+                            collected.push(token);
+                            // The user presses Stop right after the first token.
+                            flag.store(true, Ordering::SeqCst);
+                        }
+                    }
+                }
+            }
+            Ok(())
+        })();
+
+        assert_eq!(collected, vec!["Hel".to_string()]);
+        assert!(matches!(result, Err(LLMError::Cancelled)));
     }
 }

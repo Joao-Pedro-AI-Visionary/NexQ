@@ -3,7 +3,7 @@ use tauri::{command, AppHandle, Emitter, State};
 use crate::intelligence::action_config::{AllActionConfigs, InstructionPresets};
 use crate::intelligence::IntelligenceEngine;
 use crate::llm::provider::GenerationParams;
-use crate::llm::provider::RagChunkInfo;
+use crate::llm::provider::{RagChunkInfo, StreamEndPayload};
 use crate::rag;
 use crate::state::AppState;
 
@@ -121,7 +121,7 @@ pub async fn generate_assist(
     let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     // Extract what we need from the intelligence engine under its lock
-    let (last_question, cancel_flag, action_config_snapshot, composed_instructions) = {
+    let (generation_guard, last_question, cancel_flag, action_config_snapshot, composed_instructions) = {
         let intel = state
             .intelligence
             .as_ref()
@@ -130,11 +130,11 @@ pub async fn generate_assist(
             .lock()
             .map_err(|e| format!("Failed to lock intelligence engine: {}", e))?;
 
-        if engine.is_generating() {
-            return Err("Generation already in progress".to_string());
-        }
-
-        engine.set_generating(true);
+        // The guard releases the engine on every exit path (early returns included),
+        // and only once this function, and so `stream_completion`, has finished.
+        let guard = engine
+            .begin_generation(&request_id)
+            .ok_or_else(|| "Generation already in progress".to_string())?;
 
         // Look up per-action config
         let action_cfg = engine.get_action_config(&mode).cloned();
@@ -150,7 +150,7 @@ pub async fn generate_assist(
         let question = engine.last_detected_question().cloned();
         let cancel = engine.cancel_flag();
 
-        (question, cancel, (action_cfg, global_defaults), composed)
+        (guard, question, cancel, (action_cfg, global_defaults), composed)
     };
 
     let (action_cfg, global_defaults) = action_config_snapshot;
@@ -287,6 +287,7 @@ pub async fn generate_assist(
         enable_web_search,
         request_id: Some(request_id),
         silent: false,
+        cancel: Some(cancel_flag.clone()),
     };
 
     // RAG metadata for StreamStartEvent
@@ -472,21 +473,17 @@ pub async fn generate_assist(
     )
     .await;
 
-    // Clear generating state
-    {
-        let intel = state.intelligence.as_ref();
-        if let Some(intel) = intel {
-            if let Ok(engine) = intel.lock() {
-                engine.set_generating(false);
-            }
-        }
-    }
+    // Release the engine only now that the stream has fully stopped.
+    drop(generation_guard);
 
     result
 }
 
 #[command]
-pub async fn cancel_generation(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn cancel_generation(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     let intel = state
         .intelligence
         .as_ref()
@@ -496,11 +493,23 @@ pub async fn cancel_generation(state: State<'_, AppState>) -> Result<(), String>
         .lock()
         .map_err(|e| format!("Failed to lock intelligence engine: {}", e))?;
 
-    engine.cancel();
-    engine.set_generating(false);
+    // Only sets the flag: providers stop at the next chunk and the generation guard is
+    // released when `generate_assist` returns. The cancelled end event is emitted here so
+    // the UI settles immediately, tagged with the in-flight request id.
+    let in_flight = engine.cancel();
+    drop(engine);
 
-    // Cancellation is handled via the atomic flag in IntelligenceEngine.
-    // The LLM provider stream will check for cancellation on the next iteration.
+    if let Some(request_id) = in_flight {
+        let _ = app_handle.emit(
+            "llm_stream_end",
+            StreamEndPayload {
+                total_tokens: 0,
+                latency_ms: 0,
+                request_id: Some(request_id),
+                cancelled: true,
+            },
+        );
+    }
     log::info!("Generation cancelled");
     Ok(())
 }

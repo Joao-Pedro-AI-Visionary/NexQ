@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use super::provider::{
     CompletionStats, GenerationParams, LLMError, LLMMessage, LLMProvider, ModelInfo,
-    emit_end, emit_error, emit_sources, emit_token, StreamSource, TokenSink,
+    check_cancelled, emit_end, emit_error, emit_sources, emit_token, StreamSource, TokenSink,
 };
 use super::stream_parser::{LineBuffer, SSEParser};
 
@@ -235,6 +235,8 @@ impl LLMProvider for GeminiClient {
         let mut grounding_sources: Vec<(String, String)> = Vec::new();
 
         while let Some(chunk_result) = stream.next().await {
+
+            check_cancelled(&params)?;
             let chunk = chunk_result.map_err(|e| {
                 emit_error(&app_handle, &params, &e.to_string());
                 LLMError::HttpError(e)
@@ -252,6 +254,7 @@ impl LLMProvider for GeminiClient {
                             if let Some(token) = SSEParser::extract_gemini_token(&data) {
                                 if !token.is_empty() {
                                     token_count += 1;
+                                    check_cancelled(&params)?;
                                     emit_token(&app_handle, &params, &token, sink.as_ref());
                                 }
                             }
@@ -290,6 +293,7 @@ impl LLMProvider for GeminiClient {
                     if let Some(token) = SSEParser::extract_gemini_token(&data) {
                         if !token.is_empty() {
                             token_count += 1;
+                            check_cancelled(&params)?;
                             emit_token(&app_handle, &params, &token, sink.as_ref());
                         }
                     }

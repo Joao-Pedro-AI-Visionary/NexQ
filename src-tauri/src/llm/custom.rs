@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use super::provider::{
     CompletionStats, GenerationParams, LLMError, LLMMessage, LLMProvider, ModelInfo,
-    emit_end, emit_error, emit_token, TokenSink,
+    check_cancelled, emit_end, emit_error, emit_token, TokenSink,
 };
 use super::stream_parser::{LineBuffer, NDJSONParser, SSEParser};
 
@@ -323,6 +323,8 @@ impl LLMProvider for CustomClient {
         let mut token_count: u64 = 0;
 
         while let Some(chunk_result) = stream.next().await {
+
+            check_cancelled(&params)?;
             let chunk = chunk_result.map_err(|e| {
                 emit_error(&app_handle, &params, &e.to_string());
                 LLMError::HttpError(e)
@@ -337,6 +339,7 @@ impl LLMProvider for CustomClient {
                     if let Some(token) = maybe_token {
                         if !token.is_empty() {
                             token_count += 1;
+                            check_cancelled(&params)?;
                             emit_token(&app_handle, &params, &token, sink.as_ref());
                         }
                     }
@@ -351,6 +354,7 @@ impl LLMProvider for CustomClient {
                 if let Some(token) = maybe_token {
                     if !token.is_empty() {
                         token_count += 1;
+                        check_cancelled(&params)?;
                         emit_token(&app_handle, &params, &token, sink.as_ref());
                     }
                 }

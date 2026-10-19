@@ -137,7 +137,8 @@ export function useActionItemsExtraction(
         requestIdRef.current = null;
 
         // Parse accumulated response into ActionItem[]
-        if (meeting && contentRef.current) {
+        // A stopped stream is a normal stop: its partial output is not parsed or saved.
+        if (!event.cancelled && meeting && contentRef.current) {
           try {
             const items = parseActionItemsJSON(contentRef.current);
 

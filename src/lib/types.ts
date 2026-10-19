@@ -525,6 +525,8 @@ export interface StreamEndEvent {
   total_tokens: number;
   latency_ms: number;
   request_id: string | null;
+  /** True when the user stopped the stream; a normal stop, not an error. */
+  cancelled: boolean;
 }
 
 export interface StreamErrorEvent {
