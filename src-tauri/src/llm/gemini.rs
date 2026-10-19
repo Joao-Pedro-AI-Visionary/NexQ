@@ -3,11 +3,10 @@
 use futures::StreamExt;
 use serde_json::json;
 use std::time::Instant;
-use tauri::Emitter;
 
 use super::provider::{
     CompletionStats, GenerationParams, LLMError, LLMMessage, LLMProvider, ModelInfo,
-    StreamEndPayload, StreamSource, StreamSourcesPayload, StreamTokenPayload,
+    emit_end, emit_error, emit_sources, emit_token, StreamSource, TokenSink,
 };
 use super::stream_parser::{LineBuffer, SSEParser};
 
@@ -158,6 +157,7 @@ impl LLMProvider for GeminiClient {
         model: &str,
         params: GenerationParams,
         app_handle: tauri::AppHandle,
+        sink: Option<TokenSink>,
     ) -> Result<CompletionStats, LLMError> {
         let url = format!(
             "{}/v1beta/models/{}:streamGenerateContent?key={}&alt=sse",
@@ -211,7 +211,7 @@ impl LLMProvider for GeminiClient {
             .send()
             .await
             .map_err(|e| {
-                let _ = app_handle.emit("llm_stream_error", e.to_string());
+                emit_error(&app_handle, &params, &e.to_string());
                 e
             })?;
 
@@ -219,7 +219,7 @@ impl LLMProvider for GeminiClient {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             let err_msg = format!("Gemini request failed ({}): {}", status, body);
-            let _ = app_handle.emit("llm_stream_error", &err_msg);
+            emit_error(&app_handle, &params, &err_msg);
 
             if status.as_u16() == 401 || status.as_u16() == 403 {
                 return Err(LLMError::AuthError(err_msg));
@@ -236,7 +236,7 @@ impl LLMProvider for GeminiClient {
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| {
-                let _ = app_handle.emit("llm_stream_error", e.to_string());
+                emit_error(&app_handle, &params, &e.to_string());
                 LLMError::HttpError(e)
             })?;
 
@@ -252,12 +252,7 @@ impl LLMProvider for GeminiClient {
                             if let Some(token) = SSEParser::extract_gemini_token(&data) {
                                 if !token.is_empty() {
                                     token_count += 1;
-                                    let _ = app_handle.emit(
-                                        "llm_stream_token",
-                                        StreamTokenPayload {
-                                            token: token.clone(),
-                                        },
-                                    );
+                                    emit_token(&app_handle, &params, &token, sink.as_ref());
                                 }
                             }
 
@@ -295,12 +290,7 @@ impl LLMProvider for GeminiClient {
                     if let Some(token) = SSEParser::extract_gemini_token(&data) {
                         if !token.is_empty() {
                             token_count += 1;
-                            let _ = app_handle.emit(
-                                "llm_stream_token",
-                                StreamTokenPayload {
-                                    token: token.clone(),
-                                },
-                            );
+                            emit_token(&app_handle, &params, &token, sink.as_ref());
                         }
                     }
                 }
@@ -328,16 +318,10 @@ impl LLMProvider for GeminiClient {
                 .filter(|(_, url)| seen.insert(url.clone()))
                 .map(|(title, url)| StreamSource { title, url })
                 .collect();
-            let _ = app_handle.emit("llm_stream_sources", StreamSourcesPayload { sources });
+            emit_sources(&app_handle, &params, sources);
         }
 
-        let _ = app_handle.emit(
-            "llm_stream_end",
-            StreamEndPayload {
-                total_tokens: total,
-                latency_ms,
-            },
-        );
+        emit_end(&app_handle, &params, total, latency_ms);
 
         Ok(stats)
     }

@@ -167,25 +167,18 @@ impl IntelligenceEngine {
                 transcript_window_seconds,
                 transcript_segments_count,
                 transcript_segments_total,
+                request_id: params.request_id.clone(),
             },
         );
 
         // Call the LLM provider's stream_completion
         let provider_guard = llm_provider.lock().await;
         let result = provider_guard
-            .stream_completion(messages, &model, params, app_handle.clone())
+            .stream_completion(messages, &model, params, app_handle.clone(), None)
             .await;
 
-        match result {
-            Ok(_stats) => {
-                // stream_completion already emits llm_stream_end
-                Ok(())
-            }
-            Err(e) => {
-                let _ = app_handle.emit("llm_stream_error", e.to_string());
-                Err(e.to_string())
-            }
-        }
+        // The provider already emitted llm_stream_end / llm_stream_error for this request.
+        result.map(|_stats| ()).map_err(|e| e.to_string())
     }
 
     /// Cancel the current generation.

@@ -4,11 +4,10 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::time::Instant;
-use tauri::Emitter;
 
 use super::provider::{
     CompletionStats, GenerationParams, LLMError, LLMMessage, LLMProvider, ModelInfo,
-    StreamEndPayload, StreamTokenPayload,
+    emit_end, emit_error, emit_token, TokenSink,
 };
 use super::stream_parser::{LineBuffer, NDJSONParser, SSEParser};
 
@@ -247,6 +246,7 @@ impl LLMProvider for CustomClient {
         model: &str,
         params: GenerationParams,
         app_handle: tauri::AppHandle,
+        sink: Option<TokenSink>,
     ) -> Result<CompletionStats, LLMError> {
         let start = Instant::now();
 
@@ -301,7 +301,7 @@ impl LLMProvider for CustomClient {
                     .json(&body);
 
                 request.send().await.map_err(|e| {
-                    let _ = app_handle.emit("llm_stream_error", e.to_string());
+                    emit_error(&app_handle, &params, &e.to_string());
                     LLMError::ConnectionFailed(format!(
                         "Failed to connect to custom endpoint: {}",
                         e
@@ -314,7 +314,7 @@ impl LLMProvider for CustomClient {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             let err_msg = format!("Custom endpoint request failed ({}): {}", status, body);
-            let _ = app_handle.emit("llm_stream_error", &err_msg);
+            emit_error(&app_handle, &params, &err_msg);
             return Err(LLMError::ProviderError(err_msg));
         }
 
@@ -324,7 +324,7 @@ impl LLMProvider for CustomClient {
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| {
-                let _ = app_handle.emit("llm_stream_error", e.to_string());
+                emit_error(&app_handle, &params, &e.to_string());
                 LLMError::HttpError(e)
             })?;
 
@@ -337,12 +337,7 @@ impl LLMProvider for CustomClient {
                     if let Some(token) = maybe_token {
                         if !token.is_empty() {
                             token_count += 1;
-                            let _ = app_handle.emit(
-                                "llm_stream_token",
-                                StreamTokenPayload {
-                                    token: token.clone(),
-                                },
-                            );
+                            emit_token(&app_handle, &params, &token, sink.as_ref());
                         }
                     }
                 }
@@ -356,12 +351,7 @@ impl LLMProvider for CustomClient {
                 if let Some(token) = maybe_token {
                     if !token.is_empty() {
                         token_count += 1;
-                        let _ = app_handle.emit(
-                            "llm_stream_token",
-                            StreamTokenPayload {
-                                token: token.clone(),
-                            },
-                        );
+                        emit_token(&app_handle, &params, &token, sink.as_ref());
                     }
                 }
             }
@@ -375,13 +365,7 @@ impl LLMProvider for CustomClient {
             latency_ms,
         };
 
-        let _ = app_handle.emit(
-            "llm_stream_end",
-            StreamEndPayload {
-                total_tokens: token_count,
-                latency_ms,
-            },
-        );
+        emit_end(&app_handle, &params, token_count, latency_ms);
 
         Ok(stats)
     }

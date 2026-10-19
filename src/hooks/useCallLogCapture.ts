@@ -4,7 +4,7 @@
 // instead of reconstructing from frontend stores.
 // ============================================================================
 
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import {
   onStreamStart,
   onStreamToken,
@@ -20,16 +20,27 @@ import type { IntelligenceMode, LogEntry } from "../lib/types";
 const SENDING_TIMEOUT_MS = 10_000;
 
 export function useCallLogCapture() {
-  const activeCallId = useRef<string | null>(null);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   useEffect(() => {
     const unlisteners: Array<Promise<() => void>> = [];
+    // request_id → log entry id, for streams whose start event we saw.
+    const entryIds = new Map<string, string>();
+    // request_id → "sending" safety timeout
+    const timers = new Map<string, ReturnType<typeof setTimeout>>();
+
+    const clearSendingTimeout = (requestId: string) => {
+      const timer = timers.get(requestId);
+      if (timer) {
+        clearTimeout(timer);
+        timers.delete(requestId);
+      }
+    };
 
     unlisteners.push(
       onStreamStart((event) => {
+        const requestId = event.request_id;
+        if (!requestId) return;
         const id = crypto.randomUUID();
-        activeCallId.current = id;
+        entryIds.set(requestId, id);
 
         const mode = event.mode as IntelligenceMode;
 
@@ -74,49 +85,46 @@ export function useCallLogCapture() {
         useCallLogStore.getState().beginEntry(entry);
 
         // Safety timeout: if entry stays in "sending" for >10s, mark as error
-        if (timeoutRef.current) clearTimeout(timeoutRef.current);
-        timeoutRef.current = setTimeout(() => {
-          const entries = useCallLogStore.getState().entries;
-          const e = entries.find((x) => x.id === id);
-          if (e && e.status === "sending") {
-            useCallLogStore
-              .getState()
-              .failEntry(id, "Timed out waiting for response");
-            activeCallId.current = null;
-          }
-        }, SENDING_TIMEOUT_MS);
+        clearSendingTimeout(requestId);
+        timers.set(
+          requestId,
+          setTimeout(() => {
+            timers.delete(requestId);
+            const entries = useCallLogStore.getState().entries;
+            const e = entries.find((x) => x.id === id);
+            if (e && e.status === "sending") {
+              useCallLogStore
+                .getState()
+                .failEntry(id, "Timed out waiting for response");
+              entryIds.delete(requestId);
+            }
+          }, SENDING_TIMEOUT_MS)
+        );
       })
     );
 
     unlisteners.push(
       onStreamToken((event) => {
-        if (activeCallId.current) {
+        if (!event.request_id) return;
+        const entryId = entryIds.get(event.request_id);
+        if (entryId) {
           // Clear sending timeout on first token
-          if (timeoutRef.current) {
-            clearTimeout(timeoutRef.current);
-            timeoutRef.current = null;
-          }
-          useCallLogStore
-            .getState()
-            .appendToken(activeCallId.current, event.token);
+          clearSendingTimeout(event.request_id);
+          useCallLogStore.getState().appendToken(entryId, event.token);
         }
       })
     );
 
     unlisteners.push(
       onStreamEnd((event) => {
-        if (timeoutRef.current) {
-          clearTimeout(timeoutRef.current);
-          timeoutRef.current = null;
-        }
-        if (activeCallId.current) {
+        if (!event.request_id) return;
+        clearSendingTimeout(event.request_id);
+        const entryId = entryIds.get(event.request_id);
+        if (entryId) {
+          entryIds.delete(event.request_id);
           useCallLogStore
             .getState()
-            .completeEntry(
-              activeCallId.current,
-              event.total_tokens,
-              event.latency_ms
-            );
+            .completeEntry(entryId, event.total_tokens, event.latency_ms);
 
           // Immediately persist all completed AI interactions to DB (crash protection)
           const meetingId = useMeetingStore.getState().activeMeeting?.id;
@@ -144,27 +152,26 @@ export function useCallLogCapture() {
               );
             }
           }
-
-          activeCallId.current = null;
         }
       })
     );
 
     unlisteners.push(
-      onStreamError((error) => {
-        if (timeoutRef.current) {
-          clearTimeout(timeoutRef.current);
-          timeoutRef.current = null;
-        }
-        if (activeCallId.current) {
-          useCallLogStore.getState().failEntry(activeCallId.current, error);
-          activeCallId.current = null;
+      onStreamError((event) => {
+        if (!event.request_id) return;
+        clearSendingTimeout(event.request_id);
+        const entryId = entryIds.get(event.request_id);
+        if (entryId) {
+          entryIds.delete(event.request_id);
+          useCallLogStore.getState().failEntry(entryId, event.message);
         }
       })
     );
 
     return () => {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      timers.forEach((timer) => clearTimeout(timer));
+      timers.clear();
+      entryIds.clear();
       unlisteners.forEach((p) => p.then((unlisten) => unlisten()));
     };
   }, []);

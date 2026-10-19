@@ -12,6 +12,13 @@ import {
 } from "../lib/events";
 import type { IntelligenceMode } from "../lib/types";
 
+/** Generations for a past meeting stream into that meeting's view, never the live buffer. */
+const PAST_MEETING_MODES: ReadonlySet<string> = new Set([
+  "MeetingSummary",
+  "ActionItemsExtraction",
+  "BookmarkSuggestions",
+]);
+
 /**
  * Hook that subscribes to LLM streaming events from the Tauri backend
  * and updates the streamStore. Batches token updates at 60fps using
@@ -27,6 +34,9 @@ export function useStreamBuffer() {
   // Token batching buffer
   const tokenBuffer = useRef<string>("");
   const rafId = useRef<number | null>(null);
+  // request_id of the stream this buffer is showing — only streams whose
+  // start event we saw (and accepted) are displayed.
+  const activeRequestId = useRef<string | null>(null);
 
   useEffect(() => {
     const unlisteners: Array<Promise<() => void>> = [];
@@ -47,9 +57,14 @@ export function useStreamBuffer() {
       }
     };
 
+    const isActive = (requestId: string | null) =>
+      activeRequestId.current !== null && requestId === activeRequestId.current;
+
     // Subscribe to stream start
     unlisteners.push(
       onStreamStart((event) => {
+        if (PAST_MEETING_MODES.has(event.mode)) return;
+        activeRequestId.current = event.request_id;
         tokenBuffer.current = "";
         if (rafId.current !== null) {
           cancelAnimationFrame(rafId.current);
@@ -66,6 +81,7 @@ export function useStreamBuffer() {
     // Subscribe to stream tokens — batch at 60fps
     unlisteners.push(
       onStreamToken((event) => {
+        if (!isActive(event.request_id)) return;
         tokenBuffer.current += event.token;
         scheduleFlush();
       })
@@ -74,6 +90,8 @@ export function useStreamBuffer() {
     // Subscribe to stream end
     unlisteners.push(
       onStreamEnd((event) => {
+        if (!isActive(event.request_id)) return;
+        activeRequestId.current = null;
         // Flush any remaining buffered tokens immediately
         if (tokenBuffer.current.length > 0) {
           appendToken(tokenBuffer.current);
@@ -90,19 +108,22 @@ export function useStreamBuffer() {
     // Subscribe to grounding sources (emitted before stream end, when web search is enabled)
     unlisteners.push(
       onStreamSources((event) => {
+        if (!isActive(event.request_id)) return;
         setSources(event.sources);
       })
     );
 
     // Subscribe to stream errors
     unlisteners.push(
-      onStreamError((error) => {
+      onStreamError((event) => {
+        if (!isActive(event.request_id)) return;
+        activeRequestId.current = null;
         tokenBuffer.current = "";
         if (rafId.current !== null) {
           cancelAnimationFrame(rafId.current);
           rafId.current = null;
         }
-        setError(error);
+        setError(event.message);
       })
     );
 

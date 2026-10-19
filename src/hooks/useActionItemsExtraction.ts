@@ -1,12 +1,11 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  onStreamStart,
   onStreamToken,
   onStreamEnd,
   onStreamError,
 } from "../lib/events";
-import { saveMeetingActionItems } from "../lib/ipc";
+import { generateAssist, saveMeetingActionItems } from "../lib/ipc";
 import { useMeetingStore } from "../stores/meetingStore";
 import { showToast } from "../stores/toastStore";
 import type { Meeting, ActionItem } from "../lib/types";
@@ -100,7 +99,8 @@ export function useActionItemsExtraction(
   const [isExtracting, setIsExtracting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const contentRef = useRef("");
-  const isOurGeneration = useRef(false);
+  // request_id of the generation this hook started (null when idle/cancelled)
+  const requestIdRef = useRef<string | null>(null);
   const unlistenersRef = useRef<(() => void)[]>([]);
 
   // Cleanup listeners on unmount
@@ -117,28 +117,24 @@ export function useActionItemsExtraction(
     setIsExtracting(true);
     setError(null);
     contentRef.current = "";
-    isOurGeneration.current = false;
+    const requestId = crypto.randomUUID();
+    requestIdRef.current = requestId;
+    const isOurs = (id: string | null) =>
+      id === requestId && requestIdRef.current === requestId;
 
     // Subscribe to stream events before triggering generation
     const cleanups: (() => void)[] = [];
 
     try {
-      const unStart = await onStreamStart((event) => {
-        if (event.mode === "ActionItemsExtraction") {
-          isOurGeneration.current = true;
-        }
-      });
-      cleanups.push(unStart);
-
       const unToken = await onStreamToken((event) => {
-        if (!isOurGeneration.current) return;
+        if (!isOurs(event.request_id)) return;
         contentRef.current += event.token;
       });
       cleanups.push(unToken);
 
-      const unEnd = await onStreamEnd(async () => {
-        if (!isOurGeneration.current) return;
-        isOurGeneration.current = false;
+      const unEnd = await onStreamEnd(async (event) => {
+        if (!isOurs(event.request_id)) return;
+        requestIdRef.current = null;
 
         // Parse accumulated response into ActionItem[]
         if (meeting && contentRef.current) {
@@ -184,10 +180,10 @@ export function useActionItemsExtraction(
       });
       cleanups.push(unEnd);
 
-      const unError = await onStreamError((errMsg) => {
-        if (!isOurGeneration.current) return;
-        isOurGeneration.current = false;
-        setError(errMsg);
+      const unError = await onStreamError((event) => {
+        if (!isOurs(event.request_id)) return;
+        requestIdRef.current = null;
+        setError(event.message);
         setIsExtracting(false);
         cleanups.forEach((fn) => fn());
         unlistenersRef.current = unlistenersRef.current.filter(
@@ -223,10 +219,9 @@ export function useActionItemsExtraction(
       }
       const segments = merged;
 
-      await invoke("generate_assist", {
-        mode: "ActionItemsExtraction",
-        customQuestion,
-        transcriptSegments: JSON.stringify(segments),
+      await generateAssist("ActionItemsExtraction", customQuestion, {
+        requestId,
+        transcriptSegments: segments,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -242,7 +237,7 @@ export function useActionItemsExtraction(
     } catch {
       // Non-critical
     }
-    isOurGeneration.current = false;
+    requestIdRef.current = null;
     setIsExtracting(false);
   }, []);
 

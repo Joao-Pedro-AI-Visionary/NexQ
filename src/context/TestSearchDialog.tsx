@@ -63,6 +63,8 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
   const [aiLatencyMs, setAiLatencyMs] = useState<number | null>(null);
   const [aiTotalTokens, setAiTotalTokens] = useState<number | null>(null);
   const aiStartTime = useRef<number>(0);
+  // request_id of the test answer being streamed — ignore every other stream
+  const requestIdRef = useRef<string | null>(null);
 
   const backdropRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -104,8 +106,11 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
     let mounted = true;
 
     const setup = async () => {
+      const isOurs = (id: string | null) =>
+        mounted && requestIdRef.current !== null && id === requestIdRef.current;
+
       unlistenStart = await onStreamStart((event) => {
-        if (!mounted) return;
+        if (!isOurs(event.request_id)) return;
         setAiModel(event.model);
         setAiProvider(event.provider);
         // Scroll to AI response box so user sees the answer, not the chunk list
@@ -114,19 +119,19 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
         }, 50);
       });
       unlistenToken = await onStreamToken((event) => {
-        if (!mounted) return;
+        if (!isOurs(event.request_id)) return;
         setAiResponse((prev) => prev + event.token);
       });
       unlistenEnd = await onStreamEnd((event) => {
-        if (!mounted) return;
+        if (!isOurs(event.request_id)) return;
         setIsGenerating(false);
         setAiLatencyMs(event.latency_ms);
         setAiTotalTokens(event.total_tokens);
       });
-      unlistenError = await onStreamError((errorMsg) => {
-        if (!mounted) return;
+      unlistenError = await onStreamError((event) => {
+        if (!isOurs(event.request_id)) return;
         setIsGenerating(false);
-        setAiError(errorMsg);
+        setAiError(event.message);
       });
     };
 
@@ -164,10 +169,12 @@ export function TestSearchDialog({ isOpen, onClose }: TestSearchDialogProps) {
 
     // Step 2: Call LLM with RAG context (uses streaming events)
     // Pass the frontend's LLM settings so the backend uses the correct provider/model
+    const requestId = crypto.randomUUID();
+    requestIdRef.current = requestId;
     setIsGenerating(true);
     aiStartTime.current = performance.now();
     try {
-      await testRagAnswer(trimmed, llmProvider, llmModel);
+      await testRagAnswer(trimmed, llmProvider, llmModel, requestId);
     } catch (e) {
       setIsGenerating(false);
       setAiError(e instanceof Error ? e.message : String(e));

@@ -113,9 +113,13 @@ pub async fn generate_assist(
     mode: String,
     custom_question: Option<String>,
     transcript_segments: Option<String>,
+    request_id: Option<String>,
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    // Every stream carries a request id so listeners can tell streams apart.
+    let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
     // Extract what we need from the intelligence engine under its lock
     let (last_question, cancel_flag, action_config_snapshot, composed_instructions) = {
         let intel = state
@@ -281,6 +285,8 @@ pub async fn generate_assist(
         max_tokens: None,
         cache_name: active_cache_name.clone(),
         enable_web_search,
+        request_id: Some(request_id),
+        silent: false,
     };
 
     // RAG metadata for StreamStartEvent

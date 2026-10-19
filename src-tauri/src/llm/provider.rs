@@ -1,4 +1,7 @@
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter};
 use thiserror::Error;
 
 /// Per-request generation parameters.
@@ -15,6 +18,12 @@ pub struct GenerationParams {
     /// Gemini: adds the `google_search` tool. OpenRouter: appends `:online` to the model id.
     /// Ignored by providers without a native web search mechanism.
     pub enable_web_search: bool,
+    /// Identifies this stream. Echoed in every `llm_stream_*` payload so listeners
+    /// only react to their own request.
+    pub request_id: Option<String>,
+    /// When true, tokens go only to the caller's `TokenSink` and no `llm_stream_*`
+    /// event is emitted (used by internal callers such as LLM translation).
+    pub silent: bool,
 }
 
 impl Default for GenerationParams {
@@ -24,8 +33,92 @@ impl Default for GenerationParams {
             max_tokens: None,
             cache_name: None,
             enable_web_search: false,
+            request_id: None,
+            silent: false,
         }
     }
+}
+
+/// Callback that receives each streamed token for an in-process caller.
+pub type TokenSink = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// Where a streamed token is delivered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    /// Only the caller's sink receives it (silent stream).
+    Sink,
+    /// The global `llm_stream_token` event carries it (a sink, if any, also receives it).
+    Global,
+}
+
+/// Feeds `token` to the sink (if any) and decides whether it must also be
+/// emitted globally. Kept free of `AppHandle` so it can be unit-tested.
+fn route_token(params: &GenerationParams, token: &str, sink: Option<&TokenSink>) -> Route {
+    if let Some(sink) = sink {
+        sink(token);
+    }
+    if params.silent {
+        Route::Sink
+    } else {
+        Route::Global
+    }
+}
+
+/// Delivers one streamed token: to the sink, and as `llm_stream_token` unless the stream is silent.
+pub fn emit_token(app: &AppHandle, params: &GenerationParams, token: &str, sink: Option<&TokenSink>) {
+    if route_token(params, token, sink) == Route::Global {
+        let _ = app.emit(
+            "llm_stream_token",
+            StreamTokenPayload {
+                token: token.to_string(),
+                request_id: params.request_id.clone(),
+            },
+        );
+    }
+}
+
+/// Emits `llm_stream_end` for this request (nothing for silent streams).
+pub fn emit_end(app: &AppHandle, params: &GenerationParams, total_tokens: u64, latency_ms: u64) {
+    if params.silent {
+        return;
+    }
+    let _ = app.emit(
+        "llm_stream_end",
+        StreamEndPayload {
+            total_tokens,
+            latency_ms,
+            request_id: params.request_id.clone(),
+        },
+    );
+}
+
+/// Emits `llm_stream_error` for this request (nothing for silent streams — the
+/// caller gets the error from the returned `Result`).
+pub fn emit_error(app: &AppHandle, params: &GenerationParams, message: &str) {
+    if params.silent {
+        return;
+    }
+    let _ = app.emit(
+        "llm_stream_error",
+        StreamErrorPayload {
+            message: message.to_string(),
+            request_id: params.request_id.clone(),
+        },
+    );
+}
+
+/// Emits `llm_stream_sources` for this request (nothing for silent streams).
+pub fn emit_sources(app: &AppHandle, params: &GenerationParams, sources: Vec<StreamSource>) {
+    if params.silent {
+        return;
+    }
+    let _ = app.emit(
+        "llm_stream_sources",
+        StreamSourcesPayload {
+            sources,
+            request_id: params.request_id.clone(),
+        },
+    );
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,6 +200,7 @@ pub struct StreamStartPayload {
     pub transcript_window_seconds: u64,
     pub transcript_segments_count: usize,
     pub transcript_segments_total: usize,
+    pub request_id: Option<String>,
 }
 
 /// Metadata about a single RAG chunk, sent to the frontend for AI log display.
@@ -122,12 +216,20 @@ pub struct RagChunkInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamTokenPayload {
     pub token: String,
+    pub request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamEndPayload {
     pub total_tokens: u64,
     pub latency_ms: u64,
+    pub request_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamErrorPayload {
+    pub message: String,
+    pub request_id: Option<String>,
 }
 
 /// A single web search result/source surfaced by provider-native grounding (e.g. Gemini).
@@ -141,6 +243,7 @@ pub struct StreamSource {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamSourcesPayload {
     pub sources: Vec<StreamSource>,
+    pub request_id: Option<String>,
 }
 
 /// Trait that all LLM providers implement.
@@ -155,13 +258,53 @@ pub trait LLMProvider: Send + Sync {
     /// Tests whether the provider is reachable and properly configured
     async fn test_connection(&self) -> Result<bool, LLMError>;
 
-    /// Streams a completion response, emitting tokens via Tauri events.
-    /// Events: "llm_stream_start", "llm_stream_token", "llm_stream_end", "llm_stream_error"
+    /// Streams a completion response. Tokens, end and errors go through
+    /// `emit_token` / `emit_end` / `emit_error`, which tag events with
+    /// `params.request_id` and stay silent when `params.silent` is set.
+    /// Events: "llm_stream_token", "llm_stream_end", "llm_stream_error"
+    /// ("llm_stream_start" is emitted by the caller).
     async fn stream_completion(
         &self,
         messages: Vec<LLMMessage>,
         model: &str,
         params: GenerationParams,
         app_handle: tauri::AppHandle,
+        sink: Option<TokenSink>,
     ) -> Result<CompletionStats, LLMError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    fn collecting_sink() -> (TokenSink, Arc<Mutex<String>>) {
+        let collected = Arc::new(Mutex::new(String::new()));
+        let target = collected.clone();
+        let sink: TokenSink = Arc::new(move |token: &str| {
+            target.lock().unwrap().push_str(token);
+        });
+        (sink, collected)
+    }
+
+    #[test]
+    fn silent_params_route_tokens_to_sink_only() {
+        let (sink, collected) = collecting_sink();
+        let silent = GenerationParams {
+            silent: true,
+            request_id: Some("req-1".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(route_token(&silent, "hi", Some(&sink)), Route::Sink);
+        assert_eq!(collected.lock().unwrap().as_str(), "hi");
+
+        let global = GenerationParams {
+            silent: false,
+            ..Default::default()
+        };
+        assert_eq!(route_token(&global, "!", Some(&sink)), Route::Global);
+        // A sink attached to a non-silent stream still receives tokens.
+        assert_eq!(collected.lock().unwrap().as_str(), "hi!");
+    }
 }

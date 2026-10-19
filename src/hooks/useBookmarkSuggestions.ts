@@ -1,12 +1,11 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  onStreamStart,
   onStreamToken,
   onStreamEnd,
   onStreamError,
 } from "../lib/events";
-import { addMeetingBookmark } from "../lib/ipc";
+import { addMeetingBookmark, generateAssist } from "../lib/ipc";
 import type { Meeting, MeetingBookmark } from "../lib/types";
 
 // ---------------------------------------------------------------------------
@@ -157,7 +156,8 @@ export function useBookmarkSuggestions(
   const [suggestions, setSuggestions] = useState<BookmarkSuggestion[]>([]);
   const [error, setError] = useState<string | null>(null);
   const contentRef = useRef("");
-  const isOurGeneration = useRef(false);
+  // request_id of the generation this hook started (null when idle/cancelled)
+  const requestIdRef = useRef<string | null>(null);
   const unlistenersRef = useRef<(() => void)[]>([]);
 
   // Reset state when meeting changes
@@ -259,21 +259,17 @@ export function useBookmarkSuggestions(
     setIsSuggesting(true);
     setError(null);
     contentRef.current = "";
-    isOurGeneration.current = false;
+    const requestId = crypto.randomUUID();
+    requestIdRef.current = requestId;
+    const isOurs = (id: string | null) =>
+      id === requestId && requestIdRef.current === requestId;
 
     // Subscribe to stream events before triggering generation
     const cleanups: (() => void)[] = [];
 
     try {
-      const unStart = await onStreamStart((event) => {
-        if (event.mode === "BookmarkSuggestions") {
-          isOurGeneration.current = true;
-        }
-      });
-      cleanups.push(unStart);
-
       const unToken = await onStreamToken((event) => {
-        if (!isOurGeneration.current) return;
+        if (!isOurs(event.request_id)) return;
         contentRef.current += event.token;
       });
       cleanups.push(unToken);
@@ -294,9 +290,9 @@ export function useBookmarkSuggestions(
       const segments = merged;
       const allSegments = finals.map((s) => ({ id: s.id, timestamp_ms: s.timestamp_ms }));
 
-      const unEnd = await onStreamEnd(async () => {
-        if (!isOurGeneration.current) return;
-        isOurGeneration.current = false;
+      const unEnd = await onStreamEnd(async (event) => {
+        if (!isOurs(event.request_id)) return;
+        requestIdRef.current = null;
 
         // Parse accumulated response into BookmarkSuggestion[]
         if (meeting && contentRef.current) {
@@ -328,10 +324,10 @@ export function useBookmarkSuggestions(
       });
       cleanups.push(unEnd);
 
-      const unError = await onStreamError((errMsg) => {
-        if (!isOurGeneration.current) return;
-        isOurGeneration.current = false;
-        setError(errMsg);
+      const unError = await onStreamError((event) => {
+        if (!isOurs(event.request_id)) return;
+        requestIdRef.current = null;
+        setError(event.message);
         setIsSuggesting(false);
         cleanups.forEach((fn) => fn());
         unlistenersRef.current = unlistenersRef.current.filter(
@@ -346,10 +342,9 @@ export function useBookmarkSuggestions(
         "Identify the most important moments in this meeting transcript. " +
         "Return the segment_id from each transcript line.";
 
-      await invoke("generate_assist", {
-        mode: "BookmarkSuggestions",
-        customQuestion,
-        transcriptSegments: JSON.stringify(segments),
+      await generateAssist("BookmarkSuggestions", customQuestion, {
+        requestId,
+        transcriptSegments: segments,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -365,7 +360,7 @@ export function useBookmarkSuggestions(
     } catch {
       // Non-critical
     }
-    isOurGeneration.current = false;
+    requestIdRef.current = null;
     setIsSuggesting(false);
   }, []);
 

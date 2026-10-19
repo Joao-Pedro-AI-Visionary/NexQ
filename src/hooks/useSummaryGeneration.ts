@@ -1,12 +1,11 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  onStreamStart,
   onStreamToken,
   onStreamEnd,
   onStreamError,
 } from "../lib/events";
-import { updateMeetingSummary } from "../lib/ipc";
+import { generateAssist, updateMeetingSummary } from "../lib/ipc";
 import { useMeetingStore } from "../stores/meetingStore";
 import type { Meeting } from "../lib/types";
 
@@ -26,7 +25,8 @@ export function useSummaryGeneration(
   const [streamedContent, setStreamedContent] = useState("");
   const [error, setError] = useState<string | null>(null);
   const contentRef = useRef("");
-  const isOurGeneration = useRef(false);
+  // request_id of the generation this hook started (null when idle/cancelled)
+  const requestIdRef = useRef<string | null>(null);
   const unlistenersRef = useRef<(() => void)[]>([]);
 
   // Cleanup listeners on unmount
@@ -44,29 +44,25 @@ export function useSummaryGeneration(
     setStreamedContent("");
     setError(null);
     contentRef.current = "";
-    isOurGeneration.current = false;
+    const requestId = crypto.randomUUID();
+    requestIdRef.current = requestId;
+    const isOurs = (id: string | null) =>
+      id === requestId && requestIdRef.current === requestId;
 
     // Subscribe to stream events before triggering generation
     const cleanups: (() => void)[] = [];
 
     try {
-      const unStart = await onStreamStart((event) => {
-        if (event.mode === "MeetingSummary") {
-          isOurGeneration.current = true;
-        }
-      });
-      cleanups.push(unStart);
-
       const unToken = await onStreamToken((event) => {
-        if (!isOurGeneration.current) return;
+        if (!isOurs(event.request_id)) return;
         contentRef.current += event.token;
         setStreamedContent(contentRef.current);
       });
       cleanups.push(unToken);
 
-      const unEnd = await onStreamEnd(async () => {
-        if (!isOurGeneration.current) return;
-        isOurGeneration.current = false;
+      const unEnd = await onStreamEnd(async (event) => {
+        if (!isOurs(event.request_id)) return;
+        requestIdRef.current = null;
 
         // Persist summary to DB and refresh sidebar
         if (meeting && contentRef.current) {
@@ -89,10 +85,10 @@ export function useSummaryGeneration(
       });
       cleanups.push(unEnd);
 
-      const unError = await onStreamError((errMsg) => {
-        if (!isOurGeneration.current) return;
-        isOurGeneration.current = false;
-        setError(errMsg);
+      const unError = await onStreamError((event) => {
+        if (!isOurs(event.request_id)) return;
+        requestIdRef.current = null;
+        setError(event.message);
         setIsGenerating(false);
         cleanups.forEach((fn) => fn());
         unlistenersRef.current = unlistenersRef.current.filter(
@@ -112,9 +108,9 @@ export function useSummaryGeneration(
           timestamp_ms: s.timestamp_ms,
         }));
 
-      await invoke("generate_assist", {
-        mode: "MeetingSummary",
-        transcriptSegments: JSON.stringify(segments),
+      await generateAssist("MeetingSummary", undefined, {
+        requestId,
+        transcriptSegments: segments,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -130,7 +126,7 @@ export function useSummaryGeneration(
     } catch {
       // Non-critical
     }
-    isOurGeneration.current = false;
+    requestIdRef.current = null;
     setIsGenerating(false);
   }, []);
 

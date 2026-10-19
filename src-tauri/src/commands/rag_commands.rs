@@ -286,9 +286,12 @@ pub async fn test_rag_answer(
     query: String,
     llm_provider: Option<String>,
     llm_model: Option<String>,
+    request_id: Option<String>,
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
     // 1. Search RAG for relevant chunks
     let rag_arc = state.rag.as_ref()
         .ok_or_else(|| "RAG manager not initialized".to_string())?;
@@ -385,7 +388,10 @@ pub async fn test_rag_answer(
         provider_arc,
         model_name,
         provider_name,
-        crate::llm::provider::GenerationParams::default(),
+        crate::llm::provider::GenerationParams {
+            request_id: Some(request_id),
+            ..Default::default()
+        },
         // Metadata for StreamStartEvent (test-rag defaults)
         0.7,                        // temperature (default)
         Some(query.clone()),        // rag_query

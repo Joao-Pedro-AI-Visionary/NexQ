@@ -10,6 +10,7 @@ import type {
   AudioSessionInfo,
   ContextResource,
   DeepgramConfig,
+  GenerateAssistOptions,
   GroqConfig,
   IpolicyStatus,
   LocalSTTEngineInfo,
@@ -189,19 +190,31 @@ export async function listOpenRouterModels(
 
 // == IPC: Intelligence (Sub-PRD 6) ==
 
-export async function generateAssist(mode: string, customQuestion?: string): Promise<void> {
-  // Universal transcript: gather all final segments from the frontend store
-  // (the single source of truth — every STT engine feeds into it).
+export async function generateAssist(
+  mode: string,
+  customQuestion?: string,
+  opts: GenerateAssistOptions = {}
+): Promise<void> {
+  const requestId = opts.requestId ?? crypto.randomUUID();
+
+  // Universal transcript: unless the caller supplies segments (past meetings),
+  // gather all final segments from the frontend store (the single source of
+  // truth — every STT engine feeds into it).
   // The backend applies the per-action transcript window setting.
-  const { useTranscriptStore } = await import("../stores/transcriptStore");
-  const segments = useTranscriptStore.getState().segments
-    .filter(s => s.is_final)
-    .map(s => ({ text: s.text, speaker: s.speaker, timestamp_ms: s.timestamp_ms }));
+  let segments = opts.transcriptSegments;
+  if (!segments) {
+    const { useTranscriptStore } = await import("../stores/transcriptStore");
+    segments = useTranscriptStore.getState().segments
+      .filter(s => s.is_final)
+      .map(s => ({ text: s.text, speaker: s.speaker, timestamp_ms: s.timestamp_ms }));
+  }
 
   return invoke("generate_assist", {
     mode,
     customQuestion,
     transcriptSegments: JSON.stringify(segments),
+    requestId,
+    ...(opts.pastMeetingId ? { pastMeetingId: opts.pastMeetingId } : {}),
   });
 }
 
@@ -544,9 +557,10 @@ export async function pullEmbeddingModel(model: string): Promise<void> {
 export async function testRagAnswer(
   query: string,
   llmProvider?: string,
-  llmModel?: string
+  llmModel?: string,
+  requestId?: string
 ): Promise<void> {
-  return invoke("test_rag_answer", { query, llmProvider, llmModel });
+  return invoke("test_rag_answer", { query, llmProvider, llmModel, requestId });
 }
 
 export async function removeFileRagIndex(resourceId: string): Promise<void> {

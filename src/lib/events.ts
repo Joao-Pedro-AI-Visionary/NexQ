@@ -11,6 +11,7 @@ import type {
   QuestionDetectedEvent,
   RagIndexProgressEvent,
   StreamEndEvent,
+  StreamErrorEvent,
   StreamSourcesEvent,
   StreamStartEvent,
   StreamTokenEvent,
@@ -72,9 +73,11 @@ export function onStreamSources(
 }
 
 export function onStreamError(
-  handler: (error: string) => void
+  handler: (event: StreamErrorEvent) => void
 ): Promise<UnlistenFn> {
-  return listen<string>("llm_stream_error", (e) => handler(e.payload));
+  return listen<StreamErrorEvent>("llm_stream_error", (e) =>
+    handler(e.payload)
+  );
 }
 
 // == QUESTION DETECTION EVENTS ==

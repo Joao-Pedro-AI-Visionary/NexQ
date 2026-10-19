@@ -3,11 +3,10 @@
 use futures::StreamExt;
 use serde_json::json;
 use std::time::Instant;
-use tauri::Emitter;
 
 use super::provider::{
     CompletionStats, GenerationParams, LLMError, LLMMessage, LLMProvider, ModelInfo,
-    StreamEndPayload, StreamTokenPayload,
+    emit_end, emit_error, emit_token, TokenSink,
 };
 use super::stream_parser::{LineBuffer, NDJSONParser};
 
@@ -108,6 +107,7 @@ impl LLMProvider for OllamaClient {
         model: &str,
         params: GenerationParams,
         app_handle: tauri::AppHandle,
+        sink: Option<TokenSink>,
     ) -> Result<CompletionStats, LLMError> {
         let url = format!("{}/api/chat", self.base_url);
         let start = Instant::now();
@@ -155,7 +155,7 @@ impl LLMProvider for OllamaClient {
             .send()
             .await
             .map_err(|e| {
-                let _ = app_handle.emit("llm_stream_error", e.to_string());
+                emit_error(&app_handle, &params, &e.to_string());
                 LLMError::ConnectionFailed(format!("Failed to connect to Ollama: {}", e))
             })?;
 
@@ -163,7 +163,7 @@ impl LLMProvider for OllamaClient {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             let err_msg = format!("Ollama completion failed ({}): {}", status, body);
-            let _ = app_handle.emit("llm_stream_error", &err_msg);
+            emit_error(&app_handle, &params, &err_msg);
             return Err(LLMError::ProviderError(err_msg));
         }
 
@@ -175,7 +175,7 @@ impl LLMProvider for OllamaClient {
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| {
-                let _ = app_handle.emit("llm_stream_error", e.to_string());
+                emit_error(&app_handle, &params, &e.to_string());
                 LLMError::HttpError(e)
             })?;
 
@@ -201,12 +201,7 @@ impl LLMProvider for OllamaClient {
                     if let Some(token) = NDJSONParser::extract_ollama_token(&data) {
                         if !token.is_empty() {
                             token_count += 1;
-                            let _ = app_handle.emit(
-                                "llm_stream_token",
-                                StreamTokenPayload {
-                                    token: token.clone(),
-                                },
-                            );
+                            emit_token(&app_handle, &params, &token, sink.as_ref());
                         }
                     }
                 }
@@ -227,12 +222,7 @@ impl LLMProvider for OllamaClient {
                 } else if let Some(token) = NDJSONParser::extract_ollama_token(&data) {
                     if !token.is_empty() {
                         token_count += 1;
-                        let _ = app_handle.emit(
-                            "llm_stream_token",
-                            StreamTokenPayload {
-                                token: token.clone(),
-                            },
-                        );
+                        emit_token(&app_handle, &params, &token, sink.as_ref());
                     }
                 }
             }
@@ -253,13 +243,7 @@ impl LLMProvider for OllamaClient {
             latency_ms,
         };
 
-        let _ = app_handle.emit(
-            "llm_stream_end",
-            StreamEndPayload {
-                total_tokens: total,
-                latency_ms,
-            },
-        );
+        emit_end(&app_handle, &params, total, latency_ms);
 
         Ok(stats)
     }

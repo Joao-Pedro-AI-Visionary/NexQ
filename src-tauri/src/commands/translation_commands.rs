@@ -1,5 +1,5 @@
 // src-tauri/src/commands/translation_commands.rs
-use tauri::{command, AppHandle, Emitter, Listener};
+use tauri::{command, AppHandle, Emitter};
 use crate::state::AppState;
 use crate::translation::{
     TranslationProviderType, TranslationResult, ConnectionStatus, Language,
@@ -469,10 +469,9 @@ pub async fn get_all_meeting_translations(
 /// Helper: translate text using the configured LLM provider
 /// instead of a dedicated translation API.
 ///
-/// Since LLMProvider::stream_completion emits tokens via Tauri events
-/// (llm_stream_token) and returns CompletionStats (no content field),
-/// we listen for stream tokens, collect them into a buffer, then return
-/// the assembled text.
+/// Runs a silent stream: tokens are collected through a private sink and
+/// never emitted as `llm_stream_*` events, so translation neither picks up
+/// other streams' tokens nor leaks its own into the overlay or AI Log.
 async fn translate_via_llm(
     app: &AppHandle,
     text: &str,
@@ -504,27 +503,24 @@ async fn translate_via_llm(
         router.active_model().to_string()
     };
 
-    // Set up a buffer to collect streamed tokens
+    // Collect this request's tokens through a private sink
     let buffer = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let buffer_clone = buffer.clone();
-
-    // Listen for stream tokens and collect them
-    let listener_id = app.listen("llm_stream_token", move |event| {
-        if let Ok(payload) = serde_json::from_str::<crate::llm::provider::StreamTokenPayload>(event.payload()) {
-            if let Ok(mut buf) = buffer_clone.lock() {
-                buf.push_str(&payload.token);
-            }
+    let sink: crate::llm::provider::TokenSink = std::sync::Arc::new(move |token: &str| {
+        if let Ok(mut buf) = buffer_clone.lock() {
+            buf.push_str(token);
         }
     });
 
-    let params = crate::llm::provider::GenerationParams::default();
+    let params = crate::llm::provider::GenerationParams {
+        request_id: Some(uuid::Uuid::new_v4().to_string()),
+        silent: true,
+        ..Default::default()
+    };
     let provider = provider_arc.lock().await;
     let result = provider.stream_completion(
-        messages, &model, params, app.clone()
+        messages, &model, params, app.clone(), Some(sink)
     ).await;
-
-    // Stop listening
-    app.unlisten(listener_id);
 
     // Check for errors
     result.map_err(|e| format!("LLM translation failed: {}", e))?;

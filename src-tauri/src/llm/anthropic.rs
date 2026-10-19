@@ -3,11 +3,10 @@
 use futures::StreamExt;
 use serde_json::json;
 use std::time::Instant;
-use tauri::Emitter;
 
 use super::provider::{
     CompletionStats, GenerationParams, LLMError, LLMMessage, LLMProvider, ModelInfo,
-    StreamEndPayload, StreamTokenPayload,
+    emit_end, emit_error, emit_token, TokenSink,
 };
 use super::stream_parser::{LineBuffer, SSEParser};
 
@@ -152,6 +151,7 @@ impl LLMProvider for AnthropicClient {
         model: &str,
         params: GenerationParams,
         app_handle: tauri::AppHandle,
+        sink: Option<TokenSink>,
     ) -> Result<CompletionStats, LLMError> {
         let url = format!("{}/v1/messages", self.base_url);
         let start = Instant::now();
@@ -200,7 +200,7 @@ impl LLMProvider for AnthropicClient {
             .send()
             .await
             .map_err(|e| {
-                let _ = app_handle.emit("llm_stream_error", e.to_string());
+                emit_error(&app_handle, &params, &e.to_string());
                 e
             })?;
 
@@ -208,7 +208,7 @@ impl LLMProvider for AnthropicClient {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             let err_msg = format!("Anthropic request failed ({}): {}", status, body);
-            let _ = app_handle.emit("llm_stream_error", &err_msg);
+            emit_error(&app_handle, &params, &err_msg);
 
             if status.as_u16() == 401 || status.as_u16() == 403 {
                 return Err(LLMError::AuthError(err_msg));
@@ -224,7 +224,7 @@ impl LLMProvider for AnthropicClient {
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| {
-                let _ = app_handle.emit("llm_stream_error", e.to_string());
+                emit_error(&app_handle, &params, &e.to_string());
                 LLMError::HttpError(e)
             })?;
 
@@ -247,12 +247,7 @@ impl LLMProvider for AnthropicClient {
                             if let Some(token) = SSEParser::extract_anthropic_token(&event.data) {
                                 if !token.is_empty() {
                                     token_count += 1;
-                                    let _ = app_handle.emit(
-                                        "llm_stream_token",
-                                        StreamTokenPayload {
-                                            token: token.clone(),
-                                        },
-                                    );
+                                    emit_token(&app_handle, &params, &token, sink.as_ref());
                                 }
                             }
                         }
@@ -275,7 +270,7 @@ impl LLMProvider for AnthropicClient {
                                 .and_then(|m| m.as_str())
                                 .unwrap_or("Unknown Anthropic error")
                                 .to_string();
-                            let _ = app_handle.emit("llm_stream_error", &err_msg);
+                            emit_error(&app_handle, &params, &err_msg);
                             return Err(LLMError::ProviderError(err_msg));
                         }
                         _ => {}
@@ -292,12 +287,7 @@ impl LLMProvider for AnthropicClient {
                     if let Some(token) = SSEParser::extract_anthropic_token(&event.data) {
                         if !token.is_empty() {
                             token_count += 1;
-                            let _ = app_handle.emit(
-                                "llm_stream_token",
-                                StreamTokenPayload {
-                                    token: token.clone(),
-                                },
-                            );
+                            emit_token(&app_handle, &params, &token, sink.as_ref());
                         }
                     }
                 }
@@ -319,13 +309,7 @@ impl LLMProvider for AnthropicClient {
             latency_ms,
         };
 
-        let _ = app_handle.emit(
-            "llm_stream_end",
-            StreamEndPayload {
-                total_tokens: total,
-                latency_ms,
-            },
-        );
+        emit_end(&app_handle, &params, total, latency_ms);
 
         Ok(stats)
     }

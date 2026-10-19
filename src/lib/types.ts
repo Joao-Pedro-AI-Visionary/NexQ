@@ -491,8 +491,12 @@ export interface TranscriptUpdateEvent {
   segment: TranscriptSegment;
 }
 
+// Every llm_stream_* payload carries the request_id of the generation it
+// belongs to, so listeners only react to their own stream.
+
 export interface StreamTokenEvent {
   token: string;
+  request_id: string | null;
 }
 
 export interface StreamStartEvent {
@@ -514,15 +518,40 @@ export interface StreamStartEvent {
   transcript_window_seconds: number;
   transcript_segments_count: number;
   transcript_segments_total: number;
+  request_id: string | null;
 }
 
 export interface StreamEndEvent {
   total_tokens: number;
   latency_ms: number;
+  request_id: string | null;
+}
+
+export interface StreamErrorEvent {
+  message: string;
+  request_id: string | null;
 }
 
 export interface StreamSourcesEvent {
   sources: StreamSource[];
+  request_id: string | null;
+}
+
+/** Transcript segment sent with generate_assist (`id` only for BookmarkSuggestions). */
+export interface AssistTranscriptSegment {
+  id?: string;
+  text: string;
+  speaker: string;
+  timestamp_ms: number;
+}
+
+export interface GenerateAssistOptions {
+  /** Identifies the stream; defaults to crypto.randomUUID(). */
+  requestId?: string;
+  /** Segments to use instead of the live transcript store. */
+  transcriptSegments?: AssistTranscriptSegment[];
+  /** Past meeting this generation belongs to (wired up by the backend in a later change). */
+  pastMeetingId?: string;
 }
 
 export type QuestionDetectedEvent = DetectedQuestion;

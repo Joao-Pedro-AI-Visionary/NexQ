@@ -4,11 +4,10 @@
 use futures::StreamExt;
 use serde_json::json;
 use std::time::Instant;
-use tauri::Emitter;
 
 use super::provider::{
     CompletionStats, GenerationParams, LLMError, LLMMessage, LLMProvider, ModelInfo,
-    StreamEndPayload, StreamTokenPayload,
+    emit_end, emit_error, emit_token, TokenSink,
 };
 use super::stream_parser::{LineBuffer, SSEParser};
 
@@ -131,6 +130,7 @@ impl LLMProvider for OpenAICompatClient {
         model: &str,
         params: GenerationParams,
         app_handle: tauri::AppHandle,
+        sink: Option<TokenSink>,
     ) -> Result<CompletionStats, LLMError> {
         let url = format!("{}/chat/completions", self.config.base_url);
         let start = Instant::now();
@@ -175,7 +175,7 @@ impl LLMProvider for OpenAICompatClient {
         // with the correct mode. Do NOT emit it here — it would overwrite the mode.
 
         let response = request.send().await.map_err(|e| {
-            let _ = app_handle.emit("llm_stream_error", e.to_string());
+            emit_error(&app_handle, &params, &e.to_string());
             e
         })?;
 
@@ -183,7 +183,7 @@ impl LLMProvider for OpenAICompatClient {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             let err_msg = format!("Completion request failed ({}): {}", status, body);
-            let _ = app_handle.emit("llm_stream_error", &err_msg);
+            emit_error(&app_handle, &params, &err_msg);
             return Err(LLMError::ProviderError(err_msg));
         }
 
@@ -193,7 +193,7 @@ impl LLMProvider for OpenAICompatClient {
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| {
-                let _ = app_handle.emit("llm_stream_error", e.to_string());
+                emit_error(&app_handle, &params, &e.to_string());
                 LLMError::HttpError(e)
             })?;
 
@@ -208,12 +208,7 @@ impl LLMProvider for OpenAICompatClient {
                             if let Some(token) = SSEParser::extract_openai_token(&data) {
                                 if !token.is_empty() {
                                     token_count += 1;
-                                    let _ = app_handle.emit(
-                                        "llm_stream_token",
-                                        StreamTokenPayload {
-                                            token: token.clone(),
-                                        },
-                                    );
+                                    emit_token(&app_handle, &params, &token, sink.as_ref());
                                 }
                             }
                         }
@@ -233,12 +228,7 @@ impl LLMProvider for OpenAICompatClient {
                     if let Some(token) = SSEParser::extract_openai_token(&data) {
                         if !token.is_empty() {
                             token_count += 1;
-                            let _ = app_handle.emit(
-                                "llm_stream_token",
-                                StreamTokenPayload {
-                                    token: token.clone(),
-                                },
-                            );
+                            emit_token(&app_handle, &params, &token, sink.as_ref());
                         }
                     }
                 }
@@ -253,13 +243,7 @@ impl LLMProvider for OpenAICompatClient {
             latency_ms,
         };
 
-        let _ = app_handle.emit(
-            "llm_stream_end",
-            StreamEndPayload {
-                total_tokens: token_count,
-                latency_ms,
-            },
-        );
+        emit_end(&app_handle, &params, token_count, latency_ms);
 
         Ok(stats)
     }
