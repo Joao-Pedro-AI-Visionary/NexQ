@@ -356,7 +356,7 @@ pub async fn test_rag_answer(
                     log::info!("Test KB: using temporary {} provider", requested);
                     temp_provider = Some((Arc::new(tokio::sync::Mutex::new(p)), display));
                 }
-                Err(e) => log::warn!("Test KB: couldn't use {}: {} — using active provider", requested, e),
+                Err(e) => return Err(format!("Could not use {}: {}", requested, e)),
             }
         }
     }

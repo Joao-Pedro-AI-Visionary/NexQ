@@ -16,7 +16,7 @@ fn resolve_provider(
     provider: &str,
 ) -> Result<Arc<TokioMutex<Box<dyn LLMProvider>>>, String> {
     if let Ok(config) = serde_json::from_str::<ProviderConfig>(provider) {
-        let temp = create_provider(&config).map_err(|e| format!("Failed to set provider: {}", e))?;
+        let temp = create_provider(&config).map_err(|e| format!("Failed to create provider: {}", e))?;
         return Ok(Arc::new(TokioMutex::new(temp)));
     }
 

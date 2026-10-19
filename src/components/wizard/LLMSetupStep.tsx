@@ -131,7 +131,6 @@ export function LLMSetupStep({
         await storeApiKey(selectedProvider, apiKey).catch(() => {});
       }
       const configJson = buildProviderConfig();
-      await setLLMProvider(configJson).catch(() => {});
       const modelList = await listModels(configJson);
       setModels(modelList);
     } catch (err) {
@@ -153,8 +152,6 @@ export function LLMSetupStep({
       if (success) {
         setConnectionStatus("success");
         setConnectionMessage("Connected successfully");
-        await setLLMProvider(configJson).catch(() => {});
-        setConfigProvider(selectedProvider);
       } else {
         setConnectionStatus("error");
         setConnectionMessage("Connection failed");
@@ -172,6 +169,8 @@ export function LLMSetupStep({
     setConfigModel(modelId);
     setConfigProvider(selectedProvider);
     try {
+      // Choosing a model is the explicit confirm: activate the provider now.
+      await setLLMProvider(buildProviderConfig());
       await setActiveModel(selectedProvider, modelId);
     } catch {
       // Non-critical

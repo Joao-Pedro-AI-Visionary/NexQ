@@ -215,8 +215,6 @@ export function LLMSettings() {
       if (success) {
         setConnectionStatus("success");
         setConnectionMessage("Connected successfully");
-        await setLLMProvider(configJson).catch(() => {});
-        setConfigProvider(selectedProvider);
         // Mark as verified
         if (!verifiedCloudProviders.includes(selectedProvider)) {
           setVerifiedCloudProviders([...verifiedCloudProviders, selectedProvider]);
@@ -241,10 +239,7 @@ export function LLMSettings() {
       if (apiKey) await storeApiKey(selectedProvider, apiKey).catch(() => {});
 
       if (selectedProvider === "openrouter") {
-        // Set provider on backend + configStore first
-        const configJson = buildProviderConfig();
-        await setLLMProvider(configJson).catch(() => {});
-        setConfigProvider(selectedProvider);
+        // Browsing only: the key is already stored, so this never touches the active provider
         // Use enriched OpenRouter endpoint
         const orModels = await listOpenRouterModels(true);
         setOpenRouterModels(orModels);
@@ -254,8 +249,6 @@ export function LLMSettings() {
       } else {
         // Use generic model listing for other providers
         const configJson = buildProviderConfig();
-        await setLLMProvider(configJson).catch(() => {});
-        setConfigProvider(selectedProvider);
         const modelList = await listModels(configJson);
         const chatModels = filterChatModels(modelList);
         setModels(chatModels);
@@ -276,6 +269,9 @@ export function LLMSettings() {
 
   const handleModelSelect = async (modelId: string) => {
     setSelectedModel(modelId);
+    // Only the active provider's model is applied now; for a browsed provider
+    // the selection is applied by "Set as Active Provider".
+    if (selectedProvider !== llmProvider) return;
     setConfigModel(modelId);
     try { await setActiveModel(selectedProvider, modelId); } catch {}
   };
