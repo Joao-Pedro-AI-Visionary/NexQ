@@ -42,6 +42,11 @@ export function MeetingCard({
   const [isSaving, setIsSaving] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const saveBtnRef = useRef<HTMLButtonElement>(null);
+  const cancelBtnRef = useRef<HTMLButtonElement>(null);
+  // True only while an edit can still be committed. Cancel and commit both clear it,
+  // so a late blur (focusout on unmount, Tab to a button) can never save a cancelled edit.
+  const editSessionRef = useRef(false);
 
   useEffect(() => {
     if (isEditing && inputRef.current) {
@@ -57,13 +62,15 @@ export function MeetingCard({
     (e: React.MouseEvent) => {
       e.stopPropagation();
       setEditTitle(meeting.title);
+      editSessionRef.current = true;
       setIsEditing(true);
     },
     [meeting.title]
   );
 
   const handleSaveEdit = useCallback(async () => {
-    if (isSaving) return;
+    if (!editSessionRef.current || isSaving) return;
+    editSessionRef.current = false;
     setIsSaving(true);
     try {
       const trimmed = editTitle.trim();
@@ -77,6 +84,7 @@ export function MeetingCard({
   }, [editTitle, meeting.id, meeting.title, onRename, isSaving]);
 
   const handleCancelEdit = useCallback(() => {
+    editSessionRef.current = false;
     setEditTitle(meeting.title);
     setIsEditing(false);
   }, [meeting.title]);
@@ -180,13 +188,19 @@ export function MeetingCard({
                 value={editTitle}
                 onChange={(e) => setEditTitle(e.target.value)}
                 onKeyDown={handleEditKeyDown}
-                onBlur={handleSaveEdit}
+                onBlur={(e) => {
+                  // Tabbing onto the save/cancel buttons: let the button decide.
+                  const next = e.relatedTarget;
+                  if (next && (next === saveBtnRef.current || next === cancelBtnRef.current)) return;
+                  handleSaveEdit();
+                }}
                 disabled={isSaving}
                 maxLength={200}
                 className="w-full rounded-lg border border-primary/30 bg-background px-2.5 py-1 text-xs text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary/20"
               />
               {/* onMouseDown preventDefault keeps focus in the input so the blur-save never races these buttons */}
               <button
+                ref={saveBtnRef}
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -199,6 +213,7 @@ export function MeetingCard({
                 <Check className="h-3 w-3" aria-hidden="true" />
               </button>
               <button
+                ref={cancelBtnRef}
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={(e) => {
                   e.stopPropagation();

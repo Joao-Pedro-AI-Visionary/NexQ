@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
 import { MeetingCard } from "./MeetingCard";
@@ -66,5 +66,38 @@ describe("MeetingCard rename", () => {
     expect(input.selectionEnd).toBe(TITLE.length);
     expect(input.scrollLeft).toBe(0);
     setSelectionRange.mockRestore();
+  });
+
+  it("tabbing from the input to cancel does not blur-save", async () => {
+    const { onRename, user } = setup();
+    await user.click(screen.getByRole("button", { name: /rename/i }));
+    await user.clear(screen.getByRole("textbox"));
+    await user.type(screen.getByRole("textbox"), "Team sync");
+    await user.tab(); // input -> save
+    await user.tab(); // save -> cancel
+    expect(onRename).not.toHaveBeenCalled();
+    await user.keyboard("{Enter}");
+    expect(onRename).not.toHaveBeenCalled();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  });
+
+  it("escape cancels without saving", async () => {
+    const { onRename, user } = setup();
+    await user.click(screen.getByRole("button", { name: /rename/i }));
+    await user.type(screen.getByRole("textbox"), "x{Escape}");
+    expect(onRename).not.toHaveBeenCalled();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  });
+
+  it("a blur firing right after Enter does not commit twice", async () => {
+    const { onRename, user } = setup();
+    await user.click(screen.getByRole("button", { name: /rename/i }));
+    const input = screen.getByRole("textbox");
+    await user.clear(input);
+    await user.type(input, "Team sync");
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.blur(input);
+    expect(onRename).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.queryByRole("textbox")).not.toBeInTheDocument());
   });
 });

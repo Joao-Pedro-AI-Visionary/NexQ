@@ -193,9 +193,12 @@ export function LauncherView() {
   const handleRenameMeeting = useCallback(async (meetingId: string, newTitle: string) => {
     try {
       await renameMeeting(meetingId, newTitle);
-      await loadRecentMeetings();
-      setSearchResults((p) => p?.map((m) => (m.id === meetingId ? { ...m, title: newTitle } : m)) ?? null);
-    } catch { showToast("Couldn't rename meeting", "error"); }
+    } catch {
+      showToast("Couldn't rename meeting", "error");
+      return;
+    }
+    setSearchResults((p) => p?.map((m) => (m.id === meetingId ? { ...m, title: newTitle } : m)) ?? null);
+    try { await loadRecentMeetings(); } catch { /* rename already saved; list refreshes next load */ }
   }, [loadRecentMeetings]);
 
   const handleSelectMeeting = useCallback((meetingId: string) => {
