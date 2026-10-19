@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import type { Meeting, RecordingInfo, TranslationResult } from "../../lib/types";
+import type { Meeting, MeetingBookmark, RecordingInfo, TranslationResult } from "../../lib/types";
 import { getMeeting, getRecordingInfo, getAllMeetingTranslations, translateSegments } from "../../lib/ipc";
 import { onTranscriptFinal, onRecordingReady, onTranslationResult, onTranslationError } from "../../lib/events";
 import { useMeetingStore } from "../../stores/meetingStore";
@@ -327,6 +327,14 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
     setMeeting((prev) => (prev ? { ...prev, title } : prev));
   }, []);
 
+  const handleBookmarksChanged = useCallback((bookmarks: MeetingBookmark[]) => {
+    setMeeting((prev) => (prev ? { ...prev, bookmarks } : prev));
+  }, []);
+
+  const handleScrollHandled = useCallback(() => setScrollToSegmentIndex(null), []);
+
+  const handleToggleTranslationVisibility = useCallback(() => setTranslationsVisible((v) => !v), []);
+
   if (loading) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2">
@@ -382,9 +390,12 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
       />
 
       <div className={`flex-1 min-h-0 ${activeTab === "transcript" ? "overflow-hidden flex flex-col" : "overflow-y-auto"}`} role="tabpanel">
-        {activeTab === "transcript" && (
+        {/* Transcript stays mounted (hidden) so switching back is instant */}
+        <div className={activeTab === "transcript" ? "flex flex-1 min-h-0 flex-col" : "hidden"}>
           <TranscriptView
             segments={meeting.transcript}
+            mergedSegments={mergedSegments}
+            isVisible={activeTab === "transcript"}
             search={search}
             meetingStartTime={new Date(meeting.start_time).getTime()}
             recordingOffsetMs={recordingInfo?.offset_ms ?? 0}
@@ -392,9 +403,9 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
             searchInputRef={searchInputRef}
             bookmarks={meeting.bookmarks}
             meetingId={meeting.id}
-            onBookmarksChanged={(bookmarks) => setMeeting((prev) => prev ? { ...prev, bookmarks } : prev)}
+            onBookmarksChanged={handleBookmarksChanged}
             initialScrollToIndex={scrollToSegmentIndex}
-            onScrollHandled={() => setScrollToSegmentIndex(null)}
+            onScrollHandled={handleScrollHandled}
             translations={translations}
             translatingSegments={translatingSegments}
             translationDisplayMode={displayMode}
@@ -408,10 +419,10 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
             mismatchedCount={mismatchedCount}
             onDisplayModeChange={setDisplayMode}
             onRetranslateAll={handleRetranslateAll}
-            onToggleTranslationVisibility={() => setTranslationsVisible((v) => !v)}
+            onToggleTranslationVisibility={handleToggleTranslationVisibility}
             retranslating={retranslating}
           />
-        )}
+        </div>
         {activeTab === "summary" && (
           <SummaryView meeting={meeting} generation={summaryGeneration} onExport={handleExport} />
         )}

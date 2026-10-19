@@ -6,7 +6,7 @@
 // when peaks or canvas size change); each frame just blits the layers and
 // draws the cheap overlays (topic dividers, bookmarks, playhead).
 
-import React, { useRef, useEffect, useCallback, useMemo, useState } from "react";
+import React, { memo, useRef, useEffect, useCallback, useMemo, useState } from "react";
 import type { WaveformData, MeetingBookmark, TopicSection } from "@/lib/types";
 import { downsamplePeaks } from "@/lib/waveform";
 
@@ -129,7 +129,7 @@ function renderBarLayers(bars: number[], size: CanvasSize): BarLayers | null {
 // Component
 // ---------------------------------------------------------------------------
 
-export function WaveformCanvas({
+function WaveformCanvasImpl({
   waveformData,
   currentTimeMs,
   liveTimeRef,
@@ -379,5 +379,9 @@ export function WaveformCanvas({
     </div>
   );
 }
+
+// Memoised: AudioPlayer re-renders on every throttled time update; skip the
+// canvas component when its props are unchanged.
+export const WaveformCanvas = memo(WaveformCanvasImpl);
 
 export default WaveformCanvas;

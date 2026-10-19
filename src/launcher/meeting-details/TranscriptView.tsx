@@ -1,4 +1,5 @@
-import { useRef, useEffect, useMemo, useState, useCallback } from "react";
+import { useRef, useEffect, useLayoutEffect, useMemo, useState, useCallback } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import type { TranscriptSegment, SpeakerIdentity, MeetingBookmark, TranslationResult, TranslationDisplayMode } from "../../lib/types";
 import type { TranscriptSearchState } from "../../hooks/useTranscriptSearch";
 import { useAudioPlayerStore } from "../../stores/audioPlayerStore";
@@ -8,17 +9,21 @@ import {
   getSpeakerLabel,
   getSpeakerColor,
 } from "../../lib/utils";
-import { mergeConsecutiveSegments } from "../../lib/mergeSegments";
-import { FileText, Search, ChevronUp, ChevronDown, X, Bookmark as BookmarkIcon, Globe, RefreshCw, Eye, EyeOff } from "lucide-react";
-import { createPortal } from "react-dom";
+import type { MergedSegment } from "../../lib/mergeSegments";
+import { FileText, Search, ChevronUp, ChevronDown, X, Globe, RefreshCw, Eye, EyeOff } from "lucide-react";
 import { TranscriptContextMenu } from "../../overlay/TranscriptContextMenu";
 import { addMeetingBookmark, deleteMeetingBookmark, updateMeetingBookmark } from "../../lib/ipc";
 import { showToast } from "../../stores/toastStore";
 import { useConfigStore } from "../../stores/configStore";
 import { ColorPickerButton } from "../../components/ColorPickerButton";
+import { TranscriptRow } from "./TranscriptRow";
 
 interface TranscriptViewProps {
   segments: TranscriptSegment[];
+  /** `segments` merged by `mergeConsecutiveSegments` (memoized by the caller) */
+  mergedSegments: MergedSegment[];
+  /** False while the transcript tab is hidden (kept mounted); pauses auto-scroll */
+  isVisible?: boolean;
   search: TranscriptSearchState;
   meetingStartTime?: number;
   /** Recording offset in ms — used for audio-transcript sync */
@@ -32,7 +37,7 @@ interface TranscriptViewProps {
   meetingId?: string;
   /** Callback to update parent state after bookmark mutations */
   onBookmarksChanged?: (bookmarks: MeetingBookmark[]) => void;
-  /** Raw segment index to scroll to on mount (from speaker timeline click) */
+  /** Raw segment index to scroll to (from speaker timeline / bookmark navigation) */
   initialScrollToIndex?: number | null;
   /** Called after the initial scroll is handled */
   onScrollHandled?: () => void;
@@ -69,10 +74,14 @@ const TIMELINE_COLORS: Record<string, string> = {
   Unknown: "hsl(var(--muted-foreground))",
 };
 
-export function TranscriptView({ segments, search, meetingStartTime, recordingOffsetMs = 0, speakers, searchInputRef, bookmarks, meetingId, onBookmarksChanged, initialScrollToIndex, onScrollHandled, translations, translatingSegments, translationDisplayMode, currentTargetLang, showTranslations = true, onTranslateSegment, onRetranslateSegment, showToolbar, translatedCount = 0, totalSegments = 0, mismatchedCount = 0, onDisplayModeChange, onRetranslateAll, onToggleTranslationVisibility, retranslating }: TranscriptViewProps) {
-  const segmentRefs = useRef<(HTMLDivElement | null)[]>([]);
-  // Map-based refs keyed by segment ID — used by useAudioTranscriptSync
-  const segmentRefsMap = useRef<Map<string, HTMLElement>>(new Map());
+// Virtualized list tuning. Rows are measured once mounted; the estimate only
+// sizes rows that have not been rendered yet (a one-line row is ~44 px).
+const ESTIMATED_ROW_HEIGHT = 48;
+const LIST_PADDING_Y = 8; // matches the former `py-2` wrapper
+const OVERSCAN_ROWS = 8;
+
+export function TranscriptView({ segments, mergedSegments, isVisible = true, search, meetingStartTime, recordingOffsetMs = 0, speakers, searchInputRef, bookmarks, meetingId, onBookmarksChanged, initialScrollToIndex, onScrollHandled, translations, translatingSegments, translationDisplayMode, currentTargetLang, showTranslations = true, onTranslateSegment, onRetranslateSegment, showToolbar, translatedCount = 0, totalSegments = 0, mismatchedCount = 0, onDisplayModeChange, onRetranslateAll, onToggleTranslationVisibility, retranslating }: TranscriptViewProps) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const localSearchInputRef = useRef<HTMLInputElement | null>(null);
   const setInputRef = useCallback((el: HTMLInputElement | null) => {
     localSearchInputRef.current = el;
@@ -83,17 +92,10 @@ export function TranscriptView({ segments, search, meetingStartTime, recordingOf
   const [noteEdit, setNoteEdit] = useState<{ bookmarkId: string; note: string } | null>(null);
   const noteInputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Hover translation tooltip state
-  const [hoverTranslation, setHoverTranslation] = useState<{
-    translation: TranslationResult;
-    x: number;
-    y: number;
-  } | null>(null);
-
-  // Audio player store — for active segment highlighting and click-to-seek
+  // Audio player store — for active segment highlighting. Play state and
+  // seeking are read via getState() in the row click handler, so play/pause
+  // does not re-render the transcript.
   const activeSegmentId = useAudioPlayerStore((s) => s.activeSegmentId);
-  const isPlaying = useAudioPlayerStore((s) => s.isPlaying);
-  const seekToTimestamp = useAudioPlayerStore((s) => s.seekToTimestamp);
 
   // Typeset settings — shared with meeting overlay
   const transcriptFontSize = useConfigStore((s) => s.transcriptFontSize);
@@ -105,12 +107,64 @@ export function TranscriptView({ segments, search, meetingStartTime, recordingOf
   const setTranslationFontSize = useConfigStore((s) => s.setTranslationFontSize);
   const setTranslationTextColor = useConfigStore((s) => s.setTranslationTextColor);
 
+  // ── Virtualized rows ──
+  const virtualizer = useVirtualizer({
+    count: mergedSegments.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => ESTIMATED_ROW_HEIGHT,
+    getItemKey: (i) => mergedSegments[i]?.id || i,
+    overscan: OVERSCAN_ROWS,
+    paddingStart: LIST_PADDING_Y,
+    paddingEnd: LIST_PADDING_Y,
+  });
+
+  // Every "scroll to segment" goes through here: rows outside the window are
+  // not mounted, so there is no element to scrollIntoView.
+  const scrollToMergedIndex = useCallback((index: number) => {
+    if (index < 0 || index >= virtualizer.options.count) return;
+    virtualizer.scrollToIndex(index, { align: "center", behavior: "smooth" });
+  }, [virtualizer]);
+
+  // Raw segment id → merged index (every original id of a merged row maps to it)
+  const mergedIndexById = useMemo(() => {
+    const map = new Map<string, number>();
+    mergedSegments.forEach((seg, i) => {
+      for (const id of seg.originalIds) map.set(id, i);
+    });
+    return map;
+  }, [mergedSegments]);
+
+  // The view stays mounted while its tab is hidden, and browsers may reset
+  // scrollTop on `display: none` without a scroll event. Remember the position
+  // while visible and restore it when shown, so the virtualizer stays in sync.
+  const isVisibleRef = useRef(isVisible);
+  isVisibleRef.current = isVisible;
+  const lastScrollTopRef = useRef(0);
+  const handleScroll = useCallback(() => {
+    if (isVisibleRef.current && scrollRef.current) {
+      lastScrollTopRef.current = scrollRef.current.scrollTop;
+    }
+  }, []);
+  useLayoutEffect(() => {
+    if (!isVisible) return;
+    const el = scrollRef.current;
+    if (el && el.scrollTop !== lastScrollTopRef.current) {
+      el.scrollTop = lastScrollTopRef.current;
+    }
+  }, [isVisible]);
+
   // Bidirectional sync: audio position → active transcript segment + auto-scroll
+  const scrollToSegment = useCallback((segmentId: string) => {
+    if (!isVisibleRef.current) return;
+    const idx = mergedIndexById.get(segmentId);
+    if (idx !== undefined) scrollToMergedIndex(idx);
+  }, [mergedIndexById, scrollToMergedIndex]);
+
   useAudioTranscriptSync(
     segments,
     meetingStartTime ?? 0,
     recordingOffsetMs,
-    segmentRefsMap,
+    scrollToSegment,
   );
 
   const toElapsed = (ms: number) =>
@@ -134,12 +188,6 @@ export function TranscriptView({ segments, search, meetingStartTime, recordingOf
     for (const s of speakers) map.set(s.id, s);
     return map;
   }, [speakers]);
-
-  // Merge consecutive same-speaker segments for cleaner display
-  const mergedSegments = useMemo(
-    () => mergeConsecutiveSegments(segments),
-    [segments]
-  );
 
   // Map raw segment indices → merged segment indices (for search compatibility)
   const rawToMergedIndex = useMemo(() => {
@@ -179,20 +227,20 @@ export function TranscriptView({ segments, search, meetingStartTime, recordingOf
     return undefined;
   };
 
-  // Scroll to a specific segment (from speaker timeline click)
+  // Scroll to a specific segment (from speaker timeline / bookmark navigation)
   useEffect(() => {
     if (initialScrollToIndex == null) return;
     const mergedIdx = rawToMergedIndex.get(initialScrollToIndex) ?? initialScrollToIndex;
-    // Defer to next frame to ensure refs are populated after mount
-    requestAnimationFrame(() => {
-      const el = segmentRefs.current[mergedIdx];
-      if (el) {
-        el.scrollIntoView({ behavior: "smooth", block: "center" });
+    // Defer to next frame so a just-shown tab has laid out
+    const frame = requestAnimationFrame(() => {
+      if (mergedIdx >= 0 && mergedIdx < mergedSegments.length) {
+        scrollToMergedIndex(mergedIdx);
         setSelectedIndex(mergedIdx);
       }
       onScrollHandled?.();
     });
-  }, [initialScrollToIndex, rawToMergedIndex, onScrollHandled]);
+    return () => cancelAnimationFrame(frame);
+  }, [initialScrollToIndex, rawToMergedIndex, mergedSegments.length, scrollToMergedIndex, onScrollHandled]);
 
   // Search: scroll to match (remap raw index → merged index)
   useEffect(() => {
@@ -200,11 +248,15 @@ export function TranscriptView({ segments, search, meetingStartTime, recordingOf
     const match = search.matches[search.currentMatchIndex];
     if (!match) return;
     const mergedIdx = rawToMergedIndex.get(match.segmentIndex) ?? match.segmentIndex;
-    segmentRefs.current[mergedIdx]?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [search.currentMatchIndex, search.matches, search.totalMatches, rawToMergedIndex]);
+    scrollToMergedIndex(mergedIdx);
+  }, [search.currentMatchIndex, search.matches, search.totalMatches, rawToMergedIndex, scrollToMergedIndex]);
 
   const activeMatchSegment = search.totalMatches > 0
     ? rawToMergedIndex.get(search.matches[search.currentMatchIndex]?.segmentIndex ?? -1) ?? -1
+    : -1;
+
+  const activeMergedIndex = activeSegmentId !== null
+    ? mergedIndexById.get(activeSegmentId) ?? -1
     : -1;
 
   const segmentMatches = useMemo(() => {
@@ -296,16 +348,29 @@ export function TranscriptView({ segments, search, meetingStartTime, recordingOf
 
   const handleTimelineJump = (index: number) => {
     setSelectedIndex(index);
-    segmentRefs.current[index]?.scrollIntoView({ behavior: "smooth", block: "center" });
+    scrollToMergedIndex(index);
   };
 
-  const handleSegmentClick = (index: number, segment: TranscriptSegment) => {
-    setSelectedIndex(selectedIndex === index ? null : index);
+  // Stable row callbacks: they read the latest values from a ref, so memoised
+  // rows are not re-rendered when bookmarks or segments change elsewhere.
+  const latestRef = useRef({ mergedSegments, mergedIndexById, handleToggleBookmark });
+  latestRef.current = { mergedSegments, mergedIndexById, handleToggleBookmark };
+
+  const handleRowSeek = useCallback((id: string) => {
+    const { mergedSegments: merged, mergedIndexById: indexById } = latestRef.current;
+    const index = indexById.get(id);
+    if (index === undefined) return;
+    setSelectedIndex((prev) => (prev === index ? null : index));
     // Click-to-seek: only seeks when audio is already playing
-    if (isPlaying) {
-      seekToTimestamp(segment.timestamp_ms);
-    }
-  };
+    const { isPlaying, seekToTimestamp } = useAudioPlayerStore.getState();
+    if (isPlaying) seekToTimestamp(merged[index].timestamp_ms);
+  }, []);
+
+  const handleRowToggleBookmark = useCallback((id: string) => {
+    const { mergedSegments: merged, mergedIndexById: indexById, handleToggleBookmark: toggle } = latestRef.current;
+    const index = indexById.get(id);
+    if (index !== undefined) toggle(merged[index]);
+  }, []);
 
   if (segments.length === 0) {
     return (
@@ -315,6 +380,9 @@ export function TranscriptView({ segments, search, meetingStartTime, recordingOf
       </div>
     );
   }
+
+  const translationsEnabled = showTranslations && !!translations;
+  const virtualItems = virtualizer.getVirtualItems();
 
   return (
     <div className="relative flex flex-1 min-h-0 flex-col">
@@ -379,190 +447,72 @@ export function TranscriptView({ segments, search, meetingStartTime, recordingOf
         meetingStartTime={meetingStartTime}
       />
 
-      {/* Transcript rows */}
-      <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-border/20">
-        <div className="px-4 py-2">
-          {mergedSegments.map((segment, i) => {
-            const offsets = segmentMatches.get(i);
-            const isSearchMatch = i === activeMatchSegment;
-            const isSelected = i === selectedIndex;
-            const segBookmark = segment.id ? bookmarkBySegment.get(segment.id) : undefined;
-            const isBookmarked = !!segBookmark;
-            const isActiveSegment = activeSegmentId !== null && segment.originalIds.includes(activeSegmentId);
-
-            return (
-              <div
-                key={segment.id || i}
-                ref={(el) => {
-                  segmentRefs.current[i] = el;
-                  // Populate map for all original IDs in this merged segment
-                  if (el) {
-                    for (const id of segment.originalIds) {
-                      segmentRefsMap.current.set(id, el);
-                    }
-                  } else {
-                    for (const id of segment.originalIds) {
-                      segmentRefsMap.current.delete(id);
-                    }
-                  }
-                }}
-                onClick={() => handleSegmentClick(i, segment)}
-                onContextMenu={meetingId ? (e) => handleContextMenu(e, i) : undefined}
-                onMouseMove={showTranslations && translationDisplayMode === "hover" && segment.id && translations?.get(segment.id) ? (e) => {
-                  setHoverTranslation({
-                    translation: translations.get(segment.id!)!,
-                    x: e.clientX,
-                    y: e.clientY,
-                  });
-                } : undefined}
-                onMouseLeave={hoverTranslation ? () => setHoverTranslation(null) : undefined}
-                className={`group relative flex items-start gap-3 rounded-lg px-3 py-2 cursor-pointer transition-all duration-100 border-l-2 ${
-                  isActiveSegment
-                    ? "border-l-indigo-400 bg-indigo-500/[0.08]"
-                    : segment.speaker === "User" ? "border-l-speaker-user/20" : "border-l-speaker-interviewer/20"
-                } ${
-                  isSelected
-                    ? "bg-primary/10 ring-1 ring-primary/20"
-                    : isSearchMatch
-                      ? "bg-highlight/10 ring-1 ring-highlight/20"
-                      : isActiveSegment
-                        ? ""
-                        : "hover:bg-secondary/20"
-                }`}
-              >
-                {/* Timestamp */}
-                <span className={`shrink-0 pt-0.5 text-xs tabular-nums font-medium ${
-                  isSelected ? "text-primary/70" : "text-muted-foreground/50"
-                }`}>
-                  {formatTimestamp(toElapsed(segment.timestamp_ms))}
-                </span>
-
-                {/* Bookmarked indicator — subtle filled icon near speaker label */}
-                {isBookmarked && (
-                  <BookmarkIcon className="mt-1 h-2.5 w-2.5 shrink-0 fill-primary text-primary opacity-60" />
-                )}
-
-                {/* Speaker */}
-                <span
-                  className={`shrink-0 pt-0.5 text-xs font-bold ${resolveSpeakerColorClass(segment)}`}
-                  style={resolveSpeakerColorHex(segment) ? { color: resolveSpeakerColorHex(segment) } : undefined}
-                >
-                  {resolveSpeakerLabel(segment)}
-                </span>
-
-                {/* Text content + bookmark note */}
-                <div className="flex-1 min-w-0">
-                  <span
-                    className="leading-relaxed"
-                    style={{
-                      fontSize: `${transcriptFontSize}px`,
-                      color: isSelected ? undefined : transcriptTextColor,
-                    }}
-                  >
-                    {offsets
-                      ? highlightText(segment.text, search.query, offsets, isSearchMatch)
-                      : segment.text}
-                  </span>
-
-                  {/* Translation — inline or hover */}
-                  {showTranslations && translations && (() => {
-                    const segTranslation = segment.id ? translations.get(segment.id) : undefined;
-                    const isSegTranslating = segment.id ? translatingSegments?.has(segment.id) : false;
-                    const isMismatched = segTranslation && currentTargetLang && segTranslation.target_lang !== currentTargetLang;
-
-                    if (isSegTranslating) {
-                      return (
-                        <div className="mt-1 leading-[1.5]" style={{ fontSize: `${translationFontSize}px` }}>
-                          <span className="text-muted-foreground/40 animate-pulse">Translating...</span>
-                        </div>
-                      );
-                    }
-
-                    if (segTranslation && translationDisplayMode === "inline") {
-                      return (
-                        <div className="mt-1 flex items-baseline gap-1.5 leading-[1.5]">
-                          <span style={{ fontSize: `${translationFontSize}px`, color: translationTextColor }}>
-                            {segTranslation.translated_text}
-                          </span>
-                          <span className={`shrink-0 rounded px-1 py-px text-[9px] font-bold tracking-wide ${
-                            isMismatched
-                              ? "text-orange-400 bg-orange-500/[0.08] border border-orange-500/15"
-                              : "text-muted-foreground/50 bg-white/[0.03]"
-                          }`}>
-                            {segTranslation.source_lang.toUpperCase()} → {segTranslation.target_lang.toUpperCase()}
-                          </span>
-                          {isMismatched && onRetranslateSegment && segment.id && (
-                            <button
-                              onClick={(e) => { e.stopPropagation(); onRetranslateSegment(segment.id!, segment.text); }}
-                              className="shrink-0 flex items-center gap-0.5 rounded px-1 py-px text-[9px] font-semibold text-orange-400 hover:bg-orange-500/[0.08] transition-colors cursor-pointer"
-                              title={`Retranslate to ${currentTargetLang?.toUpperCase()}`}
-                            >
-                              <RefreshCw className="h-2.5 w-2.5" />
-                              {currentTargetLang?.toUpperCase()}
-                            </button>
-                          )}
-                        </div>
-                      );
-                    }
-
-                    if (!segTranslation && onTranslateSegment && segment.id && currentTargetLang) {
-                      return (
-                        <button
-                          onClick={(e) => { e.stopPropagation(); onTranslateSegment(segment.id!, segment.text); }}
-                          className="mt-1 flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-semibold text-muted-foreground/50 border border-dashed border-border/20 hover:text-primary/70 hover:border-primary/20 hover:bg-primary/[0.03] opacity-0 group-hover:opacity-100 transition-all cursor-pointer"
-                        >
-                          <Globe className="h-2.5 w-2.5" />
-                          Translate to {currentTargetLang.toUpperCase()}
-                        </button>
-                      );
-                    }
-
-                    return null;
-                  })()}
-
-                  {/* Bookmark note — quote-style, proportional to transcript text */}
-                  {isBookmarked && segBookmark?.note && (
-                    <div className="mt-1.5 flex items-start gap-2 rounded-md border-l-2 border-primary/30 bg-primary/5 px-2.5 py-1.5">
-                      <p
-                        className="leading-[1.5] text-primary/70 italic"
-                        style={{ fontSize: `${Math.max(11, transcriptFontSize - 2)}px` }}
-                      >
-                        {segBookmark.note}
-                      </p>
-                    </div>
-                  )}
-                </div>
-
-                {/* Hover bookmark icon — appears at right edge on hover */}
-                {meetingId && (
-                  <div className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleToggleBookmark(segment); }}
-                      className="rounded p-0.5 hover:bg-accent/50 transition-colors cursor-pointer"
-                      title={isBookmarked ? "Remove bookmark" : "Bookmark this line"}
-                    >
-                      <BookmarkIcon className={`h-3 w-3 ${isBookmarked ? "fill-primary text-primary" : "text-muted-foreground/40"}`} />
-                    </button>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-
-          {/* Right-click context menu for bookmarks */}
-          {contextMenu && mergedSegments[contextMenu.segmentIndex] && (
-            <TranscriptContextMenu
-              x={contextMenu.x}
-              y={contextMenu.y}
-              isBookmarked={!!(mergedSegments[contextMenu.segmentIndex].id && bookmarkBySegment.get(mergedSegments[contextMenu.segmentIndex].id!))}
-              onBookmark={() => handleToggleBookmark(mergedSegments[contextMenu.segmentIndex])}
-              onAddNote={() => handleAddNote(mergedSegments[contextMenu.segmentIndex])}
-              onCopy={() => handleCopyText(mergedSegments[contextMenu.segmentIndex].text)}
-              onClose={() => setContextMenu(null)}
-            />
-          )}
+      {/* Transcript rows (virtualized: only the visible window is mounted) */}
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-border/20"
+      >
+        <div className="relative" style={{ height: virtualizer.getTotalSize() }}>
+          <div
+            className="absolute inset-x-4 top-0"
+            style={{ transform: `translateY(${virtualItems[0]?.start ?? 0}px)` }}
+          >
+            {virtualItems.map((item) => {
+              const i = item.index;
+              const segment = mergedSegments[i];
+              const segBookmark = bookmarkBySegment.get(segment.id);
+              const matchOffsets = segmentMatches.get(i);
+              return (
+                <TranscriptRow
+                  key={item.key}
+                  segment={segment}
+                  index={i}
+                  measureRef={virtualizer.measureElement}
+                  isActive={i === activeMergedIndex}
+                  isSelected={i === selectedIndex}
+                  isBookmarked={!!segBookmark}
+                  bookmarkNote={segBookmark?.note}
+                  translation={translationsEnabled ? translations.get(segment.id) : undefined}
+                  isTranslating={translationsEnabled && !!translatingSegments?.has(segment.id)}
+                  translationDisplayMode={translationDisplayMode}
+                  currentTargetLang={currentTargetLang}
+                  matchOffsets={matchOffsets}
+                  searchQuery={matchOffsets ? search.query : ""}
+                  isSearchMatch={i === activeMatchSegment}
+                  timestampLabel={formatTimestamp(toElapsed(segment.timestamp_ms))}
+                  speakerLabel={resolveSpeakerLabel(segment)}
+                  speakerColorClass={resolveSpeakerColorClass(segment)}
+                  speakerColorHex={resolveSpeakerColorHex(segment)}
+                  transcriptFontSize={transcriptFontSize}
+                  transcriptTextColor={transcriptTextColor}
+                  translationFontSize={translationFontSize}
+                  translationTextColor={translationTextColor}
+                  canBookmark={!!meetingId}
+                  onSeek={handleRowSeek}
+                  onToggleBookmark={handleRowToggleBookmark}
+                  onContextMenu={meetingId ? handleContextMenu : undefined}
+                  onTranslate={translationsEnabled ? onTranslateSegment : undefined}
+                  onRetranslate={translationsEnabled ? onRetranslateSegment : undefined}
+                />
+              );
+            })}
+          </div>
         </div>
       </div>
+
+      {/* Right-click context menu for bookmarks */}
+      {contextMenu && mergedSegments[contextMenu.segmentIndex] && (
+        <TranscriptContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          isBookmarked={!!(mergedSegments[contextMenu.segmentIndex].id && bookmarkBySegment.get(mergedSegments[contextMenu.segmentIndex].id!))}
+          onBookmark={() => handleToggleBookmark(mergedSegments[contextMenu.segmentIndex])}
+          onAddNote={() => handleAddNote(mergedSegments[contextMenu.segmentIndex])}
+          onCopy={() => handleCopyText(mergedSegments[contextMenu.segmentIndex].text)}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
 
       {/* Bottom bar — typeset controls (left) + translation toolbar (right) */}
       <div className="flex items-center gap-3 mx-2 px-3 py-1.5 border-t border-border/10 text-[10px]">
@@ -704,53 +654,8 @@ export function TranscriptView({ segments, search, meetingStartTime, recordingOf
           </div>
         </div>
       )}
-
-      {/* Hover translation tooltip */}
-      {hoverTranslation && createPortal(
-        <div
-          className="fixed z-[9999] max-w-[420px] rounded-lg border border-white/15 px-3.5 py-2.5 shadow-2xl pointer-events-none"
-          style={{
-            backgroundColor: '#1a1a2e',
-            left: `${Math.min(hoverTranslation.x + 16, window.innerWidth - 440)}px`,
-            top: `${Math.max(8, hoverTranslation.y - 90)}px`,
-          }}
-        >
-          <p style={{ fontSize: `${translationFontSize + 1}px`, color: translationTextColor }} className="leading-[1.6]">
-            {hoverTranslation.translation.translated_text}
-          </p>
-          <div className="mt-1.5 flex items-center gap-1.5 text-[0.6rem] text-muted-foreground/50">
-            <span className="rounded bg-white/8 px-1.5 py-0.5 font-medium tracking-wider">
-              {hoverTranslation.translation.source_lang.toUpperCase()} → {hoverTranslation.translation.target_lang.toUpperCase()}
-            </span>
-            <span>·</span>
-            <span>{hoverTranslation.translation.provider}</span>
-          </div>
-        </div>,
-        document.body
-      )}
     </div>
   );
-}
-
-// ── Text highlighting ──
-
-function highlightText(text: string, query: string, offsets: number[], isActive: boolean): React.ReactNode {
-  if (!query || offsets.length === 0) return text;
-  const needle = query.toLowerCase();
-  const parts: React.ReactNode[] = [];
-  let lastEnd = 0;
-  const sorted = [...offsets].sort((a, b) => a - b);
-  for (const offset of sorted) {
-    if (offset > lastEnd) parts.push(text.slice(lastEnd, offset));
-    parts.push(
-      <mark key={offset} className={`rounded px-0.5 ${isActive ? "bg-highlight/40 text-highlight" : "bg-highlight/20 text-highlight/70"}`}>
-        {text.slice(offset, offset + needle.length)}
-      </mark>
-    );
-    lastEnd = offset + needle.length;
-  }
-  if (lastEnd < text.length) parts.push(text.slice(lastEnd));
-  return <>{parts}</>;
 }
 
 // ── Timeline Scrubber ──

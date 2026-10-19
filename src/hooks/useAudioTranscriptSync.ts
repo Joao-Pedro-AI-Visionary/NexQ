@@ -15,7 +15,8 @@ export function useAudioTranscriptSync(
   segments: TranscriptSegment[],
   meetingStartMs: number,
   recordingOffsetMs: number,
-  segmentRefs?: React.MutableRefObject<Map<string, HTMLElement>>
+  /** Scrolls the transcript to a raw segment id (e.g. via the virtualizer's scrollToIndex). */
+  scrollToSegment?: (segmentId: string) => void
 ): void {
   // Granular selectors. currentTimeMs is deliberately NOT selected here: this
   // hook runs inside TranscriptView, so subscribing would re-render the whole
@@ -25,6 +26,9 @@ export function useAudioTranscriptSync(
 
   // Refs for manual scroll state — not Zustand state to avoid re-renders
   const autoScrollEnabledRef = useRef(true);
+  // Latest scroll callback, so a new function identity never re-triggers a scroll.
+  const scrollToSegmentRef = useRef(scrollToSegment);
+  scrollToSegmentRef.current = scrollToSegment;
   const manualScrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Adjusted start time of each segment (ascending), for binary search.
@@ -52,15 +56,11 @@ export function useAudioTranscriptSync(
   // --- Auto-scroll when active segment changes ---
   useEffect(() => {
     if (!isPlaying) return;
-    if (!segmentRefs) return;
     if (!activeSegmentId) return;
     if (!autoScrollEnabledRef.current) return;
 
-    const el = segmentRefs.current.get(activeSegmentId);
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-  }, [activeSegmentId, isPlaying, segmentRefs]);
+    scrollToSegmentRef.current?.(activeSegmentId);
+  }, [activeSegmentId, isPlaying]);
 
   // --- Manual scroll detection: pause auto-scroll, re-enable after cooldown ---
   useEffect(() => {

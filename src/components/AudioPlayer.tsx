@@ -3,7 +3,7 @@
 // asset protocol, so large recordings are range-requested, not loaded into JS)
 // and delegates waveform visualization to WaveformCanvas.
 
-import React, { useRef, useEffect, useCallback } from "react";
+import React, { memo, useRef, useEffect, useCallback } from "react";
 import { copyFile } from "@tauri-apps/plugin-fs";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -117,7 +117,7 @@ const NO_TOPIC_SECTIONS: TopicSection[] = [];
 // AudioPlayer component
 // ---------------------------------------------------------------------------
 
-export function AudioPlayer({
+function AudioPlayerImpl({
   meetingStartMs,
   recordingPath,
   recordingSize,
@@ -417,6 +417,10 @@ export function AudioPlayer({
 // ---------------------------------------------------------------------------
 // AudioPlayerSkeleton — shown while post-meeting Opus conversion is in progress
 // ---------------------------------------------------------------------------
+
+// Memoised: the meeting-details container re-renders on unrelated state
+// (translations, tabs); the player only depends on its own props + store.
+export const AudioPlayer = memo(AudioPlayerImpl);
 
 export function AudioPlayerSkeleton() {
   return (
