@@ -319,15 +319,20 @@ pub async fn test_rag_answer(
     let llm_arc = state.llm.as_ref()
         .ok_or_else(|| "LLM router not initialized".to_string())?;
 
-    // If frontend passed provider/model, sync the router to match the user's LLM settings
+    // If the frontend passed a provider that differs from the active one, use a
+    // temporary provider for this call. The router's active provider and model
+    // are never changed by a test.
+    let mut temp_provider: Option<(
+        Arc<tokio::sync::Mutex<Box<dyn crate::llm::provider::LLMProvider>>>,
+        String,
+    )> = None;
     if let Some(ref provider_str) = llm_provider {
-        let mut router = llm_arc.lock().map_err(|e| e.to_string())?;
-
-        let current_type = router.active_provider_type()
-            .map(|pt| pt.as_str().to_string());
         let requested = provider_str.to_lowercase();
+        let current_type = {
+            let router = llm_arc.lock().map_err(|e| e.to_string())?;
+            router.active_provider_type().map(|pt| pt.as_str().to_string())
+        };
 
-        // Re-configure provider if it changed (using as_str() for reliable comparison)
         if current_type.as_deref() != Some(requested.as_str()) {
             // Load the API key from the credential store so cloud providers work correctly
             let api_key = state.credentials.as_ref()
@@ -343,30 +348,37 @@ pub async fn test_rag_answer(
                 auth_header: None,
             };
 
-            match router.set_provider(provider_config) {
-                Ok(_) => log::info!("Test KB: switched LLM provider to {}", requested),
-                Err(e) => log::warn!("Test KB: couldn't switch to {}: {} — using current provider", requested, e),
+            match crate::llm::create_provider(&provider_config) {
+                Ok(p) => {
+                    let display = crate::llm::ProviderType::from_str(&requested)
+                        .map(|pt| pt.display_name().to_string())
+                        .unwrap_or_else(|_| requested.clone());
+                    log::info!("Test KB: using temporary {} provider", requested);
+                    temp_provider = Some((Arc::new(tokio::sync::Mutex::new(p)), display));
+                }
+                Err(e) => log::warn!("Test KB: couldn't use {}: {} — using active provider", requested, e),
             }
-        }
-
-        if let Some(ref model) = llm_model {
-            router.set_active_model(model.clone());
         }
     }
 
     let (provider_arc, model_name, provider_name) = {
         let router = llm_arc.lock().map_err(|e| e.to_string())?;
-        let provider = router.get_provider()
-            .map_err(|e| format!("No active LLM provider: {}", e))?;
         let model_name = llm_model.clone()
             .unwrap_or_else(|| router.active_model().to_string());
         if model_name.is_empty() {
             return Err("No active model selected — configure one in LLM settings".to_string());
         }
-        let ptype = router.active_provider_type()
-            .map(|pt| pt.display_name().to_string())
-            .unwrap_or_else(|| "Unknown".to_string());
-        (provider, model_name, ptype)
+        match temp_provider {
+            Some((provider, display)) => (provider, model_name, display),
+            None => {
+                let provider = router.get_provider()
+                    .map_err(|e| format!("No active LLM provider: {}", e))?;
+                let ptype = router.active_provider_type()
+                    .map(|pt| pt.display_name().to_string())
+                    .unwrap_or_else(|| "Unknown".to_string());
+                (provider, model_name, ptype)
+            }
+        }
     };
 
     // 4. Call LLM with streaming (reuses existing llm_stream_* events)

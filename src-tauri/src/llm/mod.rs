@@ -118,6 +118,80 @@ pub struct ProviderInfo {
     pub is_local: bool,
 }
 
+/// Build a provider client from a config without touching any router state.
+/// Used for the active provider (`LLMRouter::set_provider`) and for temporary
+/// providers (browsing models, connection tests, fallback).
+pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn LLMProvider>, String> {
+    let provider_type = ProviderType::from_str(&config.provider_type).map_err(|e| match e {
+        LLMError::NotConfigured(msg) => msg,
+        other => other.to_string(),
+    })?;
+
+    let provider: Box<dyn LLMProvider> = match provider_type {
+        ProviderType::Ollama => Box::new(ollama::OllamaClient::new(config.base_url.as_deref())),
+        ProviderType::LmStudio => Box::new(openai_compat::create_lm_studio_client(
+            config.base_url.as_deref(),
+        )),
+        ProviderType::Openai => {
+            let api_key = config
+                .api_key
+                .as_deref()
+                .ok_or_else(|| "OpenAI API key required".to_string())?;
+            Box::new(openai_compat::create_openai_client(api_key))
+        }
+        ProviderType::Anthropic => {
+            let api_key = config
+                .api_key
+                .as_deref()
+                .ok_or_else(|| "Anthropic API key required".to_string())?;
+            Box::new(anthropic::AnthropicClient::new(
+                api_key,
+                config.base_url.as_deref(),
+            ))
+        }
+        ProviderType::Groq => {
+            let api_key = config
+                .api_key
+                .as_deref()
+                .ok_or_else(|| "Groq API key required".to_string())?;
+            Box::new(openai_compat::create_groq_client(api_key))
+        }
+        ProviderType::Gemini => {
+            let api_key = config
+                .api_key
+                .as_deref()
+                .ok_or_else(|| "Gemini API key required".to_string())?;
+            Box::new(gemini::GeminiClient::new(api_key, config.base_url.as_deref()))
+        }
+        ProviderType::Openrouter => {
+            let api_key = config
+                .api_key
+                .as_deref()
+                .ok_or_else(|| "OpenRouter API key required".to_string())?;
+            Box::new(openai_compat::create_openrouter_client(api_key))
+        }
+        ProviderType::Custom => {
+            let base_url = config
+                .base_url
+                .clone()
+                .ok_or_else(|| "Custom endpoint base URL required".to_string())?;
+            let auth_type = match config.auth_type.as_deref() {
+                Some("bearer") => custom::CustomAuthType::Bearer,
+                Some("api_key") | Some("api-key") => custom::CustomAuthType::ApiKey,
+                _ => custom::CustomAuthType::None,
+            };
+            Box::new(custom::CustomClient::new(custom::CustomConfig {
+                base_url,
+                auth_type,
+                auth_value: config.auth_value.clone(),
+                auth_header: config.auth_header.clone(),
+            }))
+        }
+    };
+
+    Ok(provider)
+}
+
 /// Routes to active LLM provider, supports hot-switching and cancellation.
 pub struct LLMRouter {
     active_provider: Option<Arc<TokioMutex<Box<dyn LLMProvider>>>>,
@@ -142,69 +216,7 @@ impl LLMRouter {
         config: ProviderConfig,
     ) -> Result<(), LLMError> {
         let provider_type = ProviderType::from_str(&config.provider_type)?;
-
-        let provider: Box<dyn LLMProvider> = match &provider_type {
-            ProviderType::Ollama => {
-                Box::new(ollama::OllamaClient::new(config.base_url.as_deref()))
-            }
-            ProviderType::LmStudio => {
-                Box::new(openai_compat::create_lm_studio_client(
-                    config.base_url.as_deref(),
-                ))
-            }
-            ProviderType::Openai => {
-                let api_key = config.api_key.as_deref().ok_or_else(|| {
-                    LLMError::NotConfigured("OpenAI API key required".to_string())
-                })?;
-                Box::new(openai_compat::create_openai_client(api_key))
-            }
-            ProviderType::Anthropic => {
-                let api_key = config.api_key.as_deref().ok_or_else(|| {
-                    LLMError::NotConfigured("Anthropic API key required".to_string())
-                })?;
-                Box::new(anthropic::AnthropicClient::new(
-                    api_key,
-                    config.base_url.as_deref(),
-                ))
-            }
-            ProviderType::Groq => {
-                let api_key = config.api_key.as_deref().ok_or_else(|| {
-                    LLMError::NotConfigured("Groq API key required".to_string())
-                })?;
-                Box::new(openai_compat::create_groq_client(api_key))
-            }
-            ProviderType::Gemini => {
-                let api_key = config.api_key.as_deref().ok_or_else(|| {
-                    LLMError::NotConfigured("Gemini API key required".to_string())
-                })?;
-                Box::new(gemini::GeminiClient::new(
-                    api_key,
-                    config.base_url.as_deref(),
-                ))
-            }
-            ProviderType::Openrouter => {
-                let api_key = config.api_key.as_deref().ok_or_else(|| {
-                    LLMError::NotConfigured("OpenRouter API key required".to_string())
-                })?;
-                Box::new(openai_compat::create_openrouter_client(api_key))
-            }
-            ProviderType::Custom => {
-                let base_url = config.base_url.ok_or_else(|| {
-                    LLMError::NotConfigured("Custom endpoint base URL required".to_string())
-                })?;
-                let auth_type = match config.auth_type.as_deref() {
-                    Some("bearer") => custom::CustomAuthType::Bearer,
-                    Some("api_key") | Some("api-key") => custom::CustomAuthType::ApiKey,
-                    _ => custom::CustomAuthType::None,
-                };
-                Box::new(custom::CustomClient::new(custom::CustomConfig {
-                    base_url,
-                    auth_type,
-                    auth_value: config.auth_value,
-                    auth_header: config.auth_header,
-                }))
-            }
-        };
+        let provider = create_provider(&config).map_err(LLMError::NotConfigured)?;
 
         self.active_provider = Some(Arc::new(TokioMutex::new(provider)));
         self.active_provider_type = Some(provider_type);
@@ -272,5 +284,41 @@ impl LLMRouter {
                 is_local: pt.is_local(),
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(provider_type: &str, api_key: Option<&str>, base_url: Option<&str>) -> ProviderConfig {
+        ProviderConfig {
+            provider_type: provider_type.to_string(),
+            api_key: api_key.map(String::from),
+            base_url: base_url.map(String::from),
+            auth_type: None,
+            auth_value: None,
+            auth_header: None,
+        }
+    }
+
+    #[test]
+    fn create_provider_does_not_touch_router() {
+        let mut router = LLMRouter::new();
+        router.set_provider(cfg("ollama", None, None)).unwrap();
+
+        let temp = create_provider(&cfg("openai", Some("sk-test"), None));
+        assert!(temp.is_ok());
+        assert_eq!(router.active_provider_type(), Some(&ProviderType::Ollama));
+
+        let err = create_provider(&cfg("custom", None, None)).err();
+        assert!(err.is_some(), "custom without base_url must fail");
+        assert_eq!(router.active_provider_type(), Some(&ProviderType::Ollama));
+    }
+
+    #[test]
+    fn create_provider_rejects_missing_key_and_unknown_type() {
+        assert!(create_provider(&cfg("openai", None, None)).is_err());
+        assert!(create_provider(&cfg("nope", None, None)).is_err());
     }
 }

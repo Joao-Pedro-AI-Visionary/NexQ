@@ -1,8 +1,32 @@
+use std::sync::Arc;
 use tauri::{command, State};
+use tokio::sync::Mutex as TokioMutex;
 
-use crate::llm::{LLMRouter, ProviderConfig};
+use crate::llm::provider::LLMProvider;
+use crate::llm::{create_provider, LLMRouter, ProviderConfig};
 use crate::llm::openrouter_models;
 use crate::state::AppState;
+
+/// Resolve the provider for a read-only operation (model listing, connection test).
+///
+/// A JSON `ProviderConfig` builds a temporary provider and never touches the
+/// router; a bare type name (or anything else) uses the currently active provider.
+fn resolve_provider(
+    llm: &std::sync::Mutex<LLMRouter>,
+    provider: &str,
+) -> Result<Arc<TokioMutex<Box<dyn LLMProvider>>>, String> {
+    if let Ok(config) = serde_json::from_str::<ProviderConfig>(provider) {
+        let temp = create_provider(&config).map_err(|e| format!("Failed to set provider: {}", e))?;
+        return Ok(Arc::new(TokioMutex::new(temp)));
+    }
+
+    let router = llm
+        .lock()
+        .map_err(|e| format!("Failed to lock LLM router: {}", e))?;
+    router
+        .get_provider()
+        .map_err(|e| format!("No active provider: {}", e))
+}
 
 #[command]
 pub async fn set_llm_provider(
@@ -52,25 +76,8 @@ pub async fn list_models(
         .as_ref()
         .ok_or_else(|| "LLM router not initialized".to_string())?;
 
-    // If the provider string is a JSON config, set it up first
-    let config: Option<ProviderConfig> = serde_json::from_str(&provider).ok();
-
-    let provider_arc = {
-        let mut router = llm
-            .lock()
-            .map_err(|e| format!("Failed to lock LLM router: {}", e))?;
-
-        // If a config was provided, set up the provider
-        if let Some(config) = config {
-            router
-                .set_provider(config)
-                .map_err(|e| format!("Failed to set provider: {}", e))?;
-        }
-
-        router
-            .get_provider()
-            .map_err(|e| format!("No active provider: {}", e))?
-    };
+    // A JSON config uses a temporary provider; the active provider is never switched.
+    let provider_arc = resolve_provider(llm, &provider)?;
 
     let provider_guard = provider_arc.lock().await;
     let models = provider_guard
@@ -111,24 +118,8 @@ pub async fn test_llm_connection(
         .as_ref()
         .ok_or_else(|| "LLM router not initialized".to_string())?;
 
-    // If the provider string is a JSON config, set it up first
-    let config: Option<ProviderConfig> = serde_json::from_str(&provider).ok();
-
-    let provider_arc = {
-        let mut router = llm
-            .lock()
-            .map_err(|e| format!("Failed to lock LLM router: {}", e))?;
-
-        if let Some(config) = config {
-            router
-                .set_provider(config)
-                .map_err(|e| format!("Failed to set provider: {}", e))?;
-        }
-
-        router
-            .get_provider()
-            .map_err(|e| format!("No active provider: {}", e))?
-    };
+    // A JSON config uses a temporary provider; the active provider is never switched.
+    let provider_arc = resolve_provider(llm, &provider)?;
 
     let provider_guard = provider_arc.lock().await;
     provider_guard
