@@ -1,109 +1,68 @@
-import { Download, CheckCircle, RotateCcw } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ArrowUpCircle, X } from "lucide-react";
+import { open } from "@tauri-apps/plugin-shell";
+import { useUpdaterStore } from "../stores/updaterStore";
+import { releaseNotesUrl } from "../hooks/useUpdater";
 
-// == Download progress toast ================================================
+const AUTO_DISMISS_MS = 12_000;
 
-interface DownloadToastProps {
-  version: string;
-  downloadedBytes: number;
-  totalBytes: number | null;
-}
+/**
+ * One-time notice when an update has finished downloading. The footer pill
+ * stays as the persistent way to restart; this only announces it once per
+ * version, with a link to the release notes.
+ */
+export function UpdateReadyToast() {
+  const phase = useUpdaterStore((s) => s.phase);
+  const version = useUpdaterStore((s) => s.version);
+  const autoUpdate = useUpdaterStore((s) => s.autoUpdate);
+  const announced = useRef(new Set<string>());
+  const [visibleVersion, setVisibleVersion] = useState<string | null>(null);
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
+  useEffect(() => {
+    if (phase !== "ready" || !version || announced.current.has(version)) return;
+    announced.current.add(version);
+    setVisibleVersion(version);
+  }, [phase, version]);
 
-export function UpdateDownloadToast({
-  version,
-  downloadedBytes,
-  totalBytes,
-}: DownloadToastProps) {
-  const pct =
-    totalBytes && totalBytes > 0
-      ? Math.min(100, Math.round((downloadedBytes / totalBytes) * 100))
-      : null;
+  useEffect(() => {
+    if (!visibleVersion) return;
+    const timer = setTimeout(() => setVisibleVersion(null), AUTO_DISMISS_MS);
+    return () => clearTimeout(timer);
+  }, [visibleVersion]);
 
-  const sizeLabel = totalBytes
-    ? `${formatBytes(downloadedBytes)} / ${formatBytes(totalBytes)}`
-    : formatBytes(downloadedBytes);
+  // Hide if the update was skipped or installed meanwhile.
+  if (!visibleVersion || phase !== "ready" || version !== visibleVersion) return null;
 
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      className="min-w-[300px] rounded-xl border border-border/20 bg-card/90 px-4 py-3 shadow-lg backdrop-blur-md"
-    >
-      <div className="flex items-start gap-3">
-        {/* Icon */}
-        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-amber-500/15 text-amber-400">
-          <Download className="h-4 w-4" />
-        </div>
-
-        {/* Content */}
-        <div className="flex-1 min-w-0">
+    <div className="fixed bottom-14 right-4 z-50">
+      <div
+        role="status"
+        aria-live="polite"
+        className="flex w-[300px] items-start gap-3 rounded-xl border border-border/20 bg-card/90 px-4 py-3 shadow-lg backdrop-blur-md"
+      >
+        <ArrowUpCircle className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+        <div className="min-w-0 flex-1">
           <p className="text-sm font-medium text-foreground/90">
-            Downloading v{version}
-          </p>
-          <div className="mt-0.5 flex items-baseline gap-2">
-            <span className="text-xs text-muted-foreground">{sizeLabel}</span>
-            {pct !== null && (
-              <span className="text-xs font-medium text-amber-400">
-                {pct}%
-              </span>
-            )}
-          </div>
-
-          {/* Progress bar */}
-          <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-muted/40">
-            <div
-              className="h-full rounded-full bg-amber-400/70 transition-all duration-300 ease-out"
-              style={{ width: pct !== null ? `${pct}%` : "30%" }}
-            />
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// == Update ready toast =====================================================
-
-interface ReadyToastProps {
-  version: string;
-  onRestart: () => void;
-}
-
-export function UpdateReadyToast({ version, onRestart }: ReadyToastProps) {
-  return (
-    <div
-      role="status"
-      aria-live="polite"
-      className="min-w-[300px] rounded-xl border border-border/20 bg-card/90 px-4 py-3 shadow-lg backdrop-blur-md"
-    >
-      <div className="flex items-start gap-3">
-        {/* Icon */}
-        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-400">
-          <CheckCircle className="h-4 w-4" />
-        </div>
-
-        {/* Content */}
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium text-foreground/90">
-            Update ready
+            NexQ v{visibleVersion} is ready
           </p>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            v{version} will apply on restart
+            {autoUpdate
+              ? "Restart from the footer, or it installs when you quit."
+              : "Restart from the footer to install."}
           </p>
+          <button
+            onClick={() => open(releaseNotesUrl(visibleVersion)).catch(() => {})}
+            className="mt-1.5 text-xs font-medium text-primary hover:underline"
+          >
+            What's new
+          </button>
         </div>
-
-        {/* Restart button */}
         <button
-          onClick={onRestart}
-          className="shrink-0 flex items-center gap-1.5 rounded-lg bg-emerald-500/15 px-3 py-1.5 text-xs font-medium text-emerald-400 transition-colors hover:bg-emerald-500/25"
+          onClick={() => setVisibleVersion(null)}
+          aria-label="Dismiss"
+          className="shrink-0 rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-foreground"
         >
-          <RotateCcw className="h-3 w-3" />
-          Restart
+          <X className="h-3.5 w-3.5" />
         </button>
       </div>
     </div>

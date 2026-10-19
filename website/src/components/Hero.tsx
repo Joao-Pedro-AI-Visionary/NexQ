@@ -93,7 +93,7 @@ export default function Hero() {
               transition={{ ...springEntrance, delay: reducedMotion ? 0 : 0.4 }}
             >
               <a
-                href="https://github.com/VahidAlizadeh/NexQ/releases/latest"
+                href="https://github.com/naxhq/NexQ/releases/latest"
                 className="btn-primary"
               >
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -102,7 +102,7 @@ export default function Hero() {
                 Download for Windows
               </a>
               <a
-                href="https://github.com/VahidAlizadeh/NexQ"
+                href="https://github.com/naxhq/NexQ"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="btn-secondary"

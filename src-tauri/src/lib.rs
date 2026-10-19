@@ -637,9 +637,19 @@ pub fn run() {
             translation_model_commands::activate_opus_mt_model,
             // == COMMANDS: updater ==
             updater_commands::check_for_update,
-            updater_commands::download_and_install_update,
-            updater_commands::restart_for_update,
+            updater_commands::download_update,
+            updater_commands::install_update_now,
+            updater_commands::get_pending_update,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running NexQ");
+        .build(tauri::generate_context!())
+        .expect("error while building NexQ")
+        .run(|app, event| {
+            // Tray Quit (`app.exit(0)`) and any other exit request: install a
+            // downloaded update first (exits inside the call on success).
+            if let tauri::RunEvent::ExitRequested { code, .. } = &event {
+                if *code != Some(tauri::RESTART_EXIT_CODE) {
+                    updater_commands::install_on_quit(app);
+                }
+            }
+        });
 }

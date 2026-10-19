@@ -19,7 +19,7 @@ import type {
   TranscriptUpdateEvent,
   TranslationResult,
   UpdateDownloadProgress,
-  UpdateReadyEvent,
+  UpdateInfo,
 } from "./types";
 
 // == TRANSCRIPT EVENTS ==
@@ -257,10 +257,10 @@ export function onUpdateDownloadProgress(
   );
 }
 
-export function onUpdateReady(
-  handler: (event: UpdateReadyEvent) => void
+export function onUpdateDownloaded(
+  handler: (info: UpdateInfo) => void
 ): Promise<UnlistenFn> {
-  return listen<UpdateReadyEvent>("update_ready", (e) => handler(e.payload));
+  return listen<UpdateInfo>("update_downloaded", (e) => handler(e.payload));
 }
 
 // Tray events are handled via raw listen() calls in App.tsx

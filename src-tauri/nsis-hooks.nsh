@@ -1,7 +1,14 @@
 ; NexQ NSIS installer hooks
-; Installs Visual C++ 2015-2022 Redistributable if not present
+; Installs Visual C++ 2015-2022 Redistributable if not present (first install only)
 
 !macro NSIS_HOOK_PREINSTALL
+  ; Updates (NexQ already installed) skip this: the app ships app-local runtime
+  ; DLLs since v2.21.1, and a passive update must never block on a MessageBox.
+  ${If} ${FileExists} "$INSTDIR\nexq.exe"
+    DetailPrint "Visual C++ Runtime: skipped (update)"
+    Goto vcredist_done
+  ${EndIf}
+
   ; Check if Visual C++ 2015-2022 Redistributable (x64) is already installed
   ReadRegDWord $0 HKLM "SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64" "Installed"
 

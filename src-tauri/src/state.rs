@@ -1,8 +1,9 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::sync::{Arc, Mutex};
 
 use crate::audio::AudioCaptureManager;
+use crate::commands::updater_commands::PendingUpdate;
 use crate::context::ContextManager;
 use crate::tray::TrayManager;
 use crate::credentials::CredentialManager;
@@ -103,6 +104,15 @@ pub struct AppState {
     /// Active Gemini context cache for the current meeting session.
     /// Set when the user creates a cache; cleared on delete or meeting end.
     pub gemini_cache: Arc<Mutex<Option<CachedContent>>>,
+    /// Downloaded update waiting to be installed (on Restart or on quit).
+    pub pending_update: Arc<Mutex<Option<PendingUpdate>>>,
+    /// True while `download_update` is running; prevents parallel downloads.
+    pub update_downloading: Arc<AtomicBool>,
+    /// True between `start_meeting` and `end_meeting`. Updates never install
+    /// on quit while a meeting is active.
+    pub meeting_active: Arc<AtomicBool>,
+    /// Post-meeting recording pipelines still running (WAV → Opus + DB update).
+    pub recording_jobs: Arc<AtomicUsize>,
 }
 
 impl AppState {
@@ -132,6 +142,10 @@ impl AppState {
             openrouter_cache: Arc::new(Mutex::new(None)),
             tray_manager: Arc::new(Mutex::new(None)),
             gemini_cache: Arc::new(Mutex::new(None)),
+            pending_update: Arc::new(Mutex::new(None)),
+            update_downloading: Arc::new(AtomicBool::new(false)),
+            meeting_active: Arc::new(AtomicBool::new(false)),
+            recording_jobs: Arc::new(AtomicUsize::new(0)),
         }
     }
 }

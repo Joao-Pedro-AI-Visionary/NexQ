@@ -1,3 +1,5 @@
+use std::sync::atomic::Ordering;
+
 use tauri::{command, AppHandle, State};
 
 use crate::db::meetings::{
@@ -65,6 +67,7 @@ pub async fn start_meeting(
 
     let meeting = meetings::create_meeting(db.connection(), &title)
         .map_err(|e| format!("Failed to create meeting: {}", e))?;
+    state.meeting_active.store(true, Ordering::SeqCst);
 
     // Clear per-meeting state so the new meeting starts fresh.
     // The intelligence buffer and last detected question persist across
@@ -93,6 +96,8 @@ pub async fn end_meeting(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
+    state.meeting_active.store(false, Ordering::SeqCst);
+
     let db_arc = state
         .database
         .as_ref()
@@ -168,14 +173,21 @@ pub async fn end_meeting(
             recording_offset_ms
         );
 
-        // Spawn the pipeline — don't await, return the IPC response immediately
-        tokio::spawn(crate::audio::process_recording(
-            recording.wav_path,
-            meeting_id,
-            recording_offset_ms,
-            db_arc,
-            app,
-        ));
+        // Spawn the pipeline — don't await, return the IPC response immediately.
+        // Counted so an update restart can wait for it (install_update_now).
+        let jobs = state.recording_jobs.clone();
+        jobs.fetch_add(1, Ordering::SeqCst);
+        tokio::spawn(async move {
+            crate::audio::process_recording(
+                recording.wav_path,
+                meeting_id,
+                recording_offset_ms,
+                db_arc,
+                app,
+            )
+            .await;
+            jobs.fetch_sub(1, Ordering::SeqCst);
+        });
     } else {
         log::info!(
             "Meeting {} ended with no pending recording (recording not enabled or already consumed)",

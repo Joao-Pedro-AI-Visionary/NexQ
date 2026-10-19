@@ -1,95 +1,105 @@
 import { create } from "zustand";
 import type { UpdateInfo } from "../lib/types";
 
-export type UpdateCheckStatus =
-  | "idle"
-  | "checking"
-  | "up-to-date"
-  | "available"
-  | "error";
+/**
+ * Updater lifecycle. An update that was found but not downloaded yet (automatic
+ * updates off) is `phase: "idle"` with `version` set.
+ */
+export type UpdatePhase = "idle" | "checking" | "downloading" | "ready" | "error";
 
-export type UpdateDownloadStatus =
-  | "idle"
-  | "downloading"
-  | "ready"
-  | "error";
+export interface UpdateProgress {
+  received: number;
+  total: number | null;
+}
 
 interface UpdaterState {
-  // Check state
-  checkStatus: UpdateCheckStatus;
-  lastChecked: number | null;
-  availableUpdate: UpdateInfo | null;
-  checkError: string | null;
+  phase: UpdatePhase;
+  /** Version of the available / downloading / ready update. */
+  version?: string;
+  /** Release notes of that update. */
+  notes?: string;
+  progress: UpdateProgress;
+  error?: string;
+  lastChecked?: number;
 
-  // Download state
-  downloadStatus: UpdateDownloadStatus;
-  downloadedBytes: number;
-  totalBytes: number | null;
+  // Persisted preferences (hydrated by useUpdater)
+  autoUpdate: boolean;
+  skippedVersion?: string;
 
-  // User preferences
-  skippedVersion: string | null;
-
-  // Actions
-  setCheckStatus: (status: UpdateCheckStatus) => void;
-  setAvailableUpdate: (update: UpdateInfo | null) => void;
-  setCheckError: (error: string | null) => void;
-  setDownloadStatus: (status: UpdateDownloadStatus) => void;
-  setDownloadProgress: (downloaded: number, total: number | null) => void;
-  setSkippedVersion: (version: string | null) => void;
+  startCheck: () => void;
+  /**
+   * Record a finished check. Returns the update to act on, or null when there
+   * is none or it was skipped (automatic checks only — a manual check always
+   * surfaces the update).
+   */
+  finishCheck: (update: UpdateInfo | null, opts?: { manual?: boolean }) => UpdateInfo | null;
+  failCheck: (error: string) => void;
+  startDownload: () => void;
+  addProgress: (chunkLength: number, contentLength: number | null) => void;
+  setReady: (version: string, notes?: string | null) => void;
+  failDownload: (error: string) => void;
+  setAutoUpdate: (enabled: boolean) => void;
+  setSkippedVersion: (version: string | undefined) => void;
   reset: () => void;
 }
 
 const initialState = {
-  checkStatus: "idle" as UpdateCheckStatus,
-  lastChecked: null as number | null,
-  availableUpdate: null as UpdateInfo | null,
-  checkError: null as string | null,
-  downloadStatus: "idle" as UpdateDownloadStatus,
-  downloadedBytes: 0,
-  totalBytes: null as number | null,
+  phase: "idle" as UpdatePhase,
+  version: undefined as string | undefined,
+  notes: undefined as string | undefined,
+  progress: { received: 0, total: null } as UpdateProgress,
+  error: undefined as string | undefined,
+  lastChecked: undefined as number | undefined,
 };
 
-export const useUpdaterStore = create<UpdaterState>((set) => ({
+export const useUpdaterStore = create<UpdaterState>((set, get) => ({
   ...initialState,
-  skippedVersion: null,
+  autoUpdate: true,
+  skippedVersion: undefined,
 
-  setCheckStatus: (status) =>
-    set(() => ({
-      checkStatus: status,
-      lastChecked:
-        status === "up-to-date" || status === "available"
-          ? Date.now()
-          : undefined,
-    })),
+  startCheck: () => set({ phase: "checking", error: undefined }),
 
-  setAvailableUpdate: (update) =>
-    set(() => ({
-      availableUpdate: update,
-      checkStatus: update ? "available" : "up-to-date",
+  finishCheck: (update, opts) => {
+    const skipped =
+      !!update && !opts?.manual && get().skippedVersion === update.version;
+    const actionable = update && !skipped ? update : null;
+    set({
+      phase: "idle",
+      error: undefined,
       lastChecked: Date.now(),
+      version: actionable?.version,
+      notes: actionable?.body ?? undefined,
+    });
+    return actionable;
+  },
+
+  failCheck: (error) => set({ phase: "error", error, version: undefined, notes: undefined }),
+
+  startDownload: () =>
+    set({ phase: "downloading", error: undefined, progress: { received: 0, total: null } }),
+
+  addProgress: (chunkLength, contentLength) =>
+    set((s) => ({
+      phase: "downloading",
+      progress: {
+        received: s.progress.received + chunkLength,
+        total: contentLength ?? s.progress.total,
+      },
     })),
 
-  setCheckError: (error) =>
-    set(() => ({
-      checkError: error,
-      checkStatus: "error",
+  setReady: (version, notes) =>
+    set((s) => ({
+      phase: "ready",
+      version,
+      notes: notes ?? (s.version === version ? s.notes : undefined),
+      error: undefined,
     })),
 
-  setDownloadStatus: (status) =>
-    set(() => ({
-      downloadStatus: status,
-    })),
+  failDownload: (error) => set({ phase: "error", error }),
 
-  setDownloadProgress: (downloaded, total) =>
-    set(() => ({
-      downloadedBytes: downloaded,
-      totalBytes: total,
-    })),
+  setAutoUpdate: (enabled) => set({ autoUpdate: enabled }),
 
-  setSkippedVersion: (version) =>
-    set(() => ({
-      skippedVersion: version,
-    })),
+  setSkippedVersion: (version) => set({ skippedVersion: version }),
 
-  reset: () => set(() => ({ ...initialState })),
+  reset: () => set({ ...initialState }),
 }));

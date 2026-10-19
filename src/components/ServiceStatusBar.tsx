@@ -5,7 +5,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
   Brain, Mic, MicOff, Volume2, VolumeX, Zap, Cpu,
-  ChevronUp, CheckCircle, Globe, Monitor, HardDrive, Cloud,
+  ChevronUp, CheckCircle, Globe, Monitor, HardDrive, Cloud, ArrowUpCircle,
 } from "lucide-react";
 import { useConfigStore } from "../stores/configStore";
 import { useStreamStore } from "../stores/streamStore";
@@ -15,6 +15,8 @@ import { useAudioLevel } from "../hooks/useAudioLevel";
 import { hasApiKey, listLocalSTTEngines, setLLMProvider, setActiveModel, getApiKey } from "../lib/ipc";
 import type { STTProviderType, LLMProviderType, LocalSTTEngineInfo } from "../lib/types";
 import { showToast } from "../stores/toastStore";
+import { useUpdaterStore } from "../stores/updaterStore";
+import { restartToUpdate } from "../hooks/useUpdater";
 
 // ── Human-friendly provider labels ──
 const LLM_LABELS: Record<string, string> = {
@@ -371,7 +373,47 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
           </div>
         </>
       )}
+
+      {/* Update ready — launcher footer only (the updater runs in the launcher) */}
+      {!compact && <UpdatePill />}
     </div>
+  );
+}
+
+// ── Update Pill ────────────────────────────────────────────────────
+
+function UpdatePill() {
+  const phase = useUpdaterStore((s) => s.phase);
+  const version = useUpdaterStore((s) => s.version);
+  const [installing, setInstalling] = useState(false);
+
+  if (phase !== "ready" || !version) return null;
+
+  const handleClick = async () => {
+    setInstalling(true);
+    try {
+      await restartToUpdate();
+    } finally {
+      // Only reached if the user cancelled or the install failed.
+      setInstalling(false);
+    }
+  };
+
+  return (
+    <>
+      <Divider />
+      <button
+        onClick={handleClick}
+        disabled={installing}
+        title={`Restart NexQ to install v${version}`}
+        className="flex items-center gap-1.5 rounded-full border border-primary/25 bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-primary/15 disabled:opacity-60"
+      >
+        <ArrowUpCircle className="h-3 w-3" />
+        <span>Update ready · v{version}</span>
+        <span className="text-primary/50">—</span>
+        <span className="font-semibold">{installing ? "Restarting…" : "Restart"}</span>
+      </button>
+    </>
   );
 }
 

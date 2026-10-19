@@ -8,8 +8,7 @@ import { SettingsOverlay } from "./settings/SettingsOverlay";
 import { FirstRunWizard } from "./components/wizard/FirstRunWizard";
 import { ToastContainer } from "./components/Toast";
 import { ErrorBoundary } from "./components/ErrorBoundary";
-import { UpdateDialog } from "./components/UpdateDialog";
-import { UpdateDownloadToast, UpdateReadyToast } from "./components/UpdateToast";
+import { UpdateReadyToast } from "./components/UpdateToast";
 import { useTheme } from "./hooks/useTheme";
 import { useGlobalShortcut } from "./hooks/useGlobalShortcut";
 import { useTranslation } from "./hooks/useTranslation";
@@ -20,7 +19,6 @@ import { CallLogPanel } from "./calllog";
 import { SelectionToolbar } from "./components/SelectionToolbar";
 import { ActiveMeetingProvider } from "./components/ActiveMeetingProvider";
 import { listen } from "@tauri-apps/api/event";
-import { NEXQ_VERSION } from "./lib/version";
 import type { AppView, Meeting, AudioMode, AIScenario } from "./lib/types";
 import { useDemoShortcut } from "./demo/useDemoShortcut";
 import { DemoPicker } from "./demo/DemoPicker";
@@ -51,26 +49,8 @@ function App() {
   // Sync frontend state to system tray icon & menu
   useTraySync();
 
-  // Auto-update lifecycle: startup check, periodic checks, download, restart
-  const {
-    checkStatus,
-    availableUpdate,
-    downloadStatus,
-    downloadedBytes,
-    totalBytes,
-    startDownload,
-    restart,
-    skipVersion,
-  } = useUpdater();
-
-  const [showUpdateDialog, setShowUpdateDialog] = useState(false);
-
-  // Show dialog when update becomes available (startup check)
-  useEffect(() => {
-    if (checkStatus === "available" && availableUpdate) {
-      setShowUpdateDialog(true);
-    }
-  }, [checkStatus, availableUpdate]);
+  // Background updates — the loop runs only in the launcher window
+  useUpdater();
 
   // Tray notification toasts for meeting start/stop
   // Tray notifications removed — LauncherView/OverlayView/StatusBar already show meeting toasts
@@ -357,35 +337,8 @@ function App() {
       <SelectionToolbar />
       {/* Call log panel is now integrated into the overlay flex layout above */}
 
-      {/* Update Dialog — shown when a new version is detected */}
-      {showUpdateDialog && availableUpdate && (
-        <UpdateDialog
-          currentVersion={NEXQ_VERSION}
-          newVersion={availableUpdate.version}
-          changelog={availableUpdate.body}
-          onUpdate={() => { setShowUpdateDialog(false); startDownload(); }}
-          onLater={() => setShowUpdateDialog(false)}
-          onSkip={() => { skipVersion(availableUpdate.version); setShowUpdateDialog(false); }}
-        />
-      )}
-
-      {/* Update Download Toast — progress indicator while downloading */}
-      {downloadStatus === "downloading" && availableUpdate && (
-        <div className="fixed bottom-4 right-4 z-50">
-          <UpdateDownloadToast
-            version={availableUpdate.version}
-            downloadedBytes={downloadedBytes}
-            totalBytes={totalBytes}
-          />
-        </div>
-      )}
-
-      {/* Update Ready Toast — restart prompt after download completes */}
-      {downloadStatus === "ready" && availableUpdate && (
-        <div className="fixed bottom-4 right-4 z-50">
-          <UpdateReadyToast version={availableUpdate.version} onRestart={restart} />
-        </div>
-      )}
+      {/* One-time "update ready" notice (the footer pill stays) */}
+      <UpdateReadyToast />
 
       {/* Demo mode — scenario picker modal + floating exit badge */}
       <DemoPicker />

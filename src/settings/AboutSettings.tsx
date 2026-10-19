@@ -5,10 +5,19 @@ import {
   HelpCircle,
 } from "lucide-react";
 import { NEXQ_VERSION, NEXQ_BUILD_DATE, NEXQ_DEVELOPER } from "../lib/version";
-import { useUpdater } from "../hooks/useUpdater";
+import { useEffect } from "react";
+import { useUpdaterStore } from "../stores/updaterStore";
+import {
+  checkForUpdates,
+  downloadUpdateNow,
+  hydrateUpdater,
+  restartToUpdate,
+  setAutoUpdate,
+  skipVersion,
+} from "../hooks/useUpdater";
 import { open } from "@tauri-apps/plugin-shell";
 
-const GITHUB_URL = "https://github.com/VahidAlizadeh/NexQ";
+const GITHUB_URL = "https://github.com/naxhq/NexQ";
 
 function timeSince(ms: number): string {
   const secs = Math.floor((Date.now() - ms) / 1000);
@@ -31,22 +40,61 @@ function formatBuildDate(dateStr: string): string {
 }
 
 export function AboutSettings() {
-  const {
-    checkStatus,
-    lastChecked,
-    availableUpdate,
-    checkError,
-    downloadStatus,
-    performCheck,
-    startDownload,
-  } = useUpdater();
+  const phase = useUpdaterStore((s) => s.phase);
+  const version = useUpdaterStore((s) => s.version);
+  const progress = useUpdaterStore((s) => s.progress);
+  const error = useUpdaterStore((s) => s.error);
+  const lastChecked = useUpdaterStore((s) => s.lastChecked);
+  const autoUpdate = useUpdaterStore((s) => s.autoUpdate);
+  const skippedVersion = useUpdaterStore((s) => s.skippedVersion);
 
-  // Derive update dot color and label
-  const isChecking = checkStatus === "checking";
-  const isAvailable = checkStatus === "available" && availableUpdate;
-  const isError = checkStatus === "error";
-  const isUpToDate =
-    checkStatus === "up-to-date" || checkStatus === "idle";
+  // The update loop lives in the launcher; this page may open in either window.
+  useEffect(() => {
+    hydrateUpdater();
+  }, []);
+
+  const pct =
+    progress.total && progress.total > 0
+      ? Math.min(100, Math.round((progress.received / progress.total) * 100))
+      : null;
+
+  let dotClass = "bg-success";
+  let title = "You're up to date";
+  let detail = lastChecked ? `Last checked ${timeSince(lastChecked)}` : "Not checked yet";
+  let action: { label: string; onClick: () => void; primary?: boolean; disabled?: boolean } | null = {
+    label: "Check for updates",
+    onClick: () => checkForUpdates({ manual: true }),
+  };
+
+  if (phase === "checking") {
+    dotClass = "animate-pulse bg-amber-400";
+    title = "Checking for updates…";
+    detail = "Connecting to GitHub";
+    action = { ...action, disabled: true };
+  } else if (phase === "downloading") {
+    dotClass = "animate-pulse bg-amber-400";
+    title = version ? `Downloading v${version}` : "Downloading update";
+    detail = pct !== null ? `${pct}%` : "In the background";
+    action = null;
+  } else if (phase === "ready" && version) {
+    dotClass = "bg-primary";
+    title = `v${version} ready to install`;
+    detail = autoUpdate ? "Installs when you quit NexQ" : "Restart to install";
+    action = { label: "Restart now", onClick: () => restartToUpdate(), primary: true };
+  } else if (phase === "error") {
+    dotClass = "bg-destructive";
+    title = version ? "Download failed" : "Update check failed";
+    detail = error ?? "Unknown error";
+    if (version) action = { label: "Retry", onClick: () => downloadUpdateNow() };
+  } else if (version) {
+    dotClass = "bg-primary";
+    title = `v${version} available`;
+    detail = "Automatic updates are off";
+    action = { label: "Download", onClick: () => downloadUpdateNow(), primary: true };
+  }
+
+  const canSkip =
+    !!version && phase !== "checking" && phase !== "downloading" && skippedVersion !== version;
 
   return (
     <div className="space-y-6">
@@ -101,66 +149,65 @@ export function AboutSettings() {
         </div>
       </div>
 
-      {/* Update Check Row */}
-      <div className="rounded-xl border border-border/30 bg-card/50 p-5">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            {/* Status dot */}
-            <span
-              className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${
-                isChecking
-                  ? "animate-pulse bg-amber-400"
-                  : isAvailable
-                    ? "bg-blue-500"
-                    : isError
-                      ? "bg-red-500"
-                      : "bg-emerald-500"
-              }`}
-            />
-            <div>
-              <p className="text-sm font-medium text-foreground">
-                {isChecking
-                  ? "Checking for updates..."
-                  : isAvailable
-                    ? `v${availableUpdate.version} available`
-                    : isError
-                      ? "Update check failed"
-                      : "You're up to date"}
-              </p>
-              <p className="text-meta text-muted-foreground/60">
-                {isChecking
-                  ? "Connecting to GitHub"
-                  : isError && checkError
-                    ? checkError
-                    : isAvailable && availableUpdate.date
-                      ? `Released ${timeSince(new Date(availableUpdate.date).getTime())}`
-                      : lastChecked
-                        ? `Last checked ${timeSince(lastChecked)}`
-                        : "Not checked yet"}
-              </p>
+      {/* Updates */}
+      <div className="rounded-xl border border-border/30 bg-card/50 p-5 space-y-5">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${dotClass}`} />
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-foreground">{title}</p>
+              <p className="truncate text-meta text-muted-foreground/60">{detail}</p>
             </div>
           </div>
 
-          {/* Action button */}
-          {isAvailable ? (
+          {action && (
             <button
-              onClick={startDownload}
-              disabled={downloadStatus === "downloading"}
-              className="rounded-lg bg-primary px-4 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+              onClick={action.onClick}
+              disabled={action.disabled}
+              className={
+                action.primary
+                  ? "shrink-0 rounded-lg bg-primary px-4 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+                  : "shrink-0 rounded-lg border border-border/40 bg-secondary/50 px-4 py-2 text-xs font-medium text-foreground/80 transition-colors hover:bg-secondary disabled:opacity-50"
+              }
             >
-              {downloadStatus === "downloading"
-                ? "Downloading..."
-                : "Update Now"}
-            </button>
-          ) : (
-            <button
-              onClick={() => performCheck({ ignoreSkipped: true })}
-              disabled={isChecking}
-              className="rounded-lg border border-border/40 bg-secondary/50 px-4 py-2 text-xs font-medium text-foreground/80 transition-colors hover:bg-secondary disabled:opacity-50"
-            >
-              Check for Updates
+              {action.label}
             </button>
           )}
+        </div>
+
+        {canSkip && version && (
+          <button
+            onClick={() => skipVersion(version)}
+            className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+          >
+            Skip this version
+          </button>
+        )}
+
+        <div className="h-px bg-border/20" />
+
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="text-sm font-medium text-foreground">Automatic updates</label>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Download in the background and install when you quit
+            </p>
+          </div>
+          <button
+            onClick={() => setAutoUpdate(!autoUpdate)}
+            role="switch"
+            aria-checked={autoUpdate}
+            aria-label="Toggle automatic updates"
+            className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full transition-all duration-200 ${
+              autoUpdate ? "bg-primary shadow-[0_0_0_3px_hsl(var(--primary)/0.12)]" : "bg-muted"
+            }`}
+          >
+            <span
+              className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-all duration-200 ${
+                autoUpdate ? "translate-x-5 scale-[1.05]" : "translate-x-0"
+              }`}
+            />
+          </button>
         </div>
       </div>
 

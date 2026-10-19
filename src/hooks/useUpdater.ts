@@ -1,208 +1,203 @@
-// Hook for managing the full update lifecycle: startup check, periodic checks,
-// skip version persistence, download, and restart.
+// Discord-style updates: a single owner (the launcher window) checks 10 s after
+// launch and every 4 h, downloads silently when automatic updates are on, and
+// the footer pill restarts into the new version. Rust installs a downloaded
+// update on quit (see updater_commands::install_on_quit).
+//
+// The action functions below work from any window (Settings -> About can open
+// in the overlay); only the check loop and event listeners are launcher-only.
 
-import { useEffect, useRef, useCallback } from "react";
-import { useUpdaterStore } from "../stores/updaterStore";
-import {
-  checkForUpdate,
-  downloadAndInstallUpdate,
-  restartForUpdate,
-} from "../lib/ipc";
-import {
-  onUpdateDownloadProgress,
-  onUpdateReady,
-} from "../lib/events";
+import { useEffect } from "react";
 import { load } from "@tauri-apps/plugin-store";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { useUpdaterStore } from "../stores/updaterStore";
+import { useMeetingStore } from "../stores/meetingStore";
+import { showToast } from "../stores/toastStore";
+import {
+  checkForUpdate,
+  downloadUpdate,
+  getPendingUpdate,
+  installUpdateNow,
+} from "../lib/ipc";
+import { onUpdateDownloadProgress, onUpdateDownloaded } from "../lib/events";
 
+// Same keys are read by Rust at quit time — keep in sync with updater_commands.rs.
 const STORE_NAME = "nexq-settings.json";
 const SKIPPED_VERSION_KEY = "skipped_version";
+const AUTO_UPDATE_KEY = "auto_update";
+
+const STARTUP_DELAY_MS = 10_000;
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
-const STARTUP_DELAY_MS = 3000;
 
-export function useUpdater() {
-  const store = useUpdaterStore();
-  const downloadedRef = useRef(0);
-  const mountedRef = useRef(true);
+export const RELEASES_URL = "https://github.com/naxhq/NexQ/releases";
 
-  // -- performCheck ----------------------------------------------------------
+export function releaseNotesUrl(version: string): string {
+  return `${RELEASES_URL}/tag/v${version}`;
+}
 
-  const performCheck = useCallback(
-    async (opts?: { ignoreSkipped?: boolean }) => {
-      const {
-        setCheckStatus,
-        setAvailableUpdate,
-        setCheckError,
-        skippedVersion,
-      } = useUpdaterStore.getState();
+function errorMessage(err: unknown): string {
+  if (typeof err === "string") return err;
+  if (err instanceof Error) return err.message;
+  return "Unknown error";
+}
 
-      setCheckStatus("checking");
-      setCheckError(null);
+function settingsStore() {
+  return load(STORE_NAME, { autoSave: true, defaults: {} });
+}
 
-      try {
-        const update = await checkForUpdate();
+async function persist(key: string, value: unknown): Promise<void> {
+  try {
+    const store = await settingsStore();
+    if (value === undefined) await store.delete(key);
+    else await store.set(key, value);
+  } catch (err) {
+    console.warn(`[updater] Failed to persist ${key}:`, err);
+  }
+}
 
-        if (!mountedRef.current) return;
+/** Load persisted preferences and any update already downloaded by Rust. */
+export async function hydrateUpdater(): Promise<void> {
+  const updater = useUpdaterStore.getState();
+  try {
+    const store = await settingsStore();
+    const skipped = await store.get<string>(SKIPPED_VERSION_KEY);
+    const auto = await store.get<boolean>(AUTO_UPDATE_KEY);
+    updater.setSkippedVersion(skipped ?? undefined);
+    if (typeof auto === "boolean") updater.setAutoUpdate(auto);
+  } catch (err) {
+    console.warn("[updater] Failed to load preferences:", err);
+  }
 
-        if (update) {
-          const isSkipped =
-            !opts?.ignoreSkipped && skippedVersion === update.version;
-
-          if (isSkipped) {
-            setCheckStatus("up-to-date");
-            setAvailableUpdate(null);
-          } else {
-            setAvailableUpdate(update);
-          }
-        } else {
-          setCheckStatus("up-to-date");
-          setAvailableUpdate(null);
-        }
-      } catch (err: unknown) {
-        if (!mountedRef.current) return;
-        const msg =
-          typeof err === "string"
-            ? err
-            : err instanceof Error
-              ? err.message
-              : "Unknown error";
-        setCheckError(msg);
-      }
-    },
-    [],
-  );
-
-  // -- startDownload ---------------------------------------------------------
-
-  const startDownload = useCallback(async () => {
-    const { setDownloadStatus, setDownloadProgress } =
-      useUpdaterStore.getState();
-
-    setDownloadStatus("downloading");
-    setDownloadProgress(0, null);
-    downloadedRef.current = 0;
-
-    try {
-      await downloadAndInstallUpdate();
-    } catch (err: unknown) {
-      if (!mountedRef.current) return;
-      const msg =
-        typeof err === "string"
-          ? err
-          : err instanceof Error
-            ? err.message
-            : "Unknown error";
-      console.error("[useUpdater] Download failed:", msg);
-      useUpdaterStore.getState().setDownloadStatus("error");
+  try {
+    const pending = await getPendingUpdate();
+    const { skippedVersion } = useUpdaterStore.getState();
+    if (pending && pending.version !== skippedVersion) {
+      updater.setReady(pending.version, pending.body);
     }
-  }, []);
+  } catch (err) {
+    console.warn("[updater] Failed to read pending update:", err);
+  }
+}
 
-  // -- restart ---------------------------------------------------------------
+/**
+ * Check for an update; download it when automatic updates are on.
+ * Automatic checks ignore a skipped version, manual checks don't.
+ */
+export async function checkForUpdates(opts?: { manual?: boolean }): Promise<void> {
+  const { phase, startCheck } = useUpdaterStore.getState();
+  if (phase === "checking" || phase === "downloading" || phase === "ready") return;
 
-  const restart = useCallback(async () => {
-    try {
-      await restartForUpdate();
-    } catch (err) {
-      console.error("[useUpdater] Restart failed:", err);
-    }
-  }, []);
+  startCheck();
+  let update;
+  try {
+    const found = await checkForUpdate();
+    update = useUpdaterStore.getState().finishCheck(found, opts);
+  } catch (err) {
+    useUpdaterStore.getState().failCheck(errorMessage(err));
+    return;
+  }
 
-  // -- skipVersion -----------------------------------------------------------
+  if (update && useUpdaterStore.getState().autoUpdate) {
+    await downloadUpdateNow();
+  }
+}
 
-  const skipVersion = useCallback(async (version: string) => {
-    const { setSkippedVersion, setAvailableUpdate, setCheckStatus } =
-      useUpdaterStore.getState();
+/** Download the available update in the background (no install). */
+export async function downloadUpdateNow(): Promise<void> {
+  const { phase, startDownload } = useUpdaterStore.getState();
+  if (phase === "downloading" || phase === "ready") return;
 
-    setSkippedVersion(version);
-    setAvailableUpdate(null);
-    setCheckStatus("up-to-date");
+  startDownload();
+  try {
+    const info = await downloadUpdate();
+    useUpdaterStore.getState().setReady(info.version, info.body);
+  } catch (err) {
+    useUpdaterStore.getState().failDownload(errorMessage(err));
+  }
+}
 
-    try {
-      const tauriStore = await load(STORE_NAME, { autoSave: true, defaults: {} });
-      await tauriStore.set(SKIPPED_VERSION_KEY, version);
-    } catch (err) {
-      console.warn("[useUpdater] Failed to persist skipped version:", err);
-    }
-  }, []);
+/**
+ * Install the downloaded update now; NexQ exits and relaunches on the new
+ * version. If a meeting is running, confirm first and end it cleanly.
+ */
+export async function restartToUpdate(): Promise<void> {
+  if (useMeetingStore.getState().activeMeeting) {
+    const { confirm } = await import("@tauri-apps/plugin-dialog");
+    const ok = await confirm(
+      "Your meeting will be saved, then NexQ restarts on the new version.",
+      {
+        title: "End meeting and update?",
+        kind: "warning",
+        okLabel: "End & update",
+        cancelLabel: "Cancel",
+      },
+    );
+    if (!ok) return;
+    await useMeetingStore.getState().endMeetingFlow();
+  }
 
-  // -- mount: load persisted skip, set up events, startup check, interval ----
+  try {
+    await installUpdateNow();
+  } catch (err) {
+    showToast(`Update failed: ${errorMessage(err)}`, "error");
+  }
+}
 
+export async function setAutoUpdate(enabled: boolean): Promise<void> {
+  useUpdaterStore.getState().setAutoUpdate(enabled);
+  await persist(AUTO_UPDATE_KEY, enabled);
+}
+
+/**
+ * Skip a version: automatic checks stop offering it and Rust won't install it
+ * on quit. A manual check still finds it.
+ */
+export async function skipVersion(version: string): Promise<void> {
+  const updater = useUpdaterStore.getState();
+  updater.setSkippedVersion(version);
+  if (updater.version === version) {
+    useUpdaterStore.setState({ phase: "idle", version: undefined, notes: undefined, error: undefined });
+  }
+  await persist(SKIPPED_VERSION_KEY, version);
+}
+
+/** Runs the update loop. Mount once at the app root; active only in the launcher window. */
+export function useUpdater(): void {
   useEffect(() => {
-    mountedRef.current = true;
+    let isLauncher = false;
+    try {
+      isLauncher = getCurrentWebviewWindow().label === "launcher";
+    } catch {
+      isLauncher = false;
+    }
+    if (!isLauncher) return;
 
-    let unlistenProgress: UnlistenFn | null = null;
-    let unlistenReady: UnlistenFn | null = null;
-    let startupTimer: ReturnType<typeof setTimeout> | null = null;
-    let intervalId: ReturnType<typeof setInterval> | null = null;
+    let disposed = false;
+    const unlisteners: UnlistenFn[] = [];
+    const keep = (fn: UnlistenFn) => {
+      if (disposed) fn();
+      else unlisteners.push(fn);
+    };
 
-    // Load persisted skipped version
-    load(STORE_NAME, { autoSave: true, defaults: {} })
-      .then(async (tauriStore) => {
-        const skipped = await tauriStore.get<string>(SKIPPED_VERSION_KEY);
-        if (skipped && mountedRef.current) {
-          useUpdaterStore.getState().setSkippedVersion(skipped);
-        }
-      })
-      .catch((err) => {
-        console.warn("[useUpdater] Failed to load skipped version:", err);
-      });
+    hydrateUpdater();
 
-    // Set up event listeners
-    onUpdateDownloadProgress((event) => {
-      if (!mountedRef.current) return;
-      downloadedRef.current += event.chunk_length;
-      useUpdaterStore
-        .getState()
-        .setDownloadProgress(downloadedRef.current, event.content_length);
-    }).then((fn) => {
-      unlistenProgress = fn;
-    });
+    onUpdateDownloadProgress((e) => {
+      useUpdaterStore.getState().addProgress(e.chunk_length, e.content_length);
+    }).then(keep);
 
-    onUpdateReady(() => {
-      if (!mountedRef.current) return;
-      useUpdaterStore.getState().setDownloadStatus("ready");
-    }).then((fn) => {
-      unlistenReady = fn;
-    });
+    // Fires for downloads started from any window (e.g. About in the overlay).
+    onUpdateDownloaded((info) => {
+      useUpdaterStore.getState().setReady(info.version, info.body);
+    }).then(keep);
 
-    // Startup check after delay
-    startupTimer = setTimeout(() => {
-      if (mountedRef.current) {
-        performCheck();
-      }
-    }, STARTUP_DELAY_MS);
-
-    // Periodic check every 4 hours
-    intervalId = setInterval(() => {
-      if (mountedRef.current) {
-        performCheck();
-      }
-    }, CHECK_INTERVAL_MS);
+    const startupTimer = setTimeout(() => checkForUpdates(), STARTUP_DELAY_MS);
+    const intervalId = setInterval(() => checkForUpdates(), CHECK_INTERVAL_MS);
 
     return () => {
-      mountedRef.current = false;
-      unlistenProgress?.();
-      unlistenReady?.();
-      if (startupTimer) clearTimeout(startupTimer);
-      if (intervalId) clearInterval(intervalId);
+      disposed = true;
+      unlisteners.forEach((fn) => fn());
+      clearTimeout(startupTimer);
+      clearInterval(intervalId);
     };
-  }, [performCheck]);
-
-  return {
-    // Store state
-    checkStatus: store.checkStatus,
-    lastChecked: store.lastChecked,
-    availableUpdate: store.availableUpdate,
-    checkError: store.checkError,
-    downloadStatus: store.downloadStatus,
-    downloadedBytes: store.downloadedBytes,
-    totalBytes: store.totalBytes,
-    skippedVersion: store.skippedVersion,
-
-    // Actions
-    performCheck,
-    startDownload,
-    restart,
-    skipVersion,
-  };
+  }, []);
 }

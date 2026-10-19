@@ -716,10 +716,16 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
   return invoke<UpdateInfo | null>("check_for_update");
 }
 
-export async function downloadAndInstallUpdate(): Promise<void> {
-  return invoke("download_and_install_update");
+/** Download the update in the background; Rust keeps the bytes until install. */
+export async function downloadUpdate(): Promise<UpdateInfo> {
+  return invoke<UpdateInfo>("download_update");
 }
 
-export async function restartForUpdate(): Promise<void> {
-  return invoke("restart_for_update");
+/** Install the downloaded update. The app exits and relaunches on the new version. */
+export async function installUpdateNow(): Promise<void> {
+  return invoke("install_update_now");
+}
+
+export async function getPendingUpdate(): Promise<UpdateInfo | null> {
+  return invoke<UpdateInfo | null>("get_pending_update");
 }
