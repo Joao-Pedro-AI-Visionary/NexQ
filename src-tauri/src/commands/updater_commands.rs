@@ -1,8 +1,8 @@
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use tauri::{command, AppHandle, Emitter, Manager, State};
+use tauri::{command, AppHandle, Emitter, ExitRequestApi, Manager, State};
 use tauri_plugin_store::StoreExt;
 use tauri_plugin_updater::{Update, UpdaterExt};
 
@@ -14,7 +14,14 @@ const SETTINGS_STORE: &str = "nexq-settings.json";
 const AUTO_UPDATE_KEY: &str = "auto_update";
 const SKIPPED_VERSION_KEY: &str = "skipped_version";
 
+/// How long Restart waits for the last recording to finish saving.
 const RECORDING_WAIT_LIMIT: Duration = Duration::from_secs(120);
+/// How long quit (with an update to install) waits for the last recording.
+const QUIT_RECORDING_WAIT_LIMIT: Duration = Duration::from_secs(600);
+
+/// Set once quit has been deferred for a recording, so the second exit
+/// request goes through even if the wait timed out.
+static QUIT_WAITED_FOR_RECORDING: AtomicBool = AtomicBool::new(false);
 
 /// Information about an available update.
 #[derive(Debug, Clone, Serialize)]
@@ -61,7 +68,8 @@ pub async fn check_for_update(app: AppHandle) -> Result<Option<UpdateInfo>, Stri
 /// `AppState.pending_update` (nothing is installed yet).
 ///
 /// Emits `update_download_progress { chunk_length, content_length }` while
-/// downloading and `update_downloaded { version, body, date }` when done.
+/// downloading, then `update_downloaded { version, body, date }` or
+/// `update_download_failed { message }`.
 #[command]
 pub async fn download_update(
     app: AppHandle,
@@ -72,6 +80,12 @@ pub async fn download_update(
     }
     let result = download_into_pending(&app, &state).await;
     state.update_downloading.store(false, Ordering::SeqCst);
+    if let Err(message) = &result {
+        let _ = app.emit(
+            "update_download_failed",
+            serde_json::json!({ "message": message }),
+        );
+    }
     result
 }
 
@@ -141,13 +155,29 @@ pub async fn get_pending_update(state: State<'_, AppState>) -> Result<Option<Upd
 ///
 /// Waits (up to 2 min) for post-meeting recording pipelines first, so ending a
 /// meeting right before the restart doesn't lose its recording.
+/// Refuses while a meeting is active, or if the recording is still saving
+/// after the wait.
 #[command]
 pub async fn install_update_now(state: State<'_, AppState>) -> Result<(), String> {
-    let deadline = Instant::now() + RECORDING_WAIT_LIMIT;
-    while state.recording_jobs.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(250)).await;
+    if state.meeting_active.load(Ordering::SeqCst) {
+        return Err("End the meeting before updating".to_string());
+    }
+    if !wait_for_recordings(&state, RECORDING_WAIT_LIMIT).await {
+        return Err("Still saving the last recording — try again in a moment".to_string());
     }
     install_pending(&state)
+}
+
+/// Wait until no post-meeting recording pipeline is running. Returns false on timeout.
+async fn wait_for_recordings(state: &AppState, limit: Duration) -> bool {
+    let deadline = Instant::now() + limit;
+    while state.recording_jobs.load(Ordering::SeqCst) > 0 {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    true
 }
 
 fn install_pending(state: &AppState) -> Result<(), String> {
@@ -168,11 +198,44 @@ fn install_pending(state: &AppState) -> Result<(), String> {
         .map_err(|e| format!("Failed to install update: {}", e))
 }
 
-/// Called when the app is about to exit. Installs a downloaded update when
-/// automatic updates are on, the version wasn't skipped, and no meeting is
-/// running. On success the process exits inside this call; otherwise the
-/// normal exit continues.
-pub fn install_on_quit(app: &AppHandle) {
+/// What to do with a downloaded update when the app is asked to exit.
+#[derive(Debug, PartialEq, Eq)]
+pub enum QuitAction {
+    /// Exit normally without installing.
+    Exit,
+    /// Defer the exit until the last recording has finished saving.
+    WaitForRecording,
+    /// Install the update (the process exits inside the install).
+    Install,
+}
+
+/// Installs only when an update is pending, no meeting is running, automatic
+/// updates are on and the version wasn't skipped. A recording still being
+/// saved defers the quit once; if it is still running after the wait, exit
+/// without installing.
+pub fn quit_action(
+    pending: bool,
+    meeting_active: bool,
+    auto_update: bool,
+    skipped: bool,
+    recording_jobs: usize,
+    already_waited: bool,
+) -> QuitAction {
+    if !pending || meeting_active || !auto_update || skipped {
+        return QuitAction::Exit;
+    }
+    if recording_jobs > 0 {
+        return if already_waited {
+            QuitAction::Exit
+        } else {
+            QuitAction::WaitForRecording
+        };
+    }
+    QuitAction::Install
+}
+
+/// `RunEvent::ExitRequested` handler (tray Quit calls `app.exit(0)`).
+pub fn on_exit_requested(app: &AppHandle, api: &ExitRequestApi) {
     let state = app.state::<AppState>();
 
     let pending_version = state
@@ -180,24 +243,43 @@ pub fn install_on_quit(app: &AppHandle) {
         .lock()
         .ok()
         .and_then(|p| p.as_ref().map(|p| p.info.version.clone()));
-    let Some(pending_version) = pending_version else {
-        return;
+    let skipped = match &pending_version {
+        Some(v) => skipped_version(app).as_deref() == Some(v.as_str()),
+        None => false,
     };
-    if state.meeting_active.load(Ordering::SeqCst) {
-        log::info!("Update pending but a meeting is active; not installing on quit");
-        return;
-    }
-    if !auto_update_enabled(app) {
-        log::info!("Update pending but automatic updates are off; not installing on quit");
-        return;
-    }
-    if skipped_version(app).as_deref() == Some(pending_version.as_str()) {
-        log::info!("Update v{} was skipped; not installing on quit", pending_version);
-        return;
-    }
 
-    if let Err(e) = install_pending(&state) {
-        log::error!("Install on quit failed: {}", e);
+    let action = quit_action(
+        pending_version.is_some(),
+        state.meeting_active.load(Ordering::SeqCst),
+        auto_update_enabled(app),
+        skipped,
+        state.recording_jobs.load(Ordering::SeqCst),
+        QUIT_WAITED_FOR_RECORDING.load(Ordering::SeqCst),
+    );
+
+    match action {
+        QuitAction::Exit => {}
+        QuitAction::Install => {
+            if let Err(e) = install_pending(&state) {
+                log::error!("Install on quit failed: {}", e);
+            }
+        }
+        QuitAction::WaitForRecording => {
+            log::info!("Quit deferred until the last recording finishes saving");
+            QUIT_WAITED_FOR_RECORDING.store(true, Ordering::SeqCst);
+            api.prevent_exit();
+            for (_, window) in app.webview_windows() {
+                let _ = window.hide();
+            }
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let state = app.state::<AppState>();
+                if !wait_for_recordings(&state, QUIT_RECORDING_WAIT_LIMIT).await {
+                    log::warn!("Recording still saving after the quit wait; exiting without installing");
+                }
+                app.exit(0);
+            });
+        }
     }
 }
 
@@ -214,4 +296,52 @@ fn auto_update_enabled(app: &AppHandle) -> bool {
 
 fn skipped_version(app: &AppHandle) -> Option<String> {
     setting(app, SKIPPED_VERSION_KEY).and_then(|v| v.as_str().map(str::to_string))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{quit_action, QuitAction};
+
+    #[test]
+    fn installs_when_everything_allows_it() {
+        assert_eq!(quit_action(true, false, true, false, 0, false), QuitAction::Install);
+    }
+
+    #[test]
+    fn exits_without_pending_update() {
+        assert_eq!(quit_action(false, false, true, false, 0, false), QuitAction::Exit);
+    }
+
+    #[test]
+    fn never_installs_during_a_meeting() {
+        assert_eq!(quit_action(true, true, true, false, 0, false), QuitAction::Exit);
+    }
+
+    #[test]
+    fn respects_automatic_updates_off() {
+        assert_eq!(quit_action(true, false, false, false, 0, false), QuitAction::Exit);
+    }
+
+    #[test]
+    fn skipped_version_is_not_installed() {
+        assert_eq!(quit_action(true, false, true, true, 0, false), QuitAction::Exit);
+    }
+
+    #[test]
+    fn waits_for_a_recording_still_saving() {
+        assert_eq!(
+            quit_action(true, false, true, false, 1, false),
+            QuitAction::WaitForRecording
+        );
+    }
+
+    #[test]
+    fn exits_without_installing_if_recording_outlasts_the_wait() {
+        assert_eq!(quit_action(true, false, true, false, 1, true), QuitAction::Exit);
+    }
+
+    #[test]
+    fn installs_after_the_wait_once_recording_is_saved() {
+        assert_eq!(quit_action(true, false, true, false, 0, true), QuitAction::Install);
+    }
 }

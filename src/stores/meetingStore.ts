@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { AppView, Meeting, MeetingSummary, AudioMode, AIScenario } from "../lib/types";
+import type { AppView, Meeting, MeetingSummary, AudioMode, AIScenario, WindowMeetingEndedEvent } from "../lib/types";
 import {
   startMeeting as ipcStartMeeting,
   endMeeting as ipcEndMeeting,
@@ -476,10 +476,15 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
     // 10. Switch to launcher
     set({ currentView: "launcher", previousView: null });
 
-    // Notify overlay Tauri window that meeting ended
-    import("@tauri-apps/api/event").then(({ emit }) => {
-      emit("nexq:meeting_ended", {}).catch(() => {});
-    });
+    // Notify the other window that this window finished ending the meeting
+    // (the updater waits for both windows before restarting)
+    Promise.all([
+      import("@tauri-apps/api/event"),
+      import("@tauri-apps/api/webviewWindow"),
+    ]).then(([{ emit }, { getCurrentWebviewWindow }]) => {
+      const payload: WindowMeetingEndedEvent = { window: getCurrentWebviewWindow().label };
+      emit("nexq:meeting_ended", payload).catch(() => {});
+    }).catch(() => {});
   },
 
   loadRecentMeetings: async () => {

@@ -67,12 +67,12 @@ export function AboutSettings() {
   };
 
   if (phase === "checking") {
-    dotClass = "animate-pulse bg-amber-400";
+    dotClass = "animate-pulse bg-warning";
     title = "Checking for updates…";
     detail = "Connecting to GitHub";
     action = { ...action, disabled: true };
   } else if (phase === "downloading") {
-    dotClass = "animate-pulse bg-amber-400";
+    dotClass = "animate-pulse bg-warning";
     title = version ? `Downloading v${version}` : "Downloading update";
     detail = pct !== null ? `${pct}%` : "In the background";
     action = null;
@@ -85,12 +85,12 @@ export function AboutSettings() {
     dotClass = "bg-destructive";
     title = version ? "Download failed" : "Update check failed";
     detail = error ?? "Unknown error";
-    if (version) action = { label: "Retry", onClick: () => downloadUpdateNow() };
+    if (version) action = { label: "Retry", onClick: () => downloadUpdateNow({ explicit: true }) };
   } else if (version) {
     dotClass = "bg-primary";
     title = `v${version} available`;
     detail = "Automatic updates are off";
-    action = { label: "Download", onClick: () => downloadUpdateNow(), primary: true };
+    action = { label: "Download", onClick: () => downloadUpdateNow({ explicit: true }), primary: true };
   }
 
   const canSkip =

@@ -36,10 +36,16 @@ interface UpdaterState {
   failCheck: (error: string) => void;
   startDownload: () => void;
   addProgress: (chunkLength: number, contentLength: number | null) => void;
-  setReady: (version: string, notes?: string | null) => void;
+  /**
+   * Mark a downloaded update ready. A skipped version is ignored unless the
+   * user explicitly asked for it.
+   */
+  setReady: (version: string, notes?: string | null, opts?: { explicit?: boolean }) => void;
   failDownload: (error: string) => void;
   setAutoUpdate: (enabled: boolean) => void;
   setSkippedVersion: (version: string | undefined) => void;
+  /** Skip a version and drop it from view unless it is mid-download. */
+  skip: (version: string) => void;
   reset: () => void;
 }
 
@@ -87,19 +93,31 @@ export const useUpdaterStore = create<UpdaterState>((set, get) => ({
       },
     })),
 
-  setReady: (version, notes) =>
+  setReady: (version, notes, opts) => {
+    if (!opts?.explicit && get().skippedVersion === version) {
+      set({ phase: "idle", version: undefined, notes: undefined, error: undefined });
+      return;
+    }
     set((s) => ({
       phase: "ready",
       version,
       notes: notes ?? (s.version === version ? s.notes : undefined),
       error: undefined,
-    })),
+    }));
+  },
 
   failDownload: (error) => set({ phase: "error", error }),
 
   setAutoUpdate: (enabled) => set({ autoUpdate: enabled }),
 
   setSkippedVersion: (version) => set({ skippedVersion: version }),
+
+  skip: (version) =>
+    set((s) =>
+      s.version === version && s.phase !== "downloading"
+        ? { skippedVersion: version, phase: "idle", version: undefined, notes: undefined, error: undefined }
+        : { skippedVersion: version },
+    ),
 
   reset: () => set({ ...initialState }),
 }));

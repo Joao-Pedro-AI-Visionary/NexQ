@@ -645,10 +645,11 @@ pub fn run() {
         .expect("error while building NexQ")
         .run(|app, event| {
             // Tray Quit (`app.exit(0)`) and any other exit request: install a
-            // downloaded update first (exits inside the call on success).
-            if let tauri::RunEvent::ExitRequested { code, .. } = &event {
+            // downloaded update first (exits inside the call on success), or
+            // defer the quit while the last recording is still saving.
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = &event {
                 if *code != Some(tauri::RESTART_EXIT_CODE) {
-                    updater_commands::install_on_quit(app);
+                    updater_commands::on_exit_requested(app, api);
                 }
             }
         });

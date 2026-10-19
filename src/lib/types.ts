@@ -832,3 +832,18 @@ export interface UpdateDownloadProgress {
   chunk_length: number;
   content_length: number | null;
 }
+
+export interface UpdateDownloadFailed {
+  message: string;
+}
+
+/** Frontend-only event: updater preferences changed in some window. */
+export interface UpdaterPrefsChangedEvent {
+  autoUpdate: boolean;
+  skippedVersion: string | null;
+}
+
+/** Frontend-only event: a window finished `endMeetingFlow`. */
+export interface WindowMeetingEndedEvent {
+  window: string;
+}

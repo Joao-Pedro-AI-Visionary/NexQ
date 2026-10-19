@@ -1,10 +1,11 @@
 // Discord-style updates: a single owner (the launcher window) checks 10 s after
 // launch and every 4 h, downloads silently when automatic updates are on, and
 // the footer pill restarts into the new version. Rust installs a downloaded
-// update on quit (see updater_commands::install_on_quit).
+// update on quit (see updater_commands::on_exit_requested).
 //
 // The action functions below work from any window (Settings -> About can open
-// in the overlay); only the check loop and event listeners are launcher-only.
+// in the overlay); only the check loop is launcher-only. Preference changes are
+// broadcast so every window's store stays in sync.
 
 import { useEffect } from "react";
 import { load } from "@tauri-apps/plugin-store";
@@ -19,7 +20,15 @@ import {
   getPendingUpdate,
   installUpdateNow,
 } from "../lib/ipc";
-import { onUpdateDownloadProgress, onUpdateDownloaded } from "../lib/events";
+import {
+  emitStopMeeting,
+  emitUpdaterPrefsChanged,
+  onWindowMeetingEnded,
+  onUpdateDownloadFailed,
+  onUpdateDownloadProgress,
+  onUpdateDownloaded,
+  onUpdaterPrefsChanged,
+} from "../lib/events";
 
 // Same keys are read by Rust at quit time — keep in sync with updater_commands.rs.
 const STORE_NAME = "nexq-settings.json";
@@ -28,6 +37,10 @@ const AUTO_UPDATE_KEY = "auto_update";
 
 const STARTUP_DELAY_MS = 10_000;
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
+
+/** Windows that each run endMeetingFlow and hold part of the meeting's data. */
+const MEETING_WINDOWS = ["launcher", "overlay"];
+export const MEETING_END_TIMEOUT_MS = 60_000;
 
 export const RELEASES_URL = "https://github.com/naxhq/NexQ/releases";
 
@@ -55,6 +68,15 @@ async function persist(key: string, value: unknown): Promise<void> {
   }
 }
 
+async function broadcastPrefs(): Promise<void> {
+  const { autoUpdate, skippedVersion } = useUpdaterStore.getState();
+  try {
+    await emitUpdaterPrefsChanged({ autoUpdate, skippedVersion: skippedVersion ?? null });
+  } catch (err) {
+    console.warn("[updater] Failed to broadcast preferences:", err);
+  }
+}
+
 /** Load persisted preferences and any update already downloaded by Rust. */
 export async function hydrateUpdater(): Promise<void> {
   const updater = useUpdaterStore.getState();
@@ -70,10 +92,8 @@ export async function hydrateUpdater(): Promise<void> {
 
   try {
     const pending = await getPendingUpdate();
-    const { skippedVersion } = useUpdaterStore.getState();
-    if (pending && pending.version !== skippedVersion) {
-      updater.setReady(pending.version, pending.body);
-    }
+    // setReady ignores a skipped version
+    if (pending) updater.setReady(pending.version, pending.body);
   } catch (err) {
     console.warn("[updater] Failed to read pending update:", err);
   }
@@ -81,7 +101,8 @@ export async function hydrateUpdater(): Promise<void> {
 
 /**
  * Check for an update; download it when automatic updates are on.
- * Automatic checks ignore a skipped version, manual checks don't.
+ * Automatic checks ignore a skipped version, manual checks don't (and a
+ * download after a manual check counts as explicit).
  */
 export async function checkForUpdates(opts?: { manual?: boolean }): Promise<void> {
   const { phase, startCheck } = useUpdaterStore.getState();
@@ -98,27 +119,70 @@ export async function checkForUpdates(opts?: { manual?: boolean }): Promise<void
   }
 
   if (update && useUpdaterStore.getState().autoUpdate) {
-    await downloadUpdateNow();
+    await downloadUpdateNow({ explicit: opts?.manual });
   }
 }
 
-/** Download the available update in the background (no install). */
-export async function downloadUpdateNow(): Promise<void> {
-  const { phase, startDownload } = useUpdaterStore.getState();
+/**
+ * Download the available update in the background (no install). An explicit
+ * download of a skipped version clears the skip, so Rust's install-on-quit
+ * agrees with what the user chose.
+ */
+export async function downloadUpdateNow(opts?: { explicit?: boolean }): Promise<void> {
+  const { phase, version, skippedVersion, startDownload } = useUpdaterStore.getState();
   if (phase === "downloading" || phase === "ready") return;
+
+  if (opts?.explicit && version && version === skippedVersion) {
+    useUpdaterStore.getState().setSkippedVersion(undefined);
+    await persist(SKIPPED_VERSION_KEY, undefined);
+    await broadcastPrefs();
+  }
 
   startDownload();
   try {
     const info = await downloadUpdate();
-    useUpdaterStore.getState().setReady(info.version, info.body);
+    useUpdaterStore.getState().setReady(info.version, info.body, opts);
   } catch (err) {
     useUpdaterStore.getState().failDownload(errorMessage(err));
   }
 }
 
 /**
+ * End the meeting through the cross-window stop path (the tray's Stop): both
+ * windows run endMeetingFlow and save the data they hold. Resolves true once
+ * both report done, false on timeout or error.
+ */
+export async function endMeetingInAllWindows(
+  timeoutMs: number = MEETING_END_TIMEOUT_MS,
+): Promise<boolean> {
+  const waiting = new Set(MEETING_WINDOWS);
+  let finish: (ok: boolean) => void = () => {};
+  const done = new Promise<boolean>((resolve) => {
+    finish = resolve;
+  });
+
+  let unlisten: UnlistenFn | undefined;
+  const timer = setTimeout(() => finish(false), timeoutMs);
+  try {
+    unlisten = await onWindowMeetingEnded((e) => {
+      waiting.delete(e.window);
+      if (waiting.size === 0) finish(true);
+    });
+    await emitStopMeeting();
+    return await done;
+  } catch (err) {
+    console.error("[updater] Failed to end the meeting:", err);
+    return false;
+  } finally {
+    clearTimeout(timer);
+    unlisten?.();
+  }
+}
+
+/**
  * Install the downloaded update now; NexQ exits and relaunches on the new
- * version. If a meeting is running, confirm first and end it cleanly.
+ * version. If a meeting is running, confirm first and end it in every window
+ * before installing. Never installs if the meeting didn't end cleanly.
  */
 export async function restartToUpdate(): Promise<void> {
   if (useMeetingStore.getState().activeMeeting) {
@@ -133,44 +197,46 @@ export async function restartToUpdate(): Promise<void> {
       },
     );
     if (!ok) return;
-    await useMeetingStore.getState().endMeetingFlow();
+
+    if (!(await endMeetingInAllWindows())) {
+      showToast("Couldn't finish saving the meeting. Update postponed.", "error");
+      return;
+    }
   }
 
   try {
     await installUpdateNow();
   } catch (err) {
-    showToast(`Update failed: ${errorMessage(err)}`, "error");
+    showToast(`Update not installed: ${errorMessage(err)}`, "error");
   }
 }
 
 export async function setAutoUpdate(enabled: boolean): Promise<void> {
   useUpdaterStore.getState().setAutoUpdate(enabled);
   await persist(AUTO_UPDATE_KEY, enabled);
+  await broadcastPrefs();
 }
 
 /**
- * Skip a version: automatic checks stop offering it and Rust won't install it
- * on quit. A manual check still finds it.
+ * Skip a version: automatic checks stop offering it, it never becomes ready on
+ * its own, and Rust won't install it on quit. A manual check still finds it.
  */
 export async function skipVersion(version: string): Promise<void> {
-  const updater = useUpdaterStore.getState();
-  updater.setSkippedVersion(version);
-  if (updater.version === version) {
-    useUpdaterStore.setState({ phase: "idle", version: undefined, notes: undefined, error: undefined });
-  }
+  useUpdaterStore.getState().skip(version);
   await persist(SKIPPED_VERSION_KEY, version);
+  await broadcastPrefs();
 }
 
 /** Runs the update loop. Mount once at the app root; active only in the launcher window. */
 export function useUpdater(): void {
   useEffect(() => {
-    let isLauncher = false;
+    let label = "";
     try {
-      isLauncher = getCurrentWebviewWindow().label === "launcher";
+      label = getCurrentWebviewWindow().label;
     } catch {
-      isLauncher = false;
+      label = "";
     }
-    if (!isLauncher) return;
+    const isLauncher = label === "launcher";
 
     let disposed = false;
     const unlisteners: UnlistenFn[] = [];
@@ -179,15 +245,36 @@ export function useUpdater(): void {
       else unlisteners.push(fn);
     };
 
+    // Every window: keep preferences in sync (About can open in either window).
+    onUpdaterPrefsChanged((prefs) => {
+      const updater = useUpdaterStore.getState();
+      updater.setAutoUpdate(prefs.autoUpdate);
+      if (prefs.skippedVersion) updater.skip(prefs.skippedVersion);
+      else updater.setSkippedVersion(undefined);
+    }).then(keep);
+
+    if (!isLauncher) {
+      return () => {
+        disposed = true;
+        unlisteners.forEach((fn) => fn());
+      };
+    }
+
     hydrateUpdater();
 
     onUpdateDownloadProgress((e) => {
       useUpdaterStore.getState().addProgress(e.chunk_length, e.content_length);
     }).then(keep);
 
-    // Fires for downloads started from any window (e.g. About in the overlay).
+    // Downloads may be started from any window (e.g. About in the overlay).
     onUpdateDownloaded((info) => {
       useUpdaterStore.getState().setReady(info.version, info.body);
+    }).then(keep);
+
+    onUpdateDownloadFailed((e) => {
+      if (useUpdaterStore.getState().phase === "downloading") {
+        useUpdaterStore.getState().failDownload(e.message);
+      }
     }).then(keep);
 
     const startupTimer = setTimeout(() => checkForUpdates(), STARTUP_DELAY_MS);

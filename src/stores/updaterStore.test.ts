@@ -59,6 +59,28 @@ describe("updaterStore", () => {
     expect(useUpdaterStore.getState().notes).toBe("Notes");
   });
 
+  it("a skipped version never becomes ready unless explicitly downloaded", () => {
+    useUpdaterStore.setState({ skippedVersion: "2.22.0" });
+
+    useUpdaterStore.getState().startDownload();
+    useUpdaterStore.getState().setReady("2.22.0");
+    expect(useUpdaterStore.getState().phase).toBe("idle");
+    expect(useUpdaterStore.getState().version).toBeUndefined();
+
+    useUpdaterStore.getState().setReady("2.22.0", null, { explicit: true });
+    expect(useUpdaterStore.getState().phase).toBe("ready");
+  });
+
+  it("skipping the ready version hides it", () => {
+    useUpdaterStore.getState().setReady("2.22.0");
+    useUpdaterStore.getState().skip("2.22.0");
+
+    const s = useUpdaterStore.getState();
+    expect(s.skippedVersion).toBe("2.22.0");
+    expect(s.phase).toBe("idle");
+    expect(s.version).toBeUndefined();
+  });
+
   it("a failed check sets the error phase and message", () => {
     useUpdaterStore.getState().startCheck();
     useUpdaterStore.getState().failCheck("offline");

@@ -2,7 +2,7 @@
 // NexQ Events — Typed listen() wrappers for all IPC events
 // ============================================================================
 
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AudioLevelEvent,
   BatchTranslationProgress,
@@ -20,6 +20,9 @@ import type {
   TranslationResult,
   UpdateDownloadProgress,
   UpdateInfo,
+  UpdateDownloadFailed,
+  UpdaterPrefsChangedEvent,
+  WindowMeetingEndedEvent,
 } from "./types";
 
 // == TRANSCRIPT EVENTS ==
@@ -261,6 +264,40 @@ export function onUpdateDownloaded(
   handler: (info: UpdateInfo) => void
 ): Promise<UnlistenFn> {
   return listen<UpdateInfo>("update_downloaded", (e) => handler(e.payload));
+}
+
+export function onUpdateDownloadFailed(
+  handler: (event: UpdateDownloadFailed) => void
+): Promise<UnlistenFn> {
+  return listen<UpdateDownloadFailed>("update_download_failed", (e) =>
+    handler(e.payload)
+  );
+}
+
+/** Frontend-to-frontend: keep updater preferences in sync across windows. */
+export function emitUpdaterPrefsChanged(prefs: UpdaterPrefsChangedEvent): Promise<void> {
+  return emit("updater_prefs_changed", prefs);
+}
+
+export function onUpdaterPrefsChanged(
+  handler: (prefs: UpdaterPrefsChangedEvent) => void
+): Promise<UnlistenFn> {
+  return listen<UpdaterPrefsChangedEvent>("updater_prefs_changed", (e) =>
+    handler(e.payload)
+  );
+}
+
+// == MEETING WINDOW SYNC ==
+
+export function onWindowMeetingEnded(
+  handler: (event: WindowMeetingEndedEvent) => void
+): Promise<UnlistenFn> {
+  return listen<WindowMeetingEndedEvent>("nexq:meeting_ended", (e) => handler(e.payload));
+}
+
+/** Ask every window to end the meeting (same path as the tray's Stop). */
+export function emitStopMeeting(): Promise<void> {
+  return emit("tray_stop_meeting");
 }
 
 // Tray events are handled via raw listen() calls in App.tsx
