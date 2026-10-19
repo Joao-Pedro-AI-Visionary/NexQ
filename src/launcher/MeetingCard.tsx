@@ -18,7 +18,7 @@ interface MeetingCardProps {
   meeting: MeetingSummary;
   onSelect: (meetingId: string) => void;
   onDelete: (meetingId: string) => void;
-  onRename: (meetingId: string, newTitle: string) => void;
+  onRename: (meetingId: string, newTitle: string) => void | Promise<void>;
   isFavorite?: boolean;
   onToggleFavorite?: (meetingId: string) => void;
   /** True only for the singleton active meeting, not stale meetings missing duration */
@@ -45,8 +45,11 @@ export function MeetingCard({
 
   useEffect(() => {
     if (isEditing && inputRef.current) {
-      inputRef.current.focus();
-      inputRef.current.select();
+      const input = inputRef.current;
+      input.focus();
+      // select() leaves the caret at the end and scrolls long titles to their tail
+      input.setSelectionRange(0, input.value.length);
+      input.scrollLeft = 0;
     }
   }, [isEditing]);
 
@@ -182,7 +185,9 @@ export function MeetingCard({
                 maxLength={200}
                 className="w-full rounded-lg border border-primary/30 bg-background px-2.5 py-1 text-xs text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary/20"
               />
+              {/* onMouseDown preventDefault keeps focus in the input so the blur-save never races these buttons */}
               <button
+                onMouseDown={(e) => e.preventDefault()}
                 onClick={(e) => {
                   e.stopPropagation();
                   handleSaveEdit();
@@ -194,12 +199,13 @@ export function MeetingCard({
                 <Check className="h-3 w-3" aria-hidden="true" />
               </button>
               <button
+                onMouseDown={(e) => e.preventDefault()}
                 onClick={(e) => {
                   e.stopPropagation();
                   handleCancelEdit();
                 }}
                 className="rounded-md p-1 text-muted-foreground hover:bg-secondary"
-                aria-label="Cancel editing"
+                aria-label="Cancel rename"
               >
                 <X className="h-3 w-3" aria-hidden="true" />
               </button>
@@ -292,7 +298,7 @@ export function MeetingCard({
               <button
                 onClick={handleStartEdit}
                 className="rounded-md p-1 text-muted-foreground/60 hover:bg-secondary hover:text-foreground"
-                aria-label="Rename meeting"
+                aria-label="Rename"
               >
                 <Pencil className="h-3 w-3" aria-hidden="true" />
               </button>

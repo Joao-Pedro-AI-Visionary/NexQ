@@ -3,7 +3,7 @@ import { useMeetingStore } from "../stores/meetingStore";
 import { useConfigStore } from "../stores/configStore";
 import { useContextStore } from "../stores/contextStore";
 import { useRagStore } from "../stores/ragStore";
-import { searchMeetings, deleteMeeting } from "../lib/ipc";
+import { searchMeetings, deleteMeeting, renameMeeting } from "../lib/ipc";
 import { showToast } from "../stores/toastStore";
 import { RecentMeetings } from "./RecentMeetings";
 import { MeetingDetails } from "./meeting-details";
@@ -190,7 +190,13 @@ export function LauncherView() {
     }
   }, [recentMeetings, loadRecentMeetings]);
 
-  const handleRenameMeeting = useCallback(async () => { await loadRecentMeetings(); }, [loadRecentMeetings]);
+  const handleRenameMeeting = useCallback(async (meetingId: string, newTitle: string) => {
+    try {
+      await renameMeeting(meetingId, newTitle);
+      await loadRecentMeetings();
+      setSearchResults((p) => p?.map((m) => (m.id === meetingId ? { ...m, title: newTitle } : m)) ?? null);
+    } catch { showToast("Couldn't rename meeting", "error"); }
+  }, [loadRecentMeetings]);
 
   const handleSelectMeeting = useCallback((meetingId: string) => {
     if (activeMeeting?.id === meetingId) {
