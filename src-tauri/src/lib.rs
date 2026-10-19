@@ -124,6 +124,7 @@ fn enable_live_blur_behind(hwnd_raw: *mut std::ffi::c_void) {
 fn show_launcher(app: &tauri::AppHandle) {
     if let Some(launcher) = app.get_webview_window("launcher") {
         let _ = launcher.show();
+        let _ = launcher.unminimize();
         let _ = launcher.set_focus();
     }
     if let Some(overlay) = app.get_webview_window("overlay") {
@@ -161,6 +162,11 @@ pub fn run() {
     ).init();
 
     tauri::Builder::default()
+        // Must be first: a second launch forwards to this process and exits,
+        // preventing duplicate tray icons.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            show_launcher(app);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
