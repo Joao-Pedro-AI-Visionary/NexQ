@@ -1,11 +1,12 @@
 // Syncs audio playback position to transcript segments.
-// - Finds the active segment based on currentTimeMs
-// - Updates activeSegmentId in the audio player store
+// - Finds the active segment from the playback time (binary search, store subscription)
+// - Updates activeSegmentId in the audio player store only when it changes
 // - Auto-scrolls to the active segment (pauses on manual wheel scroll,
 //   re-enables after 5 seconds of inactivity)
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useAudioPlayerStore } from "@/stores/audioPlayerStore";
+import { findActiveSegmentIndex } from "@/lib/activeSegment";
 import type { TranscriptSegment } from "@/lib/types";
 
 const MANUAL_SCROLL_COOLDOWN_MS = 5000;
@@ -16,42 +17,37 @@ export function useAudioTranscriptSync(
   recordingOffsetMs: number,
   segmentRefs?: React.MutableRefObject<Map<string, HTMLElement>>
 ): void {
-  // Use granular selectors to avoid unnecessary re-renders
-  const currentTimeMs = useAudioPlayerStore((s) => s.currentTimeMs);
+  // Granular selectors. currentTimeMs is deliberately NOT selected here: this
+  // hook runs inside TranscriptView, so subscribing would re-render the whole
+  // transcript on every time update. It is read via store.subscribe below.
   const isPlaying = useAudioPlayerStore((s) => s.isPlaying);
   const activeSegmentId = useAudioPlayerStore((s) => s.activeSegmentId);
-  const setActiveSegmentId = useAudioPlayerStore((s) => s.setActiveSegmentId);
 
   // Refs for manual scroll state — not Zustand state to avoid re-renders
   const autoScrollEnabledRef = useRef(true);
   const manualScrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // --- Active segment tracking ---
+  // Adjusted start time of each segment (ascending), for binary search.
+  const startsMs = useMemo(
+    () => segments.map((s) => s.timestamp_ms - meetingStartMs - recordingOffsetMs),
+    [segments, meetingStartMs, recordingOffsetMs]
+  );
+
+  // --- Active segment tracking (store subscription, no React re-render) ---
   useEffect(() => {
     if (!isPlaying || segments.length === 0) return;
 
-    // Find the last segment whose adjusted timestamp <= currentTimeMs
-    let activeId: string | null = null;
-    for (let i = 0; i < segments.length; i++) {
-      const adjustedMs =
-        segments[i].timestamp_ms - meetingStartMs - recordingOffsetMs;
-      if (adjustedMs <= currentTimeMs) {
-        activeId = segments[i].id;
-      } else {
-        // Segments are in ascending time order — can stop early
-        break;
-      }
-    }
+    const update = () => {
+      const { currentTimeMs, activeSegmentId: current, setActiveSegmentId } =
+        useAudioPlayerStore.getState();
+      const idx = findActiveSegmentIndex(startsMs, currentTimeMs);
+      const id = idx >= 0 ? segments[idx].id : null;
+      if (id !== current) setActiveSegmentId(id);
+    };
 
-    setActiveSegmentId(activeId);
-  }, [
-    currentTimeMs,
-    isPlaying,
-    segments,
-    meetingStartMs,
-    recordingOffsetMs,
-    setActiveSegmentId,
-  ]);
+    update();
+    return useAudioPlayerStore.subscribe(update);
+  }, [isPlaying, segments, startsMs]);
 
   // --- Auto-scroll when active segment changes ---
   useEffect(() => {

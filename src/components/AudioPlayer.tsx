@@ -1,9 +1,11 @@
 // AudioPlayer — Spotify-style sticky bottom bar audio player
-// Uses an invisible <audio> element for playback and delegates
-// waveform visualization to WaveformCanvas.
+// Uses an invisible <audio> element for playback (streamed through Tauri's
+// asset protocol, so large recordings are range-requested, not loaded into JS)
+// and delegates waveform visualization to WaveformCanvas.
 
 import React, { useRef, useEffect, useCallback } from "react";
-import { readFile, copyFile } from "@tauri-apps/plugin-fs";
+import { copyFile } from "@tauri-apps/plugin-fs";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { useAudioPlayerStore } from "@/stores/audioPlayerStore";
 import { WaveformCanvas } from "@/components/WaveformCanvas";
@@ -103,6 +105,10 @@ function DownloadIcon() {
   );
 }
 
+// React/store time updates are throttled; the waveform playhead reads the live
+// time from a ref every animation frame instead.
+const TIME_PUSH_INTERVAL_MS = 100;
+
 // Stable defaults so omitted props don't create a new array every render.
 const NO_BOOKMARKS: MeetingBookmark[] = [];
 const NO_TOPIC_SECTIONS: TopicSection[] = [];
@@ -122,33 +128,31 @@ export function AudioPlayer({
   topicSections = NO_TOPIC_SECTIONS,
 }: AudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
-  const rafRef = useRef<number | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const sourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
 
-  const {
-    isPlaying,
-    currentTimeMs,
-    playbackSpeed,
-    volume,
-    toggle,
-    seekToTime,
-    cycleSpeed,
-    setVolume,
-    setAudioElement,
-    setSyncContext,
-    setDuration,
-    updateCurrentTime,
-    pause,
-  } = useAudioPlayerStore();
+  const isPlaying = useAudioPlayerStore((s) => s.isPlaying);
+  const currentTimeMs = useAudioPlayerStore((s) => s.currentTimeMs);
+  const playbackSpeed = useAudioPlayerStore((s) => s.playbackSpeed);
+  const volume = useAudioPlayerStore((s) => s.volume);
+  const toggle = useAudioPlayerStore((s) => s.toggle);
+  const seekToTime = useAudioPlayerStore((s) => s.seekToTime);
+  const cycleSpeed = useAudioPlayerStore((s) => s.cycleSpeed);
+  const setVolume = useAudioPlayerStore((s) => s.setVolume);
+  const setAudioElement = useAudioPlayerStore((s) => s.setAudioElement);
+  const setSyncContext = useAudioPlayerStore((s) => s.setSyncContext);
+  const setDuration = useAudioPlayerStore((s) => s.setDuration);
+  const updateCurrentTime = useAudioPlayerStore((s) => s.updateCurrentTime);
+  const setIsPlaying = useAudioPlayerStore((s) => s.setIsPlaying);
+
+  // Live playback time (ms), written every animation frame while playing.
+  const liveTimeRef = useRef(0);
 
   const setGainNode = useAudioPlayerStore((s) => s.setGainNode);
 
   // -------------------------------------------------------------------------
   // Mount: wire up audio element + Web Audio API for volume amplification
   // -------------------------------------------------------------------------
-
-  const blobUrlRef = useRef<string | null>(null);
 
   // Set up Web Audio API GainNode (once per audio element lifetime)
   const ensureGainNode = useCallback((audio: HTMLAudioElement) => {
@@ -178,16 +182,28 @@ export function AudioPlayer({
     const audio = audioRef.current;
     if (!audio) return;
 
-    if (blobUrlRef.current) {
-      URL.revokeObjectURL(blobUrlRef.current);
-      blobUrlRef.current = null;
-    }
-
     setAudioElement(audio);
     setSyncContext(meetingStartMs, recordingOffsetMs);
     setDuration(durationMs);
 
-    const handleEnded = () => { pause(); };
+    // isPlaying follows the element's own events, never the play() call.
+    const syncTime = () => {
+      liveTimeRef.current = audio.currentTime * 1000;
+      updateCurrentTime(liveTimeRef.current);
+    };
+    const handlePlaying = () => setIsPlaying(true);
+    const handlePause = () => {
+      setIsPlaying(false);
+      syncTime(); // final exact position for the throttled store value
+    };
+    const handleEnded = () => {
+      setIsPlaying(false);
+      syncTime();
+    };
+    const handleSeeked = () => syncTime();
+    const handleError = () => {
+      console.error("Failed to load audio file:", audio.error);
+    };
 
     // Resume AudioContext on play (browser requires user gesture)
     const handlePlay = () => {
@@ -196,35 +212,36 @@ export function AudioPlayer({
       }
     };
 
+    audio.addEventListener("playing", handlePlaying);
+    audio.addEventListener("pause", handlePause);
     audio.addEventListener("ended", handleEnded);
+    audio.addEventListener("seeked", handleSeeked);
+    audio.addEventListener("error", handleError);
     audio.addEventListener("play", handlePlay);
 
-    // Load audio file and set up gain node after loading
-    const loadAudio = async () => {
-      try {
-        const bytes = await readFile(recordingPath);
-        const mimeType = recordingPath.endsWith(".ogg") ? "audio/ogg" : "audio/wav";
-        const blob = new Blob([bytes], { type: mimeType });
-        const url = URL.createObjectURL(blob);
-        blobUrlRef.current = url;
-        audio.src = url;
-        audio.preload = "auto";
+    // Stream via the asset protocol (range requests). The asset response sends
+    // CORS headers for the window origin; crossOrigin must be set BEFORE src so
+    // the Web Audio GainNode below isn't silenced by a tainted media element.
+    liveTimeRef.current = 0;
+    updateCurrentTime(0);
+    audio.crossOrigin = "anonymous";
+    audio.preload = "metadata";
+    audio.src = convertFileSrc(recordingPath);
 
-        // Connect GainNode after src is set
-        ensureGainNode(audio);
-      } catch (err) {
-        console.error("Failed to load audio file:", err);
-      }
-    };
-    loadAudio();
+    // Connect GainNode after src is set
+    ensureGainNode(audio);
 
     return () => {
+      audio.removeEventListener("playing", handlePlaying);
+      audio.removeEventListener("pause", handlePause);
       audio.removeEventListener("ended", handleEnded);
+      audio.removeEventListener("seeked", handleSeeked);
+      audio.removeEventListener("error", handleError);
       audio.removeEventListener("play", handlePlay);
-      if (blobUrlRef.current) {
-        URL.revokeObjectURL(blobUrlRef.current);
-        blobUrlRef.current = null;
-      }
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load(); // abort any in-flight range requests
+      setIsPlaying(false);
       setAudioElement(null);
       setGainNode(null);
     };
@@ -244,33 +261,25 @@ export function AudioPlayer({
   // RAF loop for smooth time tracking while playing
   // -------------------------------------------------------------------------
 
-  const startRaf = useCallback(() => {
+  useEffect(() => {
+    if (!isPlaying) return;
     const audio = audioRef.current;
     if (!audio) return;
 
-    const tick = () => {
-      updateCurrentTime(audio.currentTime * 1000);
-      rafRef.current = requestAnimationFrame(tick);
+    let raf = 0;
+    let lastPush = 0;
+    const tick = (now: number) => {
+      const ms = audio.currentTime * 1000;
+      liveTimeRef.current = ms;
+      if (now - lastPush >= TIME_PUSH_INTERVAL_MS) {
+        lastPush = now;
+        updateCurrentTime(ms);
+      }
+      raf = requestAnimationFrame(tick);
     };
-
-    rafRef.current = requestAnimationFrame(tick);
-  }, [updateCurrentTime]);
-
-  const stopRaf = useCallback(() => {
-    if (rafRef.current !== null) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    }
-  }, []);
-
-  useEffect(() => {
-    if (isPlaying) {
-      startRaf();
-    } else {
-      stopRaf();
-    }
-    return stopRaf;
-  }, [isPlaying, startRaf, stopRaf]);
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [isPlaying, updateCurrentTime]);
 
   // -------------------------------------------------------------------------
   // Download handler
@@ -300,7 +309,7 @@ export function AudioPlayer({
   return (
     <div className="border-t border-border/10 bg-card/95 backdrop-blur-xl px-5 py-2.5 flex items-center gap-3 select-none">
       {/* Hidden audio element */}
-      <audio ref={audioRef} preload="auto" className="hidden" />
+      <audio ref={audioRef} preload="metadata" className="hidden" />
 
       {/* Play / Pause button */}
       <button
@@ -324,6 +333,8 @@ export function AudioPlayer({
           <WaveformCanvas
             waveformData={waveformData}
             currentTimeMs={currentTimeMs}
+            liveTimeRef={liveTimeRef}
+            isPlaying={isPlaying}
             durationMs={effectiveDuration}
             meetingStartMs={meetingStartMs}
             recordingOffsetMs={recordingOffsetMs}

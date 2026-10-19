@@ -16,7 +16,15 @@ import { downsamplePeaks } from "@/lib/waveform";
 
 interface WaveformCanvasProps {
   waveformData: WaveformData;
+  /** Playback time for static renders (paused / seeking). May update at a low rate. */
   currentTimeMs: number;
+  /**
+   * Live playback time, written every animation frame by the player. While
+   * `isPlaying`, the canvas runs its own RAF loop off this ref so the playhead
+   * stays smooth even though `currentTimeMs` (React state) is throttled.
+   */
+  liveTimeRef?: React.MutableRefObject<number>;
+  isPlaying?: boolean;
   durationMs: number;
   meetingStartMs: number;
   recordingOffsetMs: number;
@@ -124,6 +132,8 @@ function renderBarLayers(bars: number[], size: CanvasSize): BarLayers | null {
 export function WaveformCanvas({
   waveformData,
   currentTimeMs,
+  liveTimeRef,
+  isPlaying = false,
   durationMs,
   bookmarks = NO_BOOKMARKS,
   topicSections = NO_TOPIC_SECTIONS,
@@ -181,10 +191,10 @@ export function WaveformCanvas({
   const layers = useMemo(() => renderBarLayers(bars, size), [bars, size]);
 
   // -------------------------------------------------------------------------
-  // Per-frame draw: blit cached layers, then overlays (topics, bookmarks, playhead)
+  // Draw: blit cached layers, then overlays (topics, bookmarks, playhead)
   // -------------------------------------------------------------------------
 
-  useEffect(() => {
+  const draw = useCallback((timeMs: number) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -206,7 +216,7 @@ export function WaveformCanvas({
 
     if (!layers || durationMs <= 0) return;
 
-    const progress = Math.min(1, Math.max(0, currentTimeMs / durationMs));
+    const progress = Math.min(1, Math.max(0, timeMs / durationMs));
     const playheadX = progress * logicalW;
 
     // --- bars: bar i is "played" when its centre is at/before the playhead ---
@@ -277,7 +287,22 @@ export function WaveformCanvas({
     ctx.stroke();
     ctx.shadowBlur = 0;
     ctx.restore();
-  }, [layers, bars, size, currentTimeMs, durationMs, bookmarks, topicSections]);
+  }, [layers, bars, size, durationMs, bookmarks, topicSections]);
+
+  // Static redraw whenever inputs (or the throttled time prop) change.
+  useEffect(() => {
+    draw(isPlaying && liveTimeRef ? liveTimeRef.current : currentTimeMs);
+  }, [draw, currentTimeMs, isPlaying, liveTimeRef]);
+
+  // While playing, redraw every animation frame from the live ref.
+  useEffect(() => {
+    if (!isPlaying || !liveTimeRef) return;
+    let raf = requestAnimationFrame(function tick() {
+      draw(liveTimeRef.current);
+      raf = requestAnimationFrame(tick);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [isPlaying, liveTimeRef, draw]);
 
   // -------------------------------------------------------------------------
   // Interaction helpers

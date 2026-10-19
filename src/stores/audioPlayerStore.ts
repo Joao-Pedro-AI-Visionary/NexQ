@@ -20,6 +20,8 @@ interface AudioPlayerState {
   // Actions
   play: () => void;
   pause: () => void;
+  /** Driven only by the <audio> element's playing/pause/ended events. */
+  setIsPlaying: (playing: boolean) => void;
   toggle: () => void;
   seekToTime: (ms: number) => void;
   seekToTimestamp: (absoluteTimestampMs: number) => void;
@@ -51,19 +53,26 @@ export const useAudioPlayerStore = create<AudioPlayerState>((set, get) => ({
   play: () => {
     const { audioElement } = get();
     if (audioElement) {
+      // isPlaying is NOT set here: it follows the element's `playing` event, so a
+      // missing/failed source never leaves the UI stuck in a "playing" state.
       audioElement.play().catch((err) => {
         console.warn("[audioPlayerStore] play() failed:", err);
       });
-      set({ isPlaying: true });
     }
   },
 
   pause: () => {
     const { audioElement } = get();
     if (audioElement) {
+      // The element's `pause` event flips isPlaying.
       audioElement.pause();
+    } else {
+      set({ isPlaying: false });
     }
-    set({ isPlaying: false });
+  },
+
+  setIsPlaying: (playing: boolean) => {
+    if (get().isPlaying !== playing) set({ isPlaying: playing });
   },
 
   toggle: () => {
