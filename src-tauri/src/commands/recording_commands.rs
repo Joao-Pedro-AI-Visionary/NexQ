@@ -2,8 +2,11 @@ use serde::Serialize;
 use std::fs;
 use tauri::{command, State};
 
-use crate::audio::waveform::WaveformData;
+use crate::audio::waveform::{downsample_waveform, WaveformData};
 use crate::state::AppState;
+
+/// Maximum waveform peaks returned to the frontend.
+const MAX_WAVEFORM_PEAKS: usize = 4000;
 
 #[derive(Debug, Serialize)]
 pub struct RecordingInfo {
@@ -61,6 +64,8 @@ pub async fn get_recording_info(
                 .map_err(|e| format!("Failed to parse waveform JSON: {}", e))?;
 
             let duration_ms = waveform_data.duration_ms;
+            // Cap what crosses IPC: the canvas never needs more than this.
+            let waveform_data = downsample_waveform(waveform_data, MAX_WAVEFORM_PEAKS);
 
             Ok(Some(RecordingInfo {
                 path,

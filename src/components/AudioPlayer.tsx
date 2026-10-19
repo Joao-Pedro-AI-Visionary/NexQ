@@ -103,6 +103,10 @@ function DownloadIcon() {
   );
 }
 
+// Stable defaults so omitted props don't create a new array every render.
+const NO_BOOKMARKS: MeetingBookmark[] = [];
+const NO_TOPIC_SECTIONS: TopicSection[] = [];
+
 // ---------------------------------------------------------------------------
 // AudioPlayer component
 // ---------------------------------------------------------------------------
@@ -114,8 +118,8 @@ export function AudioPlayer({
   recordingOffsetMs,
   durationMs,
   waveformData,
-  bookmarks = [],
-  topicSections = [],
+  bookmarks = NO_BOOKMARKS,
+  topicSections = NO_TOPIC_SECTIONS,
 }: AudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const rafRef = useRef<number | null>(null);
