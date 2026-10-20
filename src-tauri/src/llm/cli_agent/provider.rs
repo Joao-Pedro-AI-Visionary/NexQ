@@ -7,6 +7,11 @@
 //! system prompt. The `model` argument is not used: the session model comes
 //! from `ClaudeCliConfig` (Fast tier).
 //!
+//! The Utility session is recycled once its context grows past
+//! [`UTILITY_MAX_CONTEXT_TOKENS`], after [`UTILITY_MAX_TURNS`] turns, or right
+//! after a CLI error, so unrelated requests never pile up into one huge
+//! conversation.
+//!
 //! The provider holds no state. It reaches the session manager through the
 //! `AppHandle` every `stream_completion` call already receives, so
 //! `create_provider` needs no access to `AppState`.
@@ -21,6 +26,7 @@ use crate::llm::provider::{
 };
 use crate::state::AppState;
 use std::sync::Arc;
+use std::time::Instant;
 use tauri::Manager;
 
 /// System prompt of the Utility session. Requests are unrelated to each other
@@ -30,6 +36,13 @@ pub const UTILITY_SYSTEM_PROMPT: &str = "You are the assistant inside NexQ, a me
 assistant app. Every user message is a separate, self-contained request: follow its \
 ## Instructions section when present and answer only that request. Do not refer to or \
 rely on earlier messages.";
+
+/// The Utility session is replaced once a turn's context (input + cache
+/// reads) reaches this size, so cost and latency stay flat and the CLI never
+/// hits its context limit.
+pub const UTILITY_MAX_CONTEXT_TOKENS: u64 = 60_000;
+/// ... or after this many turns, whichever comes first.
+pub const UTILITY_MAX_TURNS: usize = 30;
 
 /// Static model list: CLI aliases that always resolve to the latest model.
 const MODELS: [(&str, &str); 4] = [
@@ -100,7 +113,29 @@ pub async fn ask_utility(
     if cancel.is_cancelled() {
         return Err(AgentError::Cancelled);
     }
-    manager.ask(&key, prompt, on_delta, cancel).await
+    let result = manager.ask(&key, prompt, on_delta, cancel).await;
+
+    // Recycle a grown session, or one a CLI error (e.g. context too long)
+    // left in `error` while its process lives on. The entry goes now; the
+    // process is closed in the background so this request isn't delayed.
+    let recycle = match &result {
+        Ok(turn) => needs_recycle(turn, manager.turns(&key)),
+        Err(AgentError::Cli(..)) => true,
+        Err(_) => false,
+    };
+    if recycle {
+        if let Some(old) = manager.retire_if_idle(&key) {
+            tauri::async_runtime::spawn(async move { old.close().await });
+        }
+    }
+    result
+}
+
+/// True when the Utility session should be replaced after `turn`, its
+/// `turns`-th finished turn.
+fn needs_recycle(turn: &TurnResult, turns: usize) -> bool {
+    turn.input_tokens + turn.cache_read_tokens >= UTILITY_MAX_CONTEXT_TOKENS
+        || turns >= UTILITY_MAX_TURNS
 }
 
 /// Map a session error onto the provider error the callers already handle.
@@ -116,12 +151,14 @@ pub fn to_llm_error(err: AgentError) -> LLMError {
     }
 }
 
-fn stats_from(turn: &TurnResult) -> CompletionStats {
+/// `latency_ms` is the whole call as the user felt it (cold start, queueing).
+fn stats_from(turn: &TurnResult, latency_ms: u64) -> CompletionStats {
+    let prompt_tokens = turn.input_tokens + turn.cache_read_tokens;
     CompletionStats {
-        prompt_tokens: turn.input_tokens,
+        prompt_tokens,
         completion_tokens: turn.output_tokens,
-        total_tokens: turn.input_tokens + turn.output_tokens,
-        latency_ms: turn.duration_ms,
+        total_tokens: prompt_tokens + turn.output_tokens,
+        latency_ms,
     }
 }
 
@@ -169,6 +206,7 @@ impl LLMProvider for ClaudeCliProvider {
         app_handle: tauri::AppHandle,
         sink: Option<TokenSink>,
     ) -> Result<CompletionStats, LLMError> {
+        let start = Instant::now();
         let manager = match app_handle.try_state::<AppState>() {
             Some(state) => state.agent_sessions.clone(),
             None => {
@@ -198,7 +236,7 @@ impl LLMProvider for ClaudeCliProvider {
                 if is_cancelled(&params) {
                     return Err(LLMError::Cancelled);
                 }
-                let stats = stats_from(&turn);
+                let stats = stats_from(&turn, start.elapsed().as_millis() as u64);
                 emit_end(&app_handle, &params, stats.total_tokens, stats.latency_ms);
                 Ok(stats)
             }
@@ -291,6 +329,16 @@ mod tests {
             if cancel.is_cancelled() {
                 return Err(AgentError::Cancelled);
             }
+            if prompt == "cli-error" {
+                return Err(AgentError::Cli(AgentErrorKind::Other, "Prompt is too long".into()));
+            }
+            if prompt == "big" {
+                return Ok(TurnResult {
+                    input_tokens: 50_000,
+                    cache_read_tokens: 10_000,
+                    ..Default::default()
+                });
+            }
             on_delta("Hel");
             on_delta("lo");
             Ok(TurnResult {
@@ -340,7 +388,7 @@ mod tests {
             let turn = ask_utility(&mgr, "q", on_delta, Arc::new(CancelToken::new()))
                 .await
                 .unwrap();
-            assert_eq!(stats_from(&turn).total_tokens, 14);
+            assert_eq!(stats_from(&turn, 5).total_tokens, 14);
         }
 
         let configs = rec.configs.lock().unwrap();
@@ -364,5 +412,56 @@ mod tests {
             .unwrap_err();
         assert_eq!(err, AgentError::Cancelled);
         assert!(rec.prompts.lock().unwrap().is_empty(), "nothing is sent once cancelled");
+    }
+
+    async fn ask(mgr: &AgentSessionManager, prompt: &str) -> Result<TurnResult, AgentError> {
+        ask_utility(mgr, prompt, Box::new(|_: &str| {}), Arc::new(CancelToken::new())).await
+    }
+
+    #[tokio::test]
+    async fn claude_cli_utility_recycles_after_context_threshold() {
+        let rec = Arc::new(Recorder::default());
+        let mgr = manager(&rec);
+        ask(&mgr, "q").await.unwrap();
+        ask(&mgr, "big").await.unwrap(); // 50k input + 10k cache reads
+        assert!(mgr.snapshot().is_empty(), "grown session is retired at once");
+        ask(&mgr, "q").await.unwrap();
+        assert_eq!(rec.configs.lock().unwrap().len(), 2, "next call starts a fresh session");
+    }
+
+    #[tokio::test]
+    async fn claude_cli_utility_recycles_after_cli_error() {
+        let rec = Arc::new(Recorder::default());
+        let mgr = manager(&rec);
+        assert!(matches!(ask(&mgr, "cli-error").await, Err(AgentError::Cli(..))));
+        ask(&mgr, "q").await.unwrap();
+        assert_eq!(rec.configs.lock().unwrap().len(), 2, "errored session is replaced");
+    }
+
+    #[tokio::test]
+    async fn claude_cli_utility_recycles_after_max_turns() {
+        let rec = Arc::new(Recorder::default());
+        let mgr = manager(&rec);
+        for _ in 0..UTILITY_MAX_TURNS {
+            ask(&mgr, "q").await.unwrap();
+        }
+        assert_eq!(rec.configs.lock().unwrap().len(), 1);
+        ask(&mgr, "q").await.unwrap();
+        assert_eq!(rec.configs.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn claude_cli_stats_count_cache_reads_as_prompt() {
+        let turn = TurnResult {
+            input_tokens: 10,
+            cache_read_tokens: 90,
+            output_tokens: 5,
+            duration_ms: 1,
+            ..Default::default()
+        };
+        let stats = stats_from(&turn, 1500);
+        assert_eq!(stats.prompt_tokens, 100);
+        assert_eq!(stats.total_tokens, 105);
+        assert_eq!(stats.latency_ms, 1500);
     }
 }

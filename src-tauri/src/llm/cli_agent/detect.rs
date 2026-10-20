@@ -71,10 +71,19 @@ pub fn parse_auth_status(json: &str) -> Result<ClaudeAuthStatus, String> {
 /// console window, API-key env stripped). `auth status` exits 1 when logged
 /// out but still prints JSON, so a non-zero exit is not an error by itself.
 pub async fn claude_status(bin: &Path) -> Result<(String, ClaudeAuthStatus), String> {
-    let version = run_probe(bin, &["--version"]).await?;
-    let auth = run_probe(bin, &["auth", "status"]).await?;
-    let status = parse_auth_status(&auth)?;
-    Ok((version.trim().to_string(), status))
+    let version = claude_version(bin).await?;
+    let status = claude_auth_status(bin).await?;
+    Ok((version, status))
+}
+
+/// `claude --version`, trimmed.
+pub async fn claude_version(bin: &Path) -> Result<String, String> {
+    Ok(run_probe(bin, &["--version"]).await?.trim().to_string())
+}
+
+/// `claude auth status`, parsed.
+pub async fn claude_auth_status(bin: &Path) -> Result<ClaudeAuthStatus, String> {
+    parse_auth_status(&run_probe(bin, &["auth", "status"]).await?)
 }
 
 async fn run_probe(bin: &Path, args: &[&str]) -> Result<String, String> {

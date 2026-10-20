@@ -2,10 +2,14 @@
 //! status and the login terminal.
 
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use tauri::{command, State};
 
-use crate::llm::cli_agent::detect::{claude_status, find_claude_binary, ClaudeAuthStatus};
+use crate::llm::cli_agent::detect::{
+    claude_auth_status, claude_version, find_claude_binary, ClaudeAuthStatus,
+};
 use crate::llm::cli_agent::manager::{AgentSessionStatus, ClaudeCliConfig};
+use crate::llm::ProviderType;
 use crate::state::AppState;
 
 /// Effort levels the CLI accepts for `--effort`.
@@ -16,19 +20,21 @@ const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 pub struct ClaudeCliStatus {
     pub installed: bool,
     pub binary_path: Option<String>,
+    /// `None` when not installed or the `--version` probe failed.
     pub version: Option<String>,
     /// `None` when not installed or the `auth status` probe failed.
     pub auth: Option<ClaudeAuthStatus>,
 }
 
-async fn resolve_binary() -> Option<std::path::PathBuf> {
+async fn resolve_binary() -> Option<PathBuf> {
     tokio::task::spawn_blocking(find_claude_binary)
         .await
         .ok()
         .flatten()
 }
 
-/// Detect `claude.exe`, its version and login state (no model call).
+/// Detect `claude.exe`, its version and login state (no model call). The two
+/// probes run independently, so one failing keeps the other's answer.
 #[command]
 pub async fn claude_cli_status() -> Result<ClaudeCliStatus, String> {
     let Some(bin) = resolve_binary().await else {
@@ -39,13 +45,13 @@ pub async fn claude_cli_status() -> Result<ClaudeCliStatus, String> {
             auth: None,
         });
     };
-    let (version, auth) = match claude_status(&bin).await {
-        Ok((version, auth)) => (Some(version), Some(auth)),
-        Err(e) => {
-            log::warn!("Claude CLI status probe failed: {e}");
-            (None, None)
-        }
-    };
+    let (version, auth) = tokio::join!(claude_version(&bin), claude_auth_status(&bin));
+    let version = version
+        .map_err(|e| log::warn!("Claude CLI version probe failed: {e}"))
+        .ok();
+    let auth = auth
+        .map_err(|e| log::warn!("Claude CLI auth probe failed: {e}"))
+        .ok();
     Ok(ClaudeCliStatus {
         installed: true,
         binary_path: Some(bin.to_string_lossy().into_owned()),
@@ -76,6 +82,15 @@ fn validate_config(config: &ClaudeCliConfig) -> Result<(), String> {
             return Err(format!("Invalid {tier} effort: {effort:?}"));
         }
     }
+    if let Some(fallback) = &config.fallback_provider {
+        match ProviderType::from_str(fallback) {
+            Ok(ProviderType::ClaudeCli) => {
+                return Err("Claude CLI cannot be its own fallback provider".to_string())
+            }
+            Ok(_) => {}
+            Err(_) => return Err(format!("Unknown fallback provider: {fallback:?}")),
+        }
+    }
     Ok(())
 }
 
@@ -103,32 +118,44 @@ pub async fn get_agent_sessions(
     Ok(state.agent_sessions.snapshot())
 }
 
-/// The command line handed to `cmd.exe`: `start` opens a new console window
-/// running `claude` (kept open by `/k` so the user sees the result).
-fn login_command_line(claude: &str) -> String {
-    format!(r#"/d /c start "Claude login" cmd.exe /k "{claude}""#)
+/// How to launch the login terminal: the working directory and the
+/// `cmd.exe` command line. `start` opens a new console window running
+/// `claude` (kept open by `/k` so the user sees the result). The binary's
+/// folder becomes the working directory and the command names it as
+/// `.\claude.exe`, so the path (which may contain `&`, `%` or spaces) never
+/// goes through cmd's parser. Without a resolved binary, `claude` comes from
+/// PATH.
+fn login_launch(bin: Option<&Path>) -> (Option<PathBuf>, String) {
+    let dir = bin
+        .and_then(Path::parent)
+        .filter(|d| !d.as_os_str().is_empty());
+    let exe = if dir.is_some() { r".\claude.exe" } else { "claude" };
+    (
+        dir.map(Path::to_path_buf),
+        format!(r#"/d /c start "Claude login" cmd.exe /k {exe}"#),
+    )
 }
 
 /// Open a visible terminal running `claude` so the user can log in. NexQ
 /// reads nothing from it; credentials stay between the user and the CLI.
 #[command]
 pub async fn open_claude_login_terminal() -> Result<(), String> {
-    let claude = resolve_binary()
-        .await
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "claude".to_string());
+    let bin = resolve_binary().await;
+    let (dir, command_line) = login_launch(bin.as_deref());
     let comspec = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string());
     let mut cmd = std::process::Command::new(comspec);
+    if let Some(dir) = dir {
+        cmd.current_dir(dir);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         // Exact quoting for cmd.exe; this outer cmd has no window of its own
         // (CREATE_NO_WINDOW), `start` gives `claude` a fresh visible console.
-        cmd.raw_arg(login_command_line(&claude))
-            .creation_flags(0x0800_0000);
+        cmd.raw_arg(command_line).creation_flags(0x0800_0000);
     }
     #[cfg(not(windows))]
-    cmd.arg(login_command_line(&claude));
+    cmd.arg(command_line);
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -161,11 +188,31 @@ mod tests {
     }
 
     #[test]
-    fn claude_cli_login_command_line_quotes_path() {
+    fn claude_cli_config_validates_fallback() {
+        let with = |p: &str| ClaudeCliConfig {
+            fallback_provider: Some(p.into()),
+            ..Default::default()
+        };
+        assert!(validate_config(&with("ollama")).is_ok());
+        assert!(validate_config(&with("claude_cli")).is_err());
+        assert!(validate_config(&with("nope")).is_err());
+        assert!(validate_config(&with("")).is_err());
+    }
+
+    #[test]
+    fn claude_cli_login_launch_keeps_path_out_of_cmd() {
+        let bin = Path::new(r"C:\Users\Tom&Jerry 100%\.local\bin\claude.exe");
+        let (dir, line) = login_launch(Some(bin));
         assert_eq!(
-            login_command_line(r"C:\Users\A B\.local\bin\claude.exe"),
-            r#"/d /c start "Claude login" cmd.exe /k "C:\Users\A B\.local\bin\claude.exe""#
+            dir.as_deref(),
+            Some(Path::new(r"C:\Users\Tom&Jerry 100%\.local\bin"))
         );
+        assert_eq!(line, r#"/d /c start "Claude login" cmd.exe /k .\claude.exe"#);
+        assert!(!line.contains('&') && !line.contains('%'));
+
+        let (dir, line) = login_launch(None);
+        assert_eq!(dir, None);
+        assert_eq!(line, r#"/d /c start "Claude login" cmd.exe /k claude"#);
     }
 
     #[test]

@@ -289,6 +289,8 @@ struct Entry {
     detail: Option<String>,
     last_used: Instant,
     in_flight: usize,
+    /// Turns finished on this session (any outcome).
+    turns: usize,
 }
 
 pub struct AgentSessionManager {
@@ -338,7 +340,7 @@ impl AgentSessionManager {
         let stale = {
             let mut entries = self.entries.lock().unwrap();
             match entries.get_mut(key) {
-                Some(entry) if entry.handle.is_alive() => {
+                Some(entry) if entry.handle.is_alive() && !restart_after_error(key, entry) => {
                     entry.last_used = Instant::now();
                     return Ok(entry.handle.clone());
                 }
@@ -394,6 +396,7 @@ impl AgentSessionManager {
                 detail: None,
                 last_used: Instant::now(),
                 in_flight: 0,
+                turns: 0,
             },
         );
         self.emit(key, SessionState::Ready, &handle.model(), None);
@@ -460,6 +463,7 @@ impl AgentSessionManager {
             match entries.get_mut(key) {
                 Some(entry) if same_session(&entry.handle, handle) => {
                     entry.in_flight = entry.in_flight.saturating_sub(1);
+                    entry.turns += 1;
                     entry.last_used = Instant::now();
                     let idle = entry.in_flight == 0;
                     match outcome {
@@ -562,6 +566,33 @@ impl AgentSessionManager {
             log::info!("closing idle Claude session for {:?}", key.scope);
             self.close_removed(&key, entry).await;
         }
+    }
+
+    /// Turns finished on `key`'s current session (0 when none is running).
+    pub fn turns(&self, key: &SessionKey) -> usize {
+        self.entries
+            .lock()
+            .unwrap()
+            .get(key)
+            .map(|e| e.turns)
+            .unwrap_or(0)
+    }
+
+    /// Take `key`'s session out of service if no turn is in flight, so the
+    /// next `ensure` starts a fresh one. Reports `closed` and returns the
+    /// handle for the caller to `close()` (off the request's critical path).
+    /// Scope usage is kept.
+    pub fn retire_if_idle(&self, key: &SessionKey) -> Option<Arc<dyn SessionHandle>> {
+        let entry = {
+            let mut entries = self.entries.lock().unwrap();
+            match entries.get(key) {
+                Some(e) if e.in_flight == 0 => entries.remove(key)?,
+                _ => return None,
+            }
+        };
+        self.cursors.lock().unwrap().remove(key);
+        self.emit(key, SessionState::Closed, &entry.handle.model(), None);
+        Some(entry.handle)
     }
 
     /// Cumulative usage of `scope` across tiers and restarts.
@@ -668,6 +699,16 @@ pub async fn run_idle_reaper(manager: Arc<AgentSessionManager>) {
         tick.tick().await;
         manager.reap_idle(Instant::now()).await;
     }
+}
+
+/// A Utility session left in `error` by a failed turn (e.g. context too
+/// long) is replaced on its next use: Utility requests are unrelated, so
+/// nothing is lost. Meeting sessions keep theirs; restarting them means
+/// replaying context, which the caller (Task 15) owns.
+fn restart_after_error(key: &SessionKey, entry: &Entry) -> bool {
+    key.scope == SessionScope::Utility
+        && entry.state == SessionState::Error
+        && entry.in_flight == 0
 }
 
 fn is_stale(key: &SessionKey, entry: &Entry, now: Instant) -> bool {
@@ -1128,5 +1169,63 @@ mod tests {
         let snap = mgr.snapshot();
         assert_eq!(snap[0].state, "ready");
         assert_eq!(snap[0].detail, None);
+    }
+
+    #[tokio::test]
+    async fn ensure_replaces_errored_utility_session_only() {
+        let (mgr, spawner, _sink) = setup();
+        let utility = key(SessionScope::Utility, Tier::Fast);
+        let live = key(SessionScope::Live("m1".into()), Tier::Fast);
+        for k in [&utility, &live] {
+            mgr.ensure(k, init(&[])).await.unwrap();
+            let failed = mgr
+                .ask(k, "fail:prompt too long", no_delta(), Arc::new(CancelToken::new()))
+                .await;
+            assert!(failed.is_err());
+        }
+        assert_eq!(spawner.calls.load(Ordering::SeqCst), 2);
+
+        // Utility: the errored (still alive) session is closed and replaced.
+        mgr.ensure(&utility, init(&[])).await.unwrap();
+        assert_eq!(spawner.calls.load(Ordering::SeqCst), 3);
+        assert!(spawner.spawned.lock().unwrap()[0].1.closed.load(Ordering::SeqCst));
+        // Live: the caller owns the restart (context replay); it is reused.
+        mgr.ensure(&live, init(&[])).await.unwrap();
+        assert_eq!(spawner.calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn turns_count_and_retire_if_idle() {
+        let (mgr, spawner, sink) = setup();
+        let k = key(SessionScope::Utility, Tier::Fast);
+        assert_eq!(mgr.turns(&k), 0);
+        assert!(mgr.retire_if_idle(&k).is_none());
+        mgr.ensure(&k, init(&[])).await.unwrap();
+        for q in ["a", "b"] {
+            mgr.ask(&k, q, no_delta(), Arc::new(CancelToken::new())).await.unwrap();
+        }
+        assert_eq!(mgr.turns(&k), 2);
+
+        let retired = mgr.retire_if_idle(&k).expect("idle session is retired");
+        assert_eq!(sink.states().last().map(String::as_str), Some("closed"));
+        assert!(mgr.snapshot().is_empty());
+        assert_eq!(mgr.turns(&k), 0);
+        assert_eq!(mgr.usage(&SessionScope::Utility).input_tokens, 20, "usage kept");
+        retired.close().await;
+
+        mgr.ensure(&k, init(&[])).await.unwrap();
+        assert_eq!(spawner.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn retire_if_idle_skips_session_with_turn_in_flight() {
+        let (mgr, _spawner, _sink) = setup();
+        let k = key(SessionScope::Utility, Tier::Fast);
+        mgr.ensure(&k, init(&[])).await.unwrap();
+        let blocked = mgr.ask(&k, "block", no_delta(), Arc::new(CancelToken::new()));
+        tokio::pin!(blocked);
+        assert!(futures::poll!(blocked.as_mut()).is_pending());
+        assert!(mgr.retire_if_idle(&k).is_none());
+        assert_eq!(mgr.snapshot().len(), 1);
     }
 }

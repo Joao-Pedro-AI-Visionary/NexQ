@@ -289,6 +289,7 @@ export interface ClaudeAuthStatus {
 export interface ClaudeCliStatus {
   installed: boolean;
   binary_path: string | null;
+  /** null when not installed or the `--version` probe failed. */
   version: string | null;
   /** null when not installed or the `auth status` probe failed. */
   auth: ClaudeAuthStatus | null;
