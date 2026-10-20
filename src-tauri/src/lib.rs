@@ -146,6 +146,24 @@ fn show_overlay(app: &tauri::AppHandle) {
     }
 }
 
+/// Launching NexQ again while it runs: bring up the overlay during a meeting
+/// (hiding it would hide the meeting), else the launcher.
+fn show_for_second_launch(app: &tauri::AppHandle) {
+    let meeting_active = app
+        .try_state::<AppState>()
+        .map(|s| s.meeting_active.load(std::sync::atomic::Ordering::SeqCst))
+        .unwrap_or(false);
+    if !meeting_active {
+        show_launcher(app);
+        return;
+    }
+    if let Some(overlay) = app.get_webview_window("overlay") {
+        let _ = overlay.show();
+        let _ = overlay.unminimize();
+        let _ = overlay.set_focus();
+    }
+}
+
 /// Hide all windows (minimize to tray).
 fn hide_all(app: &tauri::AppHandle) {
     if let Some(launcher) = app.get_webview_window("launcher") {
@@ -175,7 +193,7 @@ pub fn run() {
         // Must be first: a second launch forwards to this process and exits,
         // preventing duplicate tray icons.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            show_launcher(app);
+            show_for_second_launch(app);
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
