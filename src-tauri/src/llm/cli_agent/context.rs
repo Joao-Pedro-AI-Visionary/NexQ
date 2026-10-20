@@ -112,17 +112,20 @@ fn format_line(seg: &Seg) -> String {
 
 /// Pack `lines` into messages of at most `max_chars` characters, each starting
 /// with `header` (plus "(part i of n)" when there are several). A line longer
-/// than the room left after the header is split. Assumes `max_chars` is well
-/// above the header length (callers use ~100k).
+/// than the room left after the header is split. `max_chars` must exceed the
+/// header plus its part suffix (callers use ~100k).
 fn push_chunked(
     out: &mut Vec<String>,
     header: &str,
     lines: impl Iterator<Item = String>,
     max_chars: usize,
 ) {
-    let budget = max_chars
-        .saturating_sub(header.chars().count() + PART_SUFFIX_RESERVE)
-        .max(1);
+    let reserve = header.chars().count() + PART_SUFFIX_RESERVE;
+    debug_assert!(
+        max_chars > reserve,
+        "max_chars {max_chars} leaves no room after the {reserve}-char header"
+    );
+    let budget = max_chars.saturating_sub(reserve).max(1);
     let mut bodies: Vec<String> = Vec::new();
     let mut current = String::new();
     let mut current_len = 0usize;

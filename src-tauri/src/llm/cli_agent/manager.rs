@@ -422,32 +422,62 @@ impl AgentSessionManager {
         };
         self.emit(key, SessionState::Busy, &handle.model(), None);
 
+        // Settles in_flight/state even if this future is dropped mid-turn.
+        let mut turn = TurnGuard {
+            manager: self,
+            key,
+            handle: handle.clone(),
+            outcome: TurnOutcome::Abandoned,
+        };
         let result = handle.ask(prompt, on_delta, cancel).await;
 
-        if let Ok(turn) = &result {
+        if let Ok(done) = &result {
             let mut usage = self.usage.lock().unwrap();
             let total = usage.entry(key.scope.clone()).or_default();
-            total.input_tokens += turn.input_tokens;
-            total.output_tokens += turn.output_tokens;
-            total.cost_usd += turn.cost_usd;
+            total.input_tokens += done.input_tokens;
+            total.output_tokens += done.output_tokens;
+            total.cost_usd += done.cost_usd;
         }
+        turn.outcome = match &result {
+            Ok(_) => TurnOutcome::Succeeded,
+            Err(AgentError::Cancelled) => TurnOutcome::Cancelled,
+            Err(e) => TurnOutcome::Failed(e.to_string()),
+        };
+        drop(turn);
+        result
+    }
+
+    /// End of one `ask` on `handle`: release its in-flight slot and move the
+    /// session to ready/error, unless the entry was closed or replaced.
+    fn finish_turn(
+        &self,
+        key: &SessionKey,
+        handle: &Arc<dyn SessionHandle>,
+        outcome: &TurnOutcome,
+    ) {
         let transition = {
             let mut entries = self.entries.lock().unwrap();
             match entries.get_mut(key) {
-                // The entry may have been closed or replaced meanwhile.
-                Some(entry) if same_session(&entry.handle, &handle) => {
+                Some(entry) if same_session(&entry.handle, handle) => {
                     entry.in_flight = entry.in_flight.saturating_sub(1);
                     entry.last_used = Instant::now();
-                    match &result {
-                        Ok(_) | Err(AgentError::Cancelled) => {
-                            if entry.in_flight == 0 && entry.state == SessionState::Busy {
-                                entry.state = SessionState::Ready;
-                            }
+                    let idle = entry.in_flight == 0;
+                    match outcome {
+                        // A success proves the session healthy again.
+                        TurnOutcome::Succeeded if idle => {
+                            entry.state = SessionState::Ready;
+                            entry.detail = None;
                         }
-                        Err(e) => {
+                        TurnOutcome::Cancelled | TurnOutcome::Abandoned
+                            if idle && entry.state == SessionState::Busy =>
+                        {
+                            entry.state = SessionState::Ready;
+                        }
+                        TurnOutcome::Failed(reason) => {
                             entry.state = SessionState::Error;
-                            entry.detail = Some(e.to_string());
+                            entry.detail = Some(reason.clone());
                         }
+                        _ => {}
                     }
                     Some((entry.state, entry.detail.clone()))
                 }
@@ -457,7 +487,6 @@ impl AgentSessionManager {
         if let Some((state, detail)) = transition {
             self.emit(key, state, &handle.model(), detail);
         }
-        result
     }
 
     /// The delta cursor of `key`'s current session. Hold the guard while
@@ -512,29 +541,26 @@ impl AgentSessionManager {
     /// Close past-meeting sessions with no AI activity for 15 min (and no turn
     /// in flight). Keys busy starting a session are skipped this round.
     pub async fn reap_idle(&self, now: Instant) {
-        let candidates: Vec<SessionKey> = self
-            .entries
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(key, entry)| is_stale(key, entry, now))
-            .map(|(key, _)| key.clone())
-            .collect();
-        for key in candidates {
-            let lock = self.spawn_lock(&key);
-            let Ok(_spawning) = lock.try_lock() else {
-                continue;
-            };
-            let still_stale = self
-                .entries
-                .lock()
-                .unwrap()
-                .get(&key)
-                .is_some_and(|entry| is_stale(&key, entry, now));
-            if still_stale {
-                log::info!("closing idle Claude session for {:?}", key.scope);
-                self.close_key(&key).await;
-            }
+        // Check and remove under one lock: an `ask` or `ensure` that touches
+        // the entry either happens first (not stale) or finds it gone.
+        let stale: Vec<(SessionKey, Entry)> = {
+            let mut entries = self.entries.lock().unwrap();
+            let keys: Vec<SessionKey> = entries
+                .iter()
+                .filter(|(key, entry)| is_stale(key, entry, now))
+                .map(|(key, _)| key.clone())
+                .collect();
+            let mut cursors = self.cursors.lock().unwrap();
+            keys.into_iter()
+                .filter_map(|key| {
+                    cursors.remove(&key);
+                    entries.remove_entry(&key)
+                })
+                .collect()
+        };
+        for (key, entry) in stale {
+            log::info!("closing idle Claude session for {:?}", key.scope);
+            self.close_removed(&key, entry).await;
         }
     }
 
@@ -576,9 +602,14 @@ impl AgentSessionManager {
         let removed = self.entries.lock().unwrap().remove(key);
         self.cursors.lock().unwrap().remove(key);
         if let Some(entry) = removed {
-            entry.handle.close().await;
-            self.emit(key, SessionState::Closed, &entry.handle.model(), None);
+            self.close_removed(key, entry).await;
         }
+    }
+
+    /// Close an entry (and cursor) already taken out of the maps.
+    async fn close_removed(&self, key: &SessionKey, entry: Entry) {
+        entry.handle.close().await;
+        self.emit(key, SessionState::Closed, &entry.handle.model(), None);
     }
 
     fn status(
@@ -601,6 +632,31 @@ impl AgentSessionManager {
 
     fn emit(&self, key: &SessionKey, state: SessionState, model: &str, detail: Option<String>) {
         self.sink.emit(&self.status(key, state, model, detail));
+    }
+}
+
+/// How an `ask` ended, for [`TurnGuard`].
+enum TurnOutcome {
+    /// The caller's future was dropped mid-turn.
+    Abandoned,
+    Succeeded,
+    Cancelled,
+    Failed(String),
+}
+
+/// Settles a turn's in-flight slot and state when dropped, so a caller that
+/// drops `ask` (select!, timeout, abort) never leaves a session stuck busy.
+struct TurnGuard<'a> {
+    manager: &'a AgentSessionManager,
+    key: &'a SessionKey,
+    handle: Arc<dyn SessionHandle>,
+    outcome: TurnOutcome,
+}
+
+impl Drop for TurnGuard<'_> {
+    fn drop(&mut self) {
+        self.manager
+            .finish_turn(self.key, &self.handle, &self.outcome);
     }
 }
 
@@ -656,6 +712,14 @@ mod tests {
         ) -> Result<TurnResult, AgentError> {
             if let Some(msg) = prompt.strip_prefix("fail:") {
                 return Err(AgentError::Crashed(msg.to_string()));
+            }
+            if prompt == "block" {
+                // A turn that never finishes (until the caller drops it).
+                std::future::pending::<()>().await;
+            }
+            if prompt == "yield" {
+                // Still in flight across a scheduler turn.
+                tokio::task::yield_now().await;
             }
             on_delta(prompt);
             Ok(TurnResult {
@@ -992,5 +1056,77 @@ mod tests {
             .1
             .closed
             .load(Ordering::SeqCst));
+    }
+
+    fn in_flight(mgr: &AgentSessionManager, k: &SessionKey) -> usize {
+        mgr.entries.lock().unwrap()[k].in_flight
+    }
+
+    #[tokio::test]
+    async fn dropped_ask_releases_in_flight_and_busy() {
+        let (mgr, spawner, sink) = setup();
+        let k = key(SessionScope::Past("m3".into()), Tier::Deep);
+        mgr.ensure(&k, init(&[])).await.unwrap();
+        let dropped = tokio::time::timeout(
+            Duration::from_millis(50),
+            mgr.ask(&k, "block", no_delta(), Arc::new(CancelToken::new())),
+        )
+        .await;
+        assert!(
+            dropped.is_err(),
+            "blocking ask should have been dropped by the timeout"
+        );
+        assert_eq!(in_flight(&mgr, &k), 0);
+        assert_eq!(mgr.snapshot()[0].state, "ready");
+        assert_eq!(sink.states(), vec!["starting", "ready", "busy", "ready"]);
+        // No longer pinned in flight, so the reaper can close it once idle.
+        mgr.reap_idle(Instant::now() + Duration::from_secs(20 * 60))
+            .await;
+        assert!(spawner.spawned.lock().unwrap()[0]
+            .1
+            .closed
+            .load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn reap_idle_keeps_past_session_with_turn_in_flight() {
+        let (mgr, spawner, _sink) = setup();
+        let k = key(SessionScope::Past("m4".into()), Tier::Deep);
+        mgr.ensure(&k, init(&[])).await.unwrap();
+        let now = Instant::now() + Duration::from_secs(20 * 60);
+        let ask = mgr.ask(&k, "block", no_delta(), Arc::new(CancelToken::new()));
+        tokio::pin!(ask);
+        tokio::select! {
+            biased;
+            _ = &mut ask => panic!("blocking ask finished"),
+            _ = async {
+                // Let the ask register as in flight, then reap 20 min later.
+                tokio::task::yield_now().await;
+                assert_eq!(in_flight(&mgr, &k), 1);
+                mgr.reap_idle(now).await;
+            } => {}
+        }
+        assert!(!spawner.spawned.lock().unwrap()[0]
+            .1
+            .closed
+            .load(Ordering::SeqCst));
+        assert_eq!(mgr.snapshot().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn success_after_concurrent_failure_returns_to_ready() {
+        let (mgr, _spawner, _sink) = setup();
+        let k = key(SessionScope::Utility, Tier::Fast);
+        mgr.ensure(&k, init(&[])).await.unwrap();
+        let cancel = || Arc::new(CancelToken::new());
+        let (ok, failed) = tokio::join!(mgr.ask(&k, "yield", no_delta(), cancel()), async {
+            // Fails while the first turn is still in flight.
+            assert_eq!(in_flight(&mgr, &k), 1);
+            mgr.ask(&k, "fail:boom", no_delta(), cancel()).await
+        });
+        assert!(ok.is_ok() && failed.is_err());
+        let snap = mgr.snapshot();
+        assert_eq!(snap[0].state, "ready");
+        assert_eq!(snap[0].detail, None);
     }
 }

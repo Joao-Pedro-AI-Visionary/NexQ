@@ -559,8 +559,10 @@ fn start_process(bin: &Path, args: &[String]) -> Result<Started, AgentError> {
             if let Err(e) = read {
                 log::warn!("claude stdout read failed: {e}");
             }
-            record_exit(&out_shared);
+            // Dead as of stdout EOF, before the bounded wait for the exit status,
+            // so `is_alive` never reports a dying session as usable.
             out_shared.alive.store(false, Ordering::SeqCst);
+            record_exit(&out_shared);
             // `event_tx` drops here: pending turns see the channel close.
         }),
     )?;
