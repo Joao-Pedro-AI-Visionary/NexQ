@@ -23,6 +23,7 @@ import type {
   UpdateDownloadFailed,
   UpdaterPrefsChangedEvent,
   WindowMeetingEndedEvent,
+  OverlayMeetingReadyEvent,
 } from "./types";
 
 // == TRANSCRIPT EVENTS ==
@@ -293,6 +294,20 @@ export function onWindowMeetingEnded(
   handler: (event: WindowMeetingEndedEvent) => void
 ): Promise<UnlistenFn> {
   return listen<WindowMeetingEndedEvent>("nexq:meeting_ended", (e) => handler(e.payload));
+}
+
+/** Overlay -> launcher: the overlay has the meeting and will persist its data. */
+export function emitOverlayMeetingReady(meetingId: string): Promise<void> {
+  const payload: OverlayMeetingReadyEvent = { meetingId };
+  return emit("nexq:overlay_meeting_ready", payload);
+}
+
+export function onOverlayMeetingReady(
+  handler: (event: OverlayMeetingReadyEvent) => void
+): Promise<UnlistenFn> {
+  return listen<OverlayMeetingReadyEvent>("nexq:overlay_meeting_ready", (e) =>
+    handler(e.payload)
+  );
 }
 
 /** Ask every window to end the meeting (same path as the tray's Stop). */

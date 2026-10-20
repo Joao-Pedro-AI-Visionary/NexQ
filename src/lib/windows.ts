@@ -35,3 +35,15 @@ export async function showOverlayWindow(): Promise<void> {
     await current.hide().catch(() => {});
   }
 }
+
+/**
+ * Speakers, bookmarks, action items and topic sections are edited in the
+ * overlay window. When a meeting ends, both windows may run endMeetingFlow
+ * (tray Stop, update restart), and saving them replaces all rows — so exactly
+ * one window persists them: the overlay, or the launcher only when no overlay
+ * window has taken the meeting.
+ */
+export function shouldPersistOverlayData(windowLabel: string, overlayActive: boolean): boolean {
+  if (windowLabel === "overlay") return true;
+  return !overlayActive;
+}

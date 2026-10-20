@@ -843,6 +843,11 @@ export interface UpdaterPrefsChangedEvent {
   skippedVersion: string | null;
 }
 
+/** Frontend-only event: the overlay window took over the active meeting. */
+export interface OverlayMeetingReadyEvent {
+  meetingId: string;
+}
+
 /** Frontend-only event: a window finished `endMeetingFlow`. */
 export interface WindowMeetingEndedEvent {
   window: string;

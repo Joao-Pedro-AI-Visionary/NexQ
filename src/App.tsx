@@ -24,6 +24,7 @@ import { useDemoShortcut } from "./demo/useDemoShortcut";
 import { DemoPicker } from "./demo/DemoPicker";
 import { DemoBadge } from "./demo/DemoBadge";
 import { showLauncherWindow, showOverlayWindow } from "./lib/windows";
+import { emitOverlayMeetingReady, onOverlayMeetingReady } from "./lib/events";
 
 function App() {
   const currentView = useMeetingStore((s) => s.currentView);
@@ -127,6 +128,17 @@ function App() {
     return () => { unlisten?.(); };
   }, [windowLabel]);
 
+  // LAUNCHER window: record that the overlay took the meeting (decides which
+  // window persists overlay-edited data when the meeting ends)
+  useEffect(() => {
+    if (windowLabel !== "launcher") return;
+    let unlisten: (() => void) | undefined;
+    onOverlayMeetingReady(({ meetingId }) => {
+      useMeetingStore.getState().setOverlayMeetingId(meetingId);
+    }).then((fn) => { unlisten = fn; });
+    return () => { unlisten?.(); };
+  }, [windowLabel]);
+
   // OVERLAY window: when currentView->"launcher", hide self + show launcher
   useEffect(() => {
     if (windowLabel !== "overlay") return;
@@ -154,6 +166,8 @@ function App() {
           lastPersistedIndex: 0,
         });
         useMeetingStore.getState().startTimer();
+        // Tell the launcher this window owns the meeting's speaker/bookmark data
+        emitOverlayMeetingReady(meeting.id).catch(() => {});
       }
     ).then((fn) => { unlisten = fn; });
     return () => { unlisten?.(); };

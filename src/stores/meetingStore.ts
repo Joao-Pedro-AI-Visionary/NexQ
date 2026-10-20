@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { AppView, Meeting, MeetingSummary, AudioMode, AIScenario, WindowMeetingEndedEvent } from "../lib/types";
+import { shouldPersistOverlayData } from "../lib/windows";
 import {
   startMeeting as ipcStartMeeting,
   endMeeting as ipcEndMeeting,
@@ -42,6 +43,11 @@ interface MeetingState {
 
   // Stealth mode (overlay hidden while recording)
   overlayHidden: boolean;
+
+  // Launcher only: id of the meeting the overlay window acknowledged
+  // (nexq:overlay_meeting_ready). Decides which window persists overlay data.
+  overlayMeetingId: string | null;
+  setOverlayMeetingId: (id: string | null) => void;
 
   // Launcher detail view (past meeting selected for viewing)
   selectedMeetingId: string | null;
@@ -87,7 +93,10 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
   audioMode: "online",
   aiScenario: "team_meeting",
   overlayHidden: false,
+  overlayMeetingId: null,
   selectedMeetingId: null,
+
+  setOverlayMeetingId: (id) => set({ overlayMeetingId: id }),
 
   setCurrentView: (view) => {
     const current = get().currentView;
@@ -372,8 +381,14 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
       // Non-critical
     }
 
-    // 7b. Persist new feature stores via actual IPC calls
-    if (meeting) {
+    // 7b. Persist overlay-edited stores — from exactly one window
+    let windowLabel = "";
+    try {
+      const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+      windowLabel = getCurrentWebviewWindow().label;
+    } catch { /* not running in Tauri */ }
+    const overlayActive = !!meeting && state.overlayMeetingId === meeting.id;
+    if (meeting && shouldPersistOverlayData(windowLabel, overlayActive)) {
       try {
         const { useSpeakerStore } = await import("./speakerStore");
         const speakers = useSpeakerStore.getState().getAllSpeakers();
@@ -468,6 +483,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
       lastPersistedIndex: 0,
       audioMode: "online",
       aiScenario: "team_meeting",
+      overlayMeetingId: null,
     });
 
     // 9. Reload recent meetings
@@ -478,11 +494,8 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
 
     // Notify the other window that this window finished ending the meeting
     // (the updater waits for both windows before restarting)
-    Promise.all([
-      import("@tauri-apps/api/event"),
-      import("@tauri-apps/api/webviewWindow"),
-    ]).then(([{ emit }, { getCurrentWebviewWindow }]) => {
-      const payload: WindowMeetingEndedEvent = { window: getCurrentWebviewWindow().label };
+    import("@tauri-apps/api/event").then(({ emit }) => {
+      const payload: WindowMeetingEndedEvent = { window: windowLabel };
       emit("nexq:meeting_ended", payload).catch(() => {});
     }).catch(() => {});
   },

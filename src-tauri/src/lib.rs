@@ -402,6 +402,11 @@ pub fn run() {
             let app_handle = app.handle().clone();
             app.on_menu_event(move |_app, event| {
                 let id = event.id().as_ref();
+                // A deferred quit is waiting on a recording; don't start new work.
+                if updater_commands::quit_pending() && id != "quit" {
+                    log::info!("Ignoring tray action '{}' while quit is pending", id);
+                    return;
+                }
                 match id {
                     "start_meeting" => {
                         let _ = _app.emit("tray_start_meeting", ());
