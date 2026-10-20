@@ -104,6 +104,7 @@ export function useSummaryGeneration(
       const segments = meeting.transcript
         .filter((s) => s.is_final)
         .map((s) => ({
+          id: s.id,
           text: s.text,
           speaker: s.speaker,
           timestamp_ms: s.timestamp_ms,

@@ -209,7 +209,7 @@ export async function generateAssist(
     const { useTranscriptStore } = await import("../stores/transcriptStore");
     segments = useTranscriptStore.getState().segments
       .filter(s => s.is_final)
-      .map(s => ({ text: s.text, speaker: s.speaker, timestamp_ms: s.timestamp_ms }));
+      .map(s => ({ id: s.id, text: s.text, speaker: s.speaker, timestamp_ms: s.timestamp_ms }));
   }
 
   return invoke("generate_assist", {

@@ -605,6 +605,7 @@ export interface StreamSourcesEvent {
 
 /** Transcript segment sent with generate_assist (`id` only for BookmarkSuggestions). */
 export interface AssistTranscriptSegment {
+  /** Stable segment id: a Claude session sends each segment once, by id. */
   id?: string;
   text: string;
   speaker: string;
@@ -616,7 +617,7 @@ export interface GenerateAssistOptions {
   requestId?: string;
   /** Segments to use instead of the live transcript store. */
   transcriptSegments?: AssistTranscriptSegment[];
-  /** Past meeting this generation belongs to (wired up by the backend in a later change). */
+  /** Past meeting this generation belongs to: routes it to that meeting's Claude session. */
   pastMeetingId?: string;
 }
 

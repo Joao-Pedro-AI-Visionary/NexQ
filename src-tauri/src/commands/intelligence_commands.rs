@@ -8,9 +8,8 @@ use crate::llm::cli_agent::context::Seg;
 use crate::llm::cli_agent::manager::{OnDelta, SessionKey, SessionScope};
 use crate::llm::cli_agent::protocol::AgentErrorKind;
 use crate::llm::cli_agent::routing::{
-    self, choose_route, AgentFallbackPayload, ClaudeHealth, Route,
+    self, choose_route, AgentFallbackPayload, AskFailure, ClaudeHealth, Route,
 };
-use crate::llm::cli_agent::session::AgentError;
 use crate::llm::provider::{
     emit_end, emit_error, emit_token, is_cancelled, CancelToken, GenerationParams, LLMProvider,
     RagChunkInfo, StreamEndPayload, StreamStartPayload,
@@ -272,7 +271,8 @@ fn request_route(state: &AppState, mode: &str, scope: &SessionScope) -> Route {
 
 /// Fallback provider, model and display name for `config` (type only): the
 /// API key comes from the credential store; the model is the configured
-/// fallback model, else the provider's first listed model.
+/// fallback model, else the provider's first listed model. The result is
+/// cached until the provider, model or key changes.
 async fn resolve_fallback(
     state: &AppState,
     mut config: ProviderConfig,
@@ -285,14 +285,22 @@ async fn resolve_fallback(
             .and_then(|c| c.lock().ok())
             .and_then(|c| c.get_key(&config.provider_type).ok().flatten());
     }
-    let provider = create_provider(&config)
-        .map_err(|e| format!("Fallback provider {} unavailable: {}", provider_type.display_name(), e))?;
     let configured = state
         .claude_cli_config
         .read()
         .ok()
         .and_then(|c| c.fallback_model.clone())
         .filter(|m| !m.trim().is_empty());
+    let cache_key = (config.provider_type.clone(), configured.clone(), config.api_key.clone());
+    if let Some(cached) = state.claude_fallback.lock().ok().and_then(|slot| {
+        slot.as_ref()
+            .filter(|c| c.key == cache_key)
+            .map(|c| (c.provider.clone(), c.model.clone(), c.name.clone()))
+    }) {
+        return Ok(cached);
+    }
+    let provider = create_provider(&config)
+        .map_err(|e| format!("Fallback provider {} unavailable: {}", provider_type.display_name(), e))?;
     let model = match configured {
         Some(model) => model,
         None => provider
@@ -305,11 +313,17 @@ async fn resolve_fallback(
                 format!("Fallback provider {} has no model to use", provider_type.display_name())
             })?,
     };
-    Ok((
-        Arc::new(tokio::sync::Mutex::new(provider)),
+    let resolved = routing::CachedFallback {
+        key: cache_key,
+        provider: Arc::new(tokio::sync::Mutex::new(provider)),
         model,
-        provider_type.display_name().to_string(),
-    ))
+        name: provider_type.display_name().to_string(),
+    };
+    let out = (resolved.provider.clone(), resolved.model.clone(), resolved.name.clone());
+    if let Ok(mut slot) = state.claude_fallback.lock() {
+        *slot = Some(resolved);
+    }
+    Ok(out)
 }
 
 /// Everything the Claude session path needs from `generate_assist`.
@@ -331,9 +345,11 @@ struct SessionAssist<'a> {
 
 /// How the Claude session path ended.
 enum SessionOutcome {
-    /// Answered, stopped, or failed with an error that is not an outage
-    /// (already reported to the UI).
+    /// Answered, stopped, closed, or failed with an error that is not an
+    /// outage (already reported to the UI).
     Done(Result<(), String>),
+    /// The session's context was full: answer this request statelessly.
+    Stateless,
     /// Claude is unavailable (after one restart where it applies).
     Unavailable(AgentErrorKind, String),
 }
@@ -363,7 +379,9 @@ async fn session_assist(state: &AppState, app: &AppHandle, req: SessionAssist<'_
             SessionScope::Utility => Err("Utility requests have no meeting session".to_string()),
         };
         match record {
-            Ok(record) => state.meeting_sessions.insert(key.clone(), record),
+            Ok(record) => {
+                state.meeting_sessions.insert_if_absent(key.clone(), record);
+            }
             Err(e) => {
                 emit_error(app, params, &e);
                 return SessionOutcome::Done(Err(e));
@@ -390,10 +408,13 @@ async fn session_assist(state: &AppState, app: &AppHandle, req: SessionAssist<'_
             Err(e) => log::warn!("RAG retrieval for the Claude session failed: {e}"),
         }
     }
-    // Bookmark suggestions answer with segment ids, which the preloaded
-    // transcript does not carry.
-    let id_transcript = match (*mode, req.transcript_segments) {
-        ("BookmarkSuggestions", Some(json)) => build_transcript_from_segments(json, 0, true),
+    // Bookmark suggestions answer with segment ids. A past-meeting session
+    // has them in its preload; a live session (the meeting view of the
+    // running meeting) gets them with this one request.
+    let id_transcript = match (&key.scope, *mode, req.transcript_segments) {
+        (SessionScope::Live(_), "BookmarkSuggestions", Some(json)) => {
+            build_transcript_from_segments(json, 0, true)
+        }
         _ => String::new(),
     };
 
@@ -463,19 +484,37 @@ async fn session_assist(state: &AppState, app: &AppHandle, req: SessionAssist<'_
         // A stopped stream already got its end from `cancel_generation`.
         _ if cancel.is_cancelled() => SessionOutcome::Done(Ok(())),
         Ok(turn) => {
+            state.claude_health.record_success();
             let total = turn.input_tokens + turn.cache_read_tokens + turn.output_tokens;
             emit_end(app, params, total, start.elapsed().as_millis() as u64);
             SessionOutcome::Done(Ok(()))
         }
-        Err(e) => match routing::unavailable_kind(&e) {
-            None if e == AgentError::Cancelled => SessionOutcome::Done(Ok(())),
-            None => {
-                let message = e.to_string();
-                emit_error(app, params, &message);
-                SessionOutcome::Done(Err(message))
-            }
-            Some(kind) => SessionOutcome::Unavailable(kind, e.to_string()),
-        },
+        Err(AskFailure::Cancelled) => SessionOutcome::Done(Ok(())),
+        // The meeting ended / its view was left mid-request: just end the
+        // stream (no outage, no fallback).
+        Err(AskFailure::Closed) => {
+            let _ = app.emit(
+                "llm_stream_end",
+                StreamEndPayload {
+                    total_tokens: 0,
+                    latency_ms: start.elapsed().as_millis() as u64,
+                    request_id: params.request_id.clone(),
+                    cancelled: true,
+                },
+            );
+            SessionOutcome::Done(Ok(()))
+        }
+        // Part of the answer is already on screen: report, don't repeat it.
+        Err(AskFailure::AfterOutput(e)) | Err(AskFailure::Error(e)) => {
+            let message = e.to_string();
+            emit_error(app, params, &message);
+            SessionOutcome::Done(Err(message))
+        }
+        Err(AskFailure::ContextFull(e)) => {
+            log::warn!("Claude session context full ({e}); answering this request statelessly");
+            SessionOutcome::Stateless
+        }
+        Err(AskFailure::Unavailable(kind, e)) => SessionOutcome::Unavailable(kind, e.to_string()),
     }
 }
 
@@ -623,6 +662,7 @@ pub async fn generate_assist(
                 drop(generation_guard);
                 return result;
             }
+            SessionOutcome::Stateless => route = Route::Stateless,
             SessionOutcome::Unavailable(kind, reason) => {
                 log::warn!("Claude unavailable ({reason}); falling back");
                 state.claude_health.mark_unavailable(kind);

@@ -350,8 +350,13 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
       }
     }
 
-    // 5. End meeting record in DB
+    // 5. End meeting record in DB. Stop an AI answer still streaming first:
+    // ending the meeting closes its Claude session.
     if (meeting) {
+      try {
+        const { cancelGeneration } = await import("../lib/ipc");
+        await cancelGeneration();
+      } catch { /* nothing in flight */ }
       try {
         await ipcEndMeeting(meeting.id);
       } catch (err) {

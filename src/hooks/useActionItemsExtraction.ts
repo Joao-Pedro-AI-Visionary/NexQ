@@ -209,13 +209,13 @@ export function useActionItemsExtraction(
 
       // Merge consecutive same-speaker segments to reduce prompt size
       const finals = meeting.transcript.filter((s) => s.is_final);
-      const merged: { text: string; speaker: string; timestamp_ms: number }[] = [];
+      const merged: { id: string; text: string; speaker: string; timestamp_ms: number }[] = [];
       for (const seg of finals) {
         const last = merged.length > 0 ? merged[merged.length - 1] : null;
         if (last && last.speaker === seg.speaker) {
           last.text += " " + seg.text;
         } else {
-          merged.push({ text: seg.text, speaker: seg.speaker, timestamp_ms: seg.timestamp_ms });
+          merged.push({ id: seg.id, text: seg.text, speaker: seg.speaker, timestamp_ms: seg.timestamp_ms });
         }
       }
       const segments = merged;

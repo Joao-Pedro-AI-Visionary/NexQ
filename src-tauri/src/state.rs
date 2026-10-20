@@ -12,7 +12,7 @@ use crate::intelligence::IntelligenceEngine;
 use crate::llm::cli_agent::manager::{
     AgentSessionManager, ClaudeCliConfig, ClaudeSpawner, NoopStatusSink,
 };
-use crate::llm::cli_agent::routing::{HealthTracker, MeetingSessions};
+use crate::llm::cli_agent::routing::{CachedFallback, HealthTracker, MeetingSessions};
 use crate::llm::gemini_cache::CachedContent;
 use crate::llm::openrouter_models::OpenRouterModelCache;
 use crate::llm::LLMRouter;
@@ -128,6 +128,8 @@ pub struct AppState {
     pub meeting_sessions: Arc<MeetingSessions>,
     /// The running meeting (set by `start_meeting`, cleared by `end_meeting`).
     pub live_meeting: Arc<Mutex<Option<LiveMeeting>>>,
+    /// The fallback provider client last built (reused while unchanged).
+    pub claude_fallback: Arc<Mutex<Option<CachedFallback>>>,
 }
 
 /// The meeting between `start_meeting` and `end_meeting`.
@@ -179,6 +181,7 @@ impl AppState {
             claude_health: Arc::new(HealthTracker::default()),
             meeting_sessions: Arc::new(MeetingSessions::default()),
             live_meeting: Arc::new(Mutex::new(None)),
+            claude_fallback: Arc::new(Mutex::new(None)),
         }
     }
 }

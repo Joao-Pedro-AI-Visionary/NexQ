@@ -31,7 +31,7 @@ describe("generateAssist", () => {
     expect(typeof first.requestId).toBe("string");
     expect(first.requestId).not.toBe(second.requestId);
     expect(JSON.parse(first.transcriptSegments)).toEqual([
-      { text: "hello", speaker: "Them", timestamp_ms: 1 },
+      { id: "a", text: "hello", speaker: "Them", timestamp_ms: 1 },
     ]);
   });
 

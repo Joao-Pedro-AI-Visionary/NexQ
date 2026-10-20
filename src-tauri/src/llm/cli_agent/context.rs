@@ -2,36 +2,54 @@
 //! cursor, the preload messages a fresh session is given (`shouldQuery:false`)
 //! and the delta prompt each AI task sends.
 
-/// One final transcript segment. `timestamp_ms` is milliseconds since the
+use std::collections::HashSet;
+
+/// One final transcript segment. `id` is the segment's stable id (the
+/// transcript store / database id). `timestamp_ms` is milliseconds since the
 /// meeting started (callers convert from wall-clock time), shown as `[mm:ss]`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Seg {
+    pub id: String,
     pub text: String,
     pub speaker: String,
     pub timestamp_ms: u64,
 }
 
-/// How many of a meeting's final segments a session has already been sent.
+/// Which final segments (by id) a session has already been sent. Identity,
+/// not position: an interim line that finalizes after later lines were sent,
+/// or a different (e.g. shorter) list of the same meeting, never makes a
+/// segment go twice or be skipped.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DeltaCursor {
-    sent: usize,
+    sent: HashSet<String>,
 }
 
 impl DeltaCursor {
-    /// The segments not yet sent (`finals[sent..]`), marking them sent. If the
-    /// list shrank (e.g. a different transcript), start over and return all.
-    pub fn take_new<'a>(&mut self, finals: &'a [Seg]) -> &'a [Seg] {
-        if finals.len() < self.sent {
-            self.sent = 0;
-        }
-        let new = &finals[self.sent..];
-        self.sent = finals.len();
+    /// A cursor that has already sent `ids`.
+    pub fn with_sent(ids: HashSet<String>) -> Self {
+        Self { sent: ids }
+    }
+
+    /// Every segment of `finals` not sent yet (each id once), oldest first,
+    /// marking them sent.
+    pub fn take_new(&mut self, finals: &[Seg]) -> Vec<Seg> {
+        let mut new: Vec<Seg> = finals
+            .iter()
+            .filter(|s| self.sent.insert(s.id.clone()))
+            .cloned()
+            .collect();
+        new.sort_by_key(|s| s.timestamp_ms);
         new
     }
 
     /// Number of segments already sent.
     pub fn sent(&self) -> usize {
-        self.sent
+        self.sent.len()
+    }
+
+    /// Ids of the segments already sent.
+    pub fn sent_ids(&self) -> &HashSet<String> {
+        &self.sent
     }
 }
 
@@ -42,12 +60,15 @@ const DOCUMENTS_HEADER: &str = "## Context documents";
 const PART_SUFFIX_RESERVE: usize = 32;
 
 /// Build the context messages for a fresh session: the summary (if any) and
-/// the transcript as `[mm:ss] Speaker: text` lines, each message at most
-/// `max_chars` characters (headers included). Empty input gives no messages.
+/// the transcript as `[mm:ss] Speaker: text` lines (`[mm:ss] [id] Speaker:
+/// text` with `with_ids`, so answers can cite segments), each message at
+/// most `max_chars` characters (headers included). Empty input gives no
+/// messages.
 pub fn build_preload_messages(
     transcript: &[Seg],
     summary: Option<&str>,
     max_chars: usize,
+    with_ids: bool,
 ) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(summary) = summary.map(str::trim).filter(|s| !s.is_empty()) {
@@ -62,7 +83,13 @@ pub fn build_preload_messages(
         push_chunked(
             &mut out,
             TRANSCRIPT_HEADER,
-            transcript.iter().map(format_line),
+            transcript.iter().map(|seg| {
+                if with_ids && !seg.id.is_empty() {
+                    format_line_with_id(seg)
+                } else {
+                    format_line(seg)
+                }
+            }),
             max_chars,
         );
     }
@@ -152,6 +179,15 @@ fn format_line(seg: &Seg) -> String {
     )
 }
 
+/// `[mm:ss] [id] Speaker: text` on one line.
+fn format_line_with_id(seg: &Seg) -> String {
+    let line = format_line(seg);
+    match line.split_once("] ") {
+        Some((time, rest)) => format!("{time}] [{}] {rest}", seg.id),
+        None => line,
+    }
+}
+
 /// Pack `lines` into messages of at most `max_chars` characters, each starting
 /// with `header` (plus "(part i of n)" when there are several). A line longer
 /// than the room left after the header is split. `max_chars` must exceed the
@@ -218,6 +254,7 @@ mod tests {
 
     fn seg(text: &str, speaker: &str, timestamp_ms: u64) -> Seg {
         Seg {
+            id: format!("{speaker}-{timestamp_ms}"),
             text: text.into(),
             speaker: speaker.into(),
             timestamp_ms,
@@ -226,36 +263,56 @@ mod tests {
 
     #[test]
     fn cursor_sends_only_new() {
-        let (a, b, c, x) = (
-            seg("a", "You", 0),
-            seg("b", "Them", 1),
-            seg("c", "You", 2),
-            seg("x", "Them", 3),
-        );
+        let (a, b, c) = (seg("a", "You", 0), seg("b", "Them", 1), seg("c", "You", 2));
         let mut cursor = DeltaCursor::default();
-        assert_eq!(
-            cursor.take_new(&[a.clone(), b.clone()]),
-            &[a.clone(), b.clone()]
-        );
-        assert_eq!(
-            cursor.take_new(&[a.clone(), b.clone(), c.clone()]),
-            &[c.clone()]
-        );
+        assert_eq!(cursor.take_new(&[a.clone(), b.clone()]), vec![a.clone(), b.clone()]);
+        assert_eq!(cursor.take_new(&[a.clone(), b.clone(), c.clone()]), vec![c.clone()]);
         assert_eq!(cursor.sent(), 3);
         assert!(cursor.take_new(&[a, b, c]).is_empty());
-        // Shorter than what was sent: reset and send everything.
-        assert_eq!(cursor.take_new(&[x.clone()]), &[x]);
-        assert_eq!(cursor.sent(), 1);
+    }
+
+    #[test]
+    fn cursor_sends_a_late_finalized_line_exactly_once() {
+        // "Them" asks a question; its interim finalizes in place *after* two
+        // later "You" lines were already final and sent.
+        let you1 = seg("Sure", "You", 5_000);
+        let you2 = seg("Go ahead", "You", 7_000);
+        let question = seg("What is your notice period?", "Them", 4_000);
+        let mut cursor = DeltaCursor::default();
+        assert_eq!(cursor.take_new(&[you1.clone(), you2.clone()]), vec![you1.clone(), you2.clone()]);
+        // The store keeps the question at its original position, before the sent lines.
+        let finals = vec![question.clone(), you1.clone(), you2.clone()];
+        assert_eq!(cursor.take_new(&finals), vec![question.clone()]);
+        let later = seg("Two weeks", "You", 9_000);
+        let finals = vec![question, you1, you2, later.clone()];
+        assert_eq!(cursor.take_new(&finals), vec![later], "nothing duplicated or skipped");
+    }
+
+    #[test]
+    fn cursor_shorter_different_list_resends_nothing() {
+        let (a, b, c) = (seg("a", "You", 0), seg("b", "Them", 1), seg("c", "You", 2));
+        let mut cursor = DeltaCursor::default();
+        cursor.take_new(&[a.clone(), b.clone(), c.clone()]);
+        // e.g. the meeting view sends its own (merged, shorter) copy of the transcript.
+        assert!(cursor.take_new(&[a, c]).is_empty());
+        assert_eq!(cursor.sent(), 3);
+    }
+
+    #[test]
+    fn cursor_new_segments_come_oldest_first_and_once() {
+        let (a, b) = (seg("a", "You", 2_000), seg("b", "Them", 1_000));
+        let mut cursor = DeltaCursor::default();
+        assert_eq!(cursor.take_new(&[a.clone(), b.clone(), a.clone()]), vec![b, a]);
     }
 
     #[test]
     fn preload_empty() {
         assert_eq!(
-            build_preload_messages(&[], None, 100_000),
+            build_preload_messages(&[], None, 100_000, false),
             Vec::<String>::new()
         );
         assert_eq!(
-            build_preload_messages(&[], Some("  \n "), 100_000),
+            build_preload_messages(&[], Some("  \n "), 100_000, false),
             Vec::<String>::new()
         );
     }
@@ -269,6 +326,7 @@ mod tests {
             ],
             Some("Short summary."),
             100_000,
+            false,
         );
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0], "## Meeting summary\nShort summary.");
@@ -276,6 +334,12 @@ mod tests {
             msgs[1],
             "## Meeting transcript\n[01:05] You: Hello there\n[62:05] Them: Hi again"
         );
+    }
+
+    #[test]
+    fn preload_with_ids_cites_segments() {
+        let msgs = build_preload_messages(&[seg("Hello", "You", 65_400)], None, 100_000, true);
+        assert_eq!(msgs, vec!["## Meeting transcript\n[01:05] [You-65400] You: Hello"]);
     }
 
     #[test]
@@ -287,7 +351,7 @@ mod tests {
                 seg(&text, if i % 2 == 0 { "You" } else { "Them" }, i * 1_000)
             })
             .collect();
-        let msgs = build_preload_messages(&segs, None, 100_000);
+        let msgs = build_preload_messages(&segs, None, 100_000, false);
         assert!(
             msgs.len() > 1,
             "expected several chunks, got {}",
@@ -320,7 +384,7 @@ mod tests {
     #[test]
     fn preload_splits_a_line_longer_than_the_cap() {
         let long = "y".repeat(450);
-        let msgs = build_preload_messages(&[seg(&long, "You", 0)], None, 200);
+        let msgs = build_preload_messages(&[seg(&long, "You", 0)], None, 200, false);
         assert!(msgs.len() > 1);
         assert!(msgs.iter().all(|m| m.chars().count() <= 200));
         let body: String = msgs.iter().flat_map(|m| m.lines().skip(1)).collect();

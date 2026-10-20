@@ -65,14 +65,23 @@ pub enum AgentError {
     Crashed(String),
     #[error("Claude did not respond in time")]
     Timeout,
+    /// Stopped mid-turn: the prompt reached Claude.
     #[error("cancelled")]
     Cancelled,
+    /// Stopped while waiting for the turn: the prompt never reached Claude.
+    #[error("cancelled")]
+    CancelledBeforeSend,
     /// A `result` with `is_error: true`, classified from its text.
     #[error("{1}")]
     Cli(AgentErrorKind, String),
 }
 
 impl AgentError {
+    /// Stopped by the caller (before or during the turn).
+    pub fn is_cancel(&self) -> bool {
+        matches!(self, AgentError::Cancelled | AgentError::CancelledBeforeSend)
+    }
+
     /// Coarse kind for status reasons and fallback decisions. A missing binary
     /// (`io::ErrorKind::NotFound` at spawn) is always `NotInstalled`; crash text
     /// that names a known cause (e.g. "not logged in" on stderr) keeps it.
@@ -83,7 +92,9 @@ impl AgentError {
                 AgentErrorKind::Other => AgentErrorKind::Crashed,
                 kind => kind,
             },
-            AgentError::Timeout | AgentError::Cancelled => AgentErrorKind::Other,
+            AgentError::Timeout | AgentError::Cancelled | AgentError::CancelledBeforeSend => {
+                AgentErrorKind::Other
+            }
             AgentError::Cli(kind, _) => *kind,
         }
     }
@@ -353,13 +364,13 @@ impl ClaudeSession {
         let guard = match cancel {
             Some(token) => tokio::select! {
                 biased;
-                _ = token.cancelled() => return Err(AgentError::Cancelled),
+                _ = token.cancelled() => return Err(AgentError::CancelledBeforeSend),
                 guard = self.turn.clone().lock_owned() => guard,
             },
             None => self.turn.clone().lock_owned().await,
         };
         if cancel.is_some_and(CancelToken::is_cancelled) {
-            return Err(AgentError::Cancelled);
+            return Err(AgentError::CancelledBeforeSend);
         }
         if !self.is_alive() {
             return Err(AgentError::Crashed(self.shared.crash_reason()));

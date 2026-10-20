@@ -40,10 +40,10 @@ pub(crate) fn live_session_record(state: &AppState, tier: Tier, finals: &[Seg]) 
         .map(|c| c.get_assembled_context())
         .unwrap_or_default();
     let (mut preload, rag_mode) = routing::document_preload(&documents);
-    let mut segments_sent = 0;
+    let mut sent_ids = std::collections::HashSet::new();
     if tier == Tier::Deep {
-        preload.extend(build_preload_messages(finals, None, PRELOAD_MESSAGE_CHARS));
-        segments_sent = finals.len();
+        preload.extend(build_preload_messages(finals, None, PRELOAD_MESSAGE_CHARS, false));
+        sent_ids = finals.iter().map(|s| s.id.clone()).collect();
     }
     SessionRecord {
         system_prompt: routing::live_system_prompt(
@@ -53,13 +53,14 @@ pub(crate) fn live_session_record(state: &AppState, tier: Tier, finals: &[Seg]) 
         ),
         preload,
         replay: Vec::new(),
-        segments_sent,
+        sent_ids,
         rag_mode,
     }
 }
 
 /// What a past-meeting Claude session starts with: the meeting's summary (if
-/// any) and its final transcript with speaker names and `[mm:ss]` times.
+/// any) and its final transcript with segment ids, speaker names and
+/// `[mm:ss]` times (bookmark suggestions cite the ids).
 pub(crate) fn past_session_record(state: &AppState, meeting_id: &str) -> Result<SessionRecord, String> {
     let db = state
         .database
@@ -83,7 +84,12 @@ pub(crate) fn past_session_record(state: &AppState, meeting_id: &str) -> Result<
     let transcript = past_transcript(&meeting.transcript, &names, start_ms);
     Ok(SessionRecord {
         system_prompt: routing::past_system_prompt(&custom_instructions(state)),
-        preload: build_preload_messages(&transcript, meeting.summary.as_deref(), PRELOAD_MESSAGE_CHARS),
+        preload: build_preload_messages(
+            &transcript,
+            meeting.summary.as_deref(),
+            PRELOAD_MESSAGE_CHARS,
+            true,
+        ),
         ..SessionRecord::default()
     })
 }
@@ -112,7 +118,14 @@ fn past_transcript(transcript: &serde_json::Value, names: &HashMap<String, Strin
                 .map(String::as_str)
                 .unwrap_or_else(|| routing::speaker_label(speaker));
             let timestamp_ms = item.get("timestamp_ms").and_then(|v| v.as_i64()).unwrap_or(0);
+            let id = item
+                .get("id")
+                .and_then(|v| v.as_str())
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| routing::fallback_segment_id(timestamp_ms, speaker, text));
             Some(Seg {
+                id,
                 text: text.to_string(),
                 speaker: label.to_string(),
                 timestamp_ms: routing::relative_ms(timestamp_ms, start_ms),
@@ -121,17 +134,28 @@ fn past_transcript(transcript: &serde_json::Value, names: &HashMap<String, Strin
         .collect()
 }
 
-/// Record `key`'s session (unless already recorded) and start it in the
-/// background. A definite outage found at start (not installed / not logged
-/// in) marks Claude unavailable so requests go straight to the fallback.
-fn start_session_in_background(app: &AppHandle, key: SessionKey, record: SessionRecord) {
-    let state = app.state::<AppState>();
-    if !state.meeting_sessions.contains(&key) {
-        state.meeting_sessions.insert(key.clone(), record);
-    }
+/// In the background: build `key`'s record with `build` (documents / DB
+/// reads stay off the command's path), record it unless a request already
+/// did, and start the session. A definite outage found at start (not
+/// installed / not logged in) marks Claude unavailable so requests go
+/// straight to the fallback.
+fn start_session_in_background(
+    app: &AppHandle,
+    key: SessionKey,
+    build: impl FnOnce(&AppState) -> Result<SessionRecord, String> + Send + 'static,
+) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
+        match build(&state) {
+            Ok(record) => {
+                state.meeting_sessions.insert_if_absent(key.clone(), record);
+            }
+            Err(e) => {
+                log::warn!("Claude session {} not prepared: {e}", routing::session_key_label(&key));
+                return;
+            }
+        }
         let Some(record) = state.meeting_sessions.get(&key) else {
             return;
         };
@@ -177,8 +201,7 @@ pub async fn start_past_meeting_session(
         tier: tier_for("MeetingSummary", &scope, &cfg),
         scope,
     };
-    let record = past_session_record(&state, &meeting_id)?;
-    start_session_in_background(&app, key, record);
+    start_session_in_background(&app, key, move |state| past_session_record(state, &meeting_id));
     Ok(())
 }
 
@@ -288,8 +311,9 @@ pub async fn start_meeting(
             scope: SessionScope::Live(meeting.id.clone()),
             tier: Tier::Fast,
         };
-        let record = live_session_record(&state, Tier::Fast, &[]);
-        start_session_in_background(&app, key, record);
+        start_session_in_background(&app, key, |state| {
+            Ok(live_session_record(state, Tier::Fast, &[]))
+        });
     }
 
     serde_json::to_string(&meeting).map_err(|e| format!("Failed to serialize meeting: {}", e))

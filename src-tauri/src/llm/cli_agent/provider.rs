@@ -140,7 +140,7 @@ fn needs_recycle(turn: &TurnResult, turns: usize) -> bool {
 
 /// Map a session error onto the provider error the callers already handle.
 pub fn to_llm_error(err: AgentError) -> LLMError {
-    if err == AgentError::Cancelled {
+    if err.is_cancel() {
         return LLMError::Cancelled;
     }
     let message = err.to_string();

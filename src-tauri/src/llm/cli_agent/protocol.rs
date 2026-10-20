@@ -115,6 +115,8 @@ pub enum AgentErrorKind {
     NotInstalled,
     NotLoggedIn,
     RateLimited,
+    /// The conversation no longer fits the model's context window.
+    ContextOverflow,
     Crashed,
     Other,
 }
@@ -124,6 +126,15 @@ pub fn classify_error(text: &str) -> AgentErrorKind {
     let t = text.to_lowercase();
     if t.contains("not logged in") || t.contains("/login") || t.contains("please log in") {
         AgentErrorKind::NotLoggedIn
+    } else if t.contains("prompt is too long")
+        || t.contains("input is too long")
+        || t.contains("context length")
+        || t.contains("context window")
+        || t.contains("context limit")
+        || t.contains("maximum context")
+        || t.contains("too many tokens")
+    {
+        AgentErrorKind::ContextOverflow
     } else if t.contains("rate limit")
         || t.contains("usage limit")
         || t.contains("limit reached")
@@ -246,5 +257,17 @@ mod tests {
         assert_eq!(classify_error("You hit the Rate Limit"), AgentErrorKind::RateLimited);
         assert_eq!(classify_error("5-hour usage limit reached"), AgentErrorKind::RateLimited);
         assert_eq!(classify_error("boom"), AgentErrorKind::Other);
+    }
+
+    #[test]
+    fn classify_context_overflow() {
+        for text in [
+            "Prompt is too long",
+            "input length and `max_tokens` exceed context limit: 190000 + 32000 > 200000",
+            "This model's maximum context length is 200000 tokens",
+            "Context window exceeded",
+        ] {
+            assert_eq!(classify_error(text), AgentErrorKind::ContextOverflow, "{text}");
+        }
     }
 }

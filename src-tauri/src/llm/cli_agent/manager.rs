@@ -446,7 +446,7 @@ impl AgentSessionManager {
         }
         turn.outcome = match &result {
             Ok(_) => TurnOutcome::Succeeded,
-            Err(AgentError::Cancelled) => TurnOutcome::Cancelled,
+            Err(e) if e.is_cancel() => TurnOutcome::Cancelled,
             Err(e) => TurnOutcome::Failed(e.to_string()),
         };
         drop(turn);
@@ -937,6 +937,7 @@ mod tests {
 
         // The cursor advances, and resets when the session is restarted.
         let segs = vec![crate::llm::cli_agent::context::Seg {
+            id: "s1".into(),
             text: "a".into(),
             speaker: "You".into(),
             timestamp_ms: 0,
