@@ -60,7 +60,9 @@ pub fn sandbox_dir() -> PathBuf {
 
 /// Apply cwd (created if missing), stripped env and CREATE_NO_WINDOW.
 pub fn configure_command(cmd: &mut std::process::Command, sandbox: &Path) {
-    let _ = std::fs::create_dir_all(sandbox);
+    if let Err(e) = std::fs::create_dir_all(sandbox) {
+        log::warn!("cli_agent: cannot create sandbox dir {}: {e}", sandbox.display());
+    }
     cmd.current_dir(sandbox);
     for key in STRIPPED_ENV {
         cmd.env_remove(key);

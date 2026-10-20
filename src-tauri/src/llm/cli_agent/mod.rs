@@ -6,6 +6,7 @@
 pub mod command;
 pub mod detect;
 pub mod protocol;
+pub mod session;
 
 /// Which CLI agent a session talks to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

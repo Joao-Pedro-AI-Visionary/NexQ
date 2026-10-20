@@ -1,0 +1,321 @@
+//! Integration tests for `ClaudeSession` against `examples/fake_claude.rs`.
+//!
+//! The fake is configured through directives in the system prompt
+//! (`fake_mode=...`, `fake_record=...`): the session controls the child's
+//! environment and parallel tests cannot share process env vars.
+
+use nexq_lib::llm::cli_agent::command::SessionConfig;
+use nexq_lib::llm::cli_agent::detect::find_claude_binary;
+use nexq_lib::llm::cli_agent::protocol::AgentErrorKind;
+use nexq_lib::llm::cli_agent::session::{AgentError, ClaudeSession};
+use nexq_lib::llm::provider::CancelToken;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+/// Build `fake_claude` once and return its path (next to this test binary's
+/// `deps` dir, so it follows whatever target dir / profile cargo used).
+fn fake_bin() -> PathBuf {
+    static BIN: OnceLock<PathBuf> = OnceLock::new();
+    BIN.get_or_init(|| {
+        let mut cmd = std::process::Command::new(env!("CARGO"));
+        cmd.args(["build", "--example", "fake_claude"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"));
+        // Drop the per-crate vars cargo injects into test processes: build scripts
+        // (e.g. ring's) watch CARGO_MANIFEST_DIR / OUT_DIR, so inheriting them would force a
+        // full rebuild on every run.
+        for (key, _) in std::env::vars() {
+            let injected = [
+                "CARGO_MANIFEST_",
+                "CARGO_PKG_",
+                "CARGO_CRATE_",
+                "CARGO_PRIMARY_PACKAGE",
+                "CARGO_BIN_",
+                "OUT_DIR",
+            ]
+            .iter()
+            .any(|p| key.starts_with(p));
+            if injected {
+                cmd.env_remove(key);
+            }
+        }
+        if !cfg!(debug_assertions) {
+            cmd.arg("--release");
+        }
+        let out = cmd.output().expect("run cargo build --example fake_claude");
+        assert!(
+            out.status.success(),
+            "building fake_claude failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let profile_dir = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let bin = profile_dir
+            .join("examples")
+            .join(format!("fake_claude{}", std::env::consts::EXE_SUFFIX));
+        assert!(bin.is_file(), "missing {}", bin.display());
+        bin
+    })
+    .clone()
+}
+
+fn cfg(mode: &str, record: Option<&Path>) -> SessionConfig {
+    let mut system_prompt = format!("You are a test double.\nfake_mode={mode}\n");
+    if let Some(path) = record {
+        system_prompt.push_str(&format!("fake_record={}\n", path.display()));
+    }
+    SessionConfig {
+        model: "haiku".into(),
+        effort: "low".into(),
+        system_prompt,
+    }
+}
+
+async fn spawn(mode: &str) -> ClaudeSession {
+    ClaudeSession::spawn(fake_bin(), cfg(mode, None))
+        .await
+        .expect("spawn fake")
+}
+
+/// `on_delta` that appends into the returned buffer.
+fn collector() -> (Arc<Mutex<String>>, Box<dyn Fn(&str) + Send + Sync>) {
+    let buf = Arc::new(Mutex::new(String::new()));
+    let sink = buf.clone();
+    (
+        buf,
+        Box::new(move |d: &str| sink.lock().unwrap().push_str(d)),
+    )
+}
+
+fn token() -> Arc<CancelToken> {
+    Arc::new(CancelToken::new())
+}
+
+#[tokio::test]
+async fn spawn_then_ask_streams_and_completes() {
+    let session = spawn("normal").await;
+    assert!(session.is_alive());
+    assert_eq!(session.model(), "haiku");
+    let (buf, on_delta) = collector();
+    let result = session.ask("hello", on_delta, token()).await.unwrap();
+    assert_eq!(*buf.lock().unwrap(), "Hello world");
+    assert_eq!(result.text, "Hello world");
+    assert!(!result.is_error);
+    session.close().await;
+    assert!(!session.is_alive());
+}
+
+#[tokio::test]
+async fn append_context_returns_without_query() {
+    let record =
+        std::env::temp_dir().join(format!("nexq-fake-claude-{}.jsonl", uuid::Uuid::new_v4()));
+    let session = ClaudeSession::spawn(fake_bin(), cfg("normal", Some(&record)))
+        .await
+        .unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        session.append_context("context doc"),
+    )
+    .await
+    .expect("append_context timed out")
+    .unwrap();
+    let lines = std::fs::read_to_string(&record).unwrap();
+    let last: serde_json::Value = serde_json::from_str(lines.lines().last().unwrap()).unwrap();
+    assert_eq!(last["shouldQuery"], false);
+    assert_eq!(last["message"]["content"], "context doc");
+    // The session is still usable for a real turn afterwards.
+    let (_, on_delta) = collector();
+    assert_eq!(
+        session.ask("q", on_delta, token()).await.unwrap().text,
+        "answer:q"
+    );
+    session.close().await;
+    let _ = std::fs::remove_file(&record);
+}
+
+#[tokio::test]
+async fn concurrent_asks_are_fifo() {
+    let session = spawn("normal").await;
+    let order = Arc::new(Mutex::new(Vec::<(u8, String)>::new()));
+    let tagged = |tag: u8| -> (Arc<Mutex<String>>, Box<dyn Fn(&str) + Send + Sync>) {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let (sink, order) = (buf.clone(), order.clone());
+        let cb = Box::new(move |d: &str| {
+            sink.lock().unwrap().push_str(d);
+            order.lock().unwrap().push((tag, d.to_string()));
+        });
+        (buf, cb)
+    };
+    let (buf1, cb1) = tagged(1);
+    let (buf2, cb2) = tagged(2);
+    // join! polls the first ask first, so it takes the turn lock first.
+    let (r1, r2) = tokio::join!(
+        session.ask("1", cb1, token()),
+        session.ask("2", cb2, token())
+    );
+    assert_eq!(
+        vec![r1.unwrap().text, r2.unwrap().text],
+        vec!["answer:1", "answer:2"]
+    );
+    assert_eq!(*buf1.lock().unwrap(), "answer:1");
+    assert_eq!(*buf2.lock().unwrap(), "answer:2");
+    let tags: Vec<u8> = order.lock().unwrap().iter().map(|(t, _)| *t).collect();
+    let first_two = tags.iter().position(|t| *t == 2).unwrap();
+    assert!(
+        tags[first_two..].iter().all(|t| *t == 2),
+        "turns interleaved: {tags:?}"
+    );
+    session.close().await;
+}
+
+#[tokio::test]
+async fn cancel_then_ask_has_no_bleed() {
+    let session = spawn("slow").await;
+    let cancel = token();
+    let buf1 = Arc::new(Mutex::new(String::new()));
+    let (sink, trigger) = (buf1.clone(), cancel.clone());
+    let on_delta = Box::new(move |d: &str| {
+        sink.lock().unwrap().push_str(d);
+        trigger.cancel();
+    });
+    let started = Instant::now();
+    let first = session.ask("first", on_delta, cancel).await;
+    assert_eq!(first, Err(AgentError::Cancelled));
+    // "answer:first" takes ~1.2 s to stream in slow mode; cancel must not wait for it.
+    assert!(
+        started.elapsed() < Duration::from_millis(800),
+        "cancel took {:?}",
+        started.elapsed()
+    );
+    assert_eq!(*buf1.lock().unwrap(), "a", "deltas forwarded after cancel");
+
+    let (buf2, on_delta) = collector();
+    let second = session.ask("second", on_delta, token()).await.unwrap();
+    assert_eq!(second.text, "answer:second");
+    assert_eq!(*buf2.lock().unwrap(), "answer:second");
+    assert_eq!(*buf1.lock().unwrap(), "a");
+    session.close().await;
+}
+
+#[tokio::test]
+async fn crash_mid_turn_returns_crashed() {
+    let session = spawn("crash_mid_turn").await;
+    let (_, on_delta) = collector();
+    let result = tokio::time::timeout(Duration::from_secs(3), session.ask("x", on_delta, token()))
+        .await
+        .expect("crash not reported within 3 s");
+    match &result {
+        Err(e @ AgentError::Crashed(reason)) => {
+            assert!(reason.contains("exit code 1"), "reason: {reason}");
+            assert_eq!(e.kind(), AgentErrorKind::Crashed);
+        }
+        other => panic!("expected Crashed, got {other:?}"),
+    }
+    assert!(!session.is_alive());
+    // Later turns fail fast instead of hanging.
+    let (_, on_delta) = collector();
+    let again =
+        tokio::time::timeout(Duration::from_secs(1), session.ask("y", on_delta, token())).await;
+    assert!(
+        matches!(again, Ok(Err(AgentError::Crashed(_)))),
+        "got {again:?}"
+    );
+}
+
+#[tokio::test]
+async fn error_result_maps_to_cli_error() {
+    let session = spawn("normal").await;
+    let (_, on_delta) = collector();
+    let result = session
+        .ask("fail:Not logged in · Please run /login", on_delta, token())
+        .await;
+    assert!(
+        matches!(&result, Err(AgentError::Cli(AgentErrorKind::NotLoggedIn, msg)) if msg.contains("/login")),
+        "got {result:?}"
+    );
+    assert!(session.is_alive());
+    let (_, on_delta) = collector();
+    assert_eq!(
+        session.ask("ok", on_delta, token()).await.unwrap().text,
+        "answer:ok"
+    );
+    session.close().await;
+}
+
+#[tokio::test]
+async fn spawn_missing_binary_is_not_installed() {
+    let bin = std::env::temp_dir()
+        .join("nexq-no-such-dir")
+        .join("claude.exe");
+    let err = ClaudeSession::spawn(bin, cfg("normal", None))
+        .await
+        .err()
+        .expect("spawn must fail");
+    assert!(matches!(err, AgentError::Spawn(_)), "got {err:?}");
+    assert_eq!(err.kind(), AgentErrorKind::NotInstalled);
+}
+
+/// Manual smoke test against the real, logged-in `claude` (costs a few tokens):
+/// `cargo test --test claude_session real_claude -- --ignored`
+#[tokio::test]
+#[ignore]
+async fn real_claude_two_turns() {
+    let bin = find_claude_binary().expect("claude.exe not found");
+    let cfg = SessionConfig {
+        model: "haiku".into(),
+        effort: "low".into(),
+        system_prompt: "You are a terse assistant. Answer in as few words as possible.".into(),
+    };
+    let session = ClaudeSession::spawn(bin, cfg)
+        .await
+        .expect("spawn real claude");
+    session
+        .append_context("Background note: the project codename is PINEAPPLE.")
+        .await
+        .unwrap();
+    let (buf1, on_delta) = collector();
+    let t1 = session
+        .ask(
+            "Remember the number 7341. Reply only with OK.",
+            on_delta,
+            token(),
+        )
+        .await
+        .unwrap();
+    println!(
+        "turn 1: {:?} (streamed {:?})",
+        t1.text,
+        buf1.lock().unwrap()
+    );
+    let (buf2, on_delta) = collector();
+    let t2 = session
+        .ask(
+            "What number did I ask you to remember, and what is the project codename?",
+            on_delta,
+            token(),
+        )
+        .await
+        .unwrap();
+    println!(
+        "turn 2: {:?} tokens in/out {}/{} cost ${}",
+        t2.text, t2.input_tokens, t2.output_tokens, t2.cost_usd
+    );
+    assert_eq!(*buf2.lock().unwrap(), t2.text);
+    assert!(
+        t2.text.contains("7341"),
+        "turn 2 forgot turn 1: {}",
+        t2.text
+    );
+    assert!(
+        t2.text.to_uppercase().contains("PINEAPPLE"),
+        "context not applied: {}",
+        t2.text
+    );
+    session.close().await;
+    assert!(!session.is_alive());
+}

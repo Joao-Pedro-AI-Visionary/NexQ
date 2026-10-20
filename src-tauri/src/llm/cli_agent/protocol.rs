@@ -26,9 +26,14 @@ pub enum AgentEvent {
 }
 
 /// Parse one stdout line of `--output-format stream-json`.
-/// Valid JSON of an unrecognised shape yields `Other`; invalid JSON is an error.
+/// Valid JSON of an unrecognised shape and blank lines yield `Other`; invalid
+/// (e.g. truncated) JSON is an error the caller should log and skip.
 pub fn parse_line(line: &str) -> Result<AgentEvent, String> {
-    let v: Value = serde_json::from_str(line.trim())
+    let line = line.trim();
+    if line.is_empty() {
+        return Ok(AgentEvent::Other);
+    }
+    let v: Value = serde_json::from_str(line)
         .map_err(|e| format!("invalid stream-json line: {e}"))?;
     let kind = v.get("type").and_then(Value::as_str).unwrap_or("");
     let sub = v.get("subtype").and_then(Value::as_str).unwrap_or("");
@@ -49,7 +54,7 @@ pub fn parse_line(line: &str) -> Result<AgentEvent, String> {
         ("result", _) => {
             let usage = &v["usage"];
             Ok(AgentEvent::TurnComplete(TurnResult {
-                text: str_field(&v, "result"),
+                text: result_text(&v),
                 is_error: v["is_error"].as_bool().unwrap_or(false),
                 input_tokens: usage["input_tokens"].as_u64().unwrap_or(0),
                 output_tokens: usage["output_tokens"].as_u64().unwrap_or(0),
@@ -59,6 +64,31 @@ pub fn parse_line(line: &str) -> Result<AgentEvent, String> {
             }))
         }
         _ => Ok(AgentEvent::Other),
+    }
+}
+
+/// `result` text, or for error results that carry none (e.g. subtypes
+/// `error_during_execution`, `error_max_turns`) the joined `errors` array,
+/// falling back to the subtype so the failure stays classifiable.
+fn result_text(v: &Value) -> String {
+    if let Some(t) = v.get("result").and_then(Value::as_str) {
+        return t.to_string();
+    }
+    if !v["is_error"].as_bool().unwrap_or(false) {
+        return String::new();
+    }
+    let errors: Vec<String> = v["errors"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|e| e.as_str().map(str::to_string).unwrap_or_else(|| e.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    if errors.is_empty() {
+        str_field(v, "subtype")
+    } else {
+        errors.join("; ")
     }
 }
 
@@ -103,7 +133,7 @@ pub fn classify_error(text: &str) -> AgentErrorKind {
     } else if t.contains("not installed")
         || t.contains("program not found")
         || t.contains("cannot find the file")
-        || t.contains("os error 2")
+        || t.contains("(os error 2)")
     {
         AgentErrorKind::NotInstalled
     } else if t.contains("exited") || t.contains("crashed") || t.contains("broken pipe") {
@@ -167,6 +197,43 @@ mod tests {
         assert!(!user_message("x", false).contains('\n'));
         let q: Value = serde_json::from_str(&user_message("x", true)).unwrap();
         assert!(q.get("shouldQuery").is_none());
+    }
+
+    #[test]
+    fn parse_blank_whitespace_and_truncated() {
+        assert_eq!(parse_line("").unwrap(), AgentEvent::Other);
+        assert_eq!(parse_line("  
+").unwrap(), AgentEvent::Other);
+        assert!(parse_line(r#"{"type":"stream_event","event":{"type":"content_blo"#).is_err());
+    }
+
+    #[test]
+    fn parse_error_result_without_result_field() {
+        let l = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["API Error: Rate limit reached","retry later"]}"#;
+        match parse_line(l).unwrap() {
+            AgentEvent::TurnComplete(r) => {
+                assert!(r.is_error);
+                assert_eq!(r.text, "API Error: Rate limit reached; retry later");
+                assert_eq!(classify_error(&r.text), AgentErrorKind::RateLimited);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let bare = r#"{"type":"result","subtype":"error_max_turns","is_error":true}"#;
+        match parse_line(bare).unwrap() {
+            AgentEvent::TurnComplete(r) => assert_eq!(r.text, "error_max_turns"),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_os_error_2_precisely() {
+        assert_eq!(
+            classify_error("program not found: The system cannot find the file specified. (os error 2)"),
+            AgentErrorKind::NotInstalled
+        );
+        assert_eq!(classify_error("The directory name is invalid. (os error 267)"), AgentErrorKind::Other);
+        assert_eq!(classify_error("Access is denied. (os error 5)"), AgentErrorKind::Other);
+        assert_eq!(classify_error("pipe error (os error 232)"), AgentErrorKind::Other);
     }
 
     #[test]
