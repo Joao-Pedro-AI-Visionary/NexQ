@@ -239,16 +239,27 @@ fn tail_chars(text: &str, n: usize) -> String {
     text.chars().skip(count.saturating_sub(n)).collect()
 }
 
-/// The meeting scope of a request: the past meeting it names, else the
-/// running meeting, else none (Utility).
-fn request_scope(state: &AppState, past_meeting_id: Option<&str>) -> SessionScope {
+/// The meeting scope of a request (the past meeting it names, else the
+/// running meeting, else none: Utility) and that scope's close epoch, read
+/// together so a meeting ending right after can't have its session
+/// recreated by this request (see `MeetingSessions::ensure_current`).
+fn request_scope(state: &AppState, past_meeting_id: Option<&str>) -> (SessionScope, u64) {
     if let Some(id) = past_meeting_id.filter(|id| !id.is_empty()) {
-        return SessionScope::Past(id.to_string());
+        let scope = SessionScope::Past(id.to_string());
+        let epoch = state.meeting_sessions.epoch(&scope);
+        return (scope, epoch);
     }
-    match state.live_meeting.lock().ok().and_then(|m| m.clone()) {
-        Some(meeting) => SessionScope::Live(meeting.id),
+    // The epoch is read under the `live_meeting` lock: `end_meeting` clears
+    // the live meeting before it closes the scope, so a request that still
+    // sees the meeting holds the epoch from before the close.
+    let live = state.live_meeting.lock().ok();
+    let scope = match live.as_ref().and_then(|m| m.as_ref().map(|m| m.id.clone())) {
+        Some(id) => SessionScope::Live(id),
         None => SessionScope::Utility,
-    }
+    };
+    let epoch = state.meeting_sessions.epoch(&scope);
+    drop(live);
+    (scope, epoch)
 }
 
 /// Where this request goes (see `choose_route`).
@@ -329,6 +340,8 @@ async fn resolve_fallback(
 /// Everything the Claude session path needs from a request.
 pub(crate) struct SessionAssist<'a> {
     pub key: SessionKey,
+    /// The scope's close epoch when the request chose it.
+    pub epoch: u64,
     pub mode: &'a str,
     pub custom_question: Option<&'a str>,
     pub detected_question: Option<String>,
@@ -380,20 +393,18 @@ pub(crate) async fn session_assist(state: &AppState, app: &AppHandle, req: Sessi
         _ => Vec::new(),
     };
 
-    if !state.meeting_sessions.contains(key) {
-        let record = match &key.scope {
-            SessionScope::Live(_) => Ok(crate::commands::meeting_commands::live_session_record(state, key.tier, &finals)),
-            SessionScope::Past(id) => crate::commands::meeting_commands::past_session_record(state, id),
-            SessionScope::Utility => Err("Utility requests have no meeting session".to_string()),
-        };
-        match record {
-            Ok(record) => {
-                state.meeting_sessions.insert_if_absent(key.clone(), record);
-            }
-            Err(e) => {
-                emit_error(app, params, &e);
-                return SessionOutcome::Done(Err(e));
-            }
+    let ready = state.meeting_sessions.ensure_current(key, req.epoch, || match &key.scope {
+        SessionScope::Live(_) => Ok(crate::commands::meeting_commands::live_session_record(state, key.tier, &finals)),
+        SessionScope::Past(id) => crate::commands::meeting_commands::past_session_record(state, id),
+        SessionScope::Utility => Err("Utility requests have no meeting session".to_string()),
+    });
+    match ready {
+        Ok(true) => {}
+        // The meeting ended / its view was left since the request chose it.
+        Ok(false) => return end_closed(app, params, start),
+        Err(e) => {
+            emit_error(app, params, &e);
+            return SessionOutcome::Done(Err(e));
         }
     }
     let record = state.meeting_sessions.get(key).unwrap_or_default();
@@ -496,18 +507,7 @@ pub(crate) async fn session_assist(state: &AppState, app: &AppHandle, req: Sessi
         Err(AskFailure::Cancelled) => SessionOutcome::Done(Ok(None)),
         // The meeting ended / its view was left mid-request: just end the
         // stream (no outage, no fallback).
-        Err(AskFailure::Closed) => {
-            let _ = app.emit(
-                "llm_stream_end",
-                StreamEndPayload {
-                    total_tokens: 0,
-                    latency_ms: start.elapsed().as_millis() as u64,
-                    request_id: params.request_id.clone(),
-                    cancelled: true,
-                },
-            );
-            SessionOutcome::Done(Ok(None))
-        }
+        Err(AskFailure::Closed) => end_closed(app, params, start),
         // Part of the answer is already on screen: report, don't repeat it.
         Err(AskFailure::AfterOutput(e)) | Err(AskFailure::Error(e)) => {
             let message = e.to_string();
@@ -520,6 +520,21 @@ pub(crate) async fn session_assist(state: &AppState, app: &AppHandle, req: Sessi
         }
         Err(AskFailure::Unavailable(kind, e)) => SessionOutcome::Unavailable(kind, e.to_string()),
     }
+}
+
+/// A session request whose meeting closed: just end the stream (no outage,
+/// no fallback).
+fn end_closed(app: &AppHandle, params: &GenerationParams, start: std::time::Instant) -> SessionOutcome {
+    let _ = app.emit(
+        "llm_stream_end",
+        StreamEndPayload {
+            total_tokens: 0,
+            latency_ms: start.elapsed().as_millis() as u64,
+            request_id: params.request_id.clone(),
+            cancelled: true,
+        },
+    );
+    SessionOutcome::Done(Ok(None))
 }
 
 /// Claude turned out unavailable for a session request: mark it so and
@@ -714,7 +729,7 @@ pub async fn generate_assist(
         .unwrap_or(global_defaults.temperature);
 
     // ── Route: warm Claude session, fallback provider, or stateless ──
-    let scope = request_scope(&state, past_meeting_id.as_deref());
+    let (scope, epoch) = request_scope(&state, past_meeting_id.as_deref());
     let mut route = request_route(&state, &mode, &scope);
 
     if let Route::ClaudeSession(key) = &route {
@@ -731,6 +746,7 @@ pub async fn generate_assist(
         };
         let req = SessionAssist {
             key: key.clone(),
+            epoch,
             mode: &mode,
             custom_question: custom_question.as_deref(),
             detected_question: if custom_question.is_none() {

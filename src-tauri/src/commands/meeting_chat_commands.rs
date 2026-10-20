@@ -201,11 +201,13 @@ pub async fn ask_meeting(
     };
 
     let scope = SessionScope::Past(meeting_id.clone());
+    let epoch = state.meeting_sessions.epoch(&scope);
     let mut route = request_route(&state, MEETING_ASK_MODE, &scope);
 
     if let Route::ClaudeSession(key) = &route {
         let req = SessionAssist {
             key: key.clone(),
+            epoch,
             mode: MEETING_ASK_MODE,
             custom_question: Some(&question),
             detected_question: None,

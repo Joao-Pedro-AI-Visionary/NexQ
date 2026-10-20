@@ -275,6 +275,27 @@ impl MeetingSessions {
         true
     }
 
+    /// For a request's lazy start: unless `scope` was closed since `epoch`
+    /// (read when the request chose its scope), make sure `key` has a record
+    /// (`build` runs only when it has none) and return true. Returns false
+    /// once the scope was closed, so an ended meeting's record is never
+    /// recreated (and no session is started for it).
+    pub fn ensure_current(
+        &self,
+        key: &SessionKey,
+        epoch: u64,
+        build: impl FnOnce() -> Result<SessionRecord, String>,
+    ) -> Result<bool, String> {
+        if self.epoch(&key.scope) != epoch {
+            return Ok(false);
+        }
+        if self.contains(key) {
+            return Ok(true);
+        }
+        let record = build()?;
+        Ok(self.insert_if_current(key.clone(), record, epoch))
+    }
+
     fn is_stateless_only(&self, key: &SessionKey) -> bool {
         self.records
             .lock()
@@ -1356,6 +1377,52 @@ mod tests {
         let fresh = sessions.epoch(&key.scope);
         assert!(sessions.insert_if_current(key.clone(), SessionRecord::default(), fresh));
         assert!(sessions.contains(&key));
+    }
+
+    #[test]
+    fn routing_request_never_recreates_a_closed_scope() {
+        let sessions = MeetingSessions::default();
+        let key = SessionKey { scope: live(), tier: Tier::Deep };
+        // The request chose its scope, then the meeting ended.
+        let epoch = sessions.epoch(&key.scope);
+        sessions.remove_scope(&key.scope);
+        let built = std::cell::Cell::new(false);
+        let ready = sessions.ensure_current(&key, epoch, || {
+            built.set(true);
+            Ok(SessionRecord::default())
+        });
+        assert_eq!(ready, Ok(false), "closed: the request ends without a session");
+        assert!(!built.get(), "no record is built for a closed scope");
+        assert!(!sessions.contains(&key));
+    }
+
+    #[test]
+    fn routing_request_closed_while_its_record_is_built_is_discarded() {
+        let sessions = MeetingSessions::default();
+        let key = SessionKey { scope: live(), tier: Tier::Fast };
+        let epoch = sessions.epoch(&key.scope);
+        let ready = sessions.ensure_current(&key, epoch, || {
+            sessions.remove_scope(&key.scope); // end_meeting lands mid-build
+            Ok(SessionRecord::default())
+        });
+        assert_eq!(ready, Ok(false));
+        assert!(!sessions.contains(&key));
+    }
+
+    #[test]
+    fn routing_request_builds_a_missing_record_once() {
+        let sessions = MeetingSessions::default();
+        let key = SessionKey { scope: live(), tier: Tier::Fast };
+        let epoch = sessions.epoch(&key.scope);
+        assert_eq!(sessions.ensure_current(&key, epoch, || Ok(SessionRecord::default())), Ok(true));
+        assert!(sessions.contains(&key));
+        let again = sessions.ensure_current(&key, epoch, || Err("must not rebuild".into()));
+        assert_eq!(again, Ok(true));
+        assert_eq!(
+            sessions.ensure_current(&SessionKey { scope: live(), tier: Tier::Deep }, epoch, || Err("no".into())),
+            Err("no".to_string()),
+            "a build error is reported"
+        );
     }
 
     #[test]
