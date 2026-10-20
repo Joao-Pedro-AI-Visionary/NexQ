@@ -1,0 +1,124 @@
+//! Launch arguments and process hygiene for the `claude` child process.
+
+use std::path::{Path, PathBuf};
+
+/// Model/effort/system prompt for one session.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionConfig {
+    pub model: String,
+    pub effort: String,
+    pub system_prompt: String,
+}
+
+/// Env vars removed from the child so a stray API key / provider switch can
+/// never override the user's own `claude` login.
+pub const STRIPPED_ENV: [&str; 7] = [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+];
+
+/// Exact launch args (never `--bare`). The system prompt travels via file.
+pub fn build_args(cfg: &SessionConfig, system_prompt_file: &Path) -> Vec<String> {
+    let s = |x: &str| x.to_string();
+    vec![
+        s("-p"),
+        s("--input-format"),
+        s("stream-json"),
+        s("--output-format"),
+        s("stream-json"),
+        s("--verbose"),
+        s("--include-partial-messages"),
+        s("--safe-mode"),
+        s("--tools"),
+        s(""),
+        s("--disallowedTools"),
+        s("*"),
+        s("--permission-prompts"),
+        s("none"),
+        s("--no-session-persistence"),
+        s("--model"),
+        cfg.model.clone(),
+        s("--effort"),
+        cfg.effort.clone(),
+        s("--system-prompt-file"),
+        system_prompt_file.to_string_lossy().into_owned(),
+    ]
+}
+
+/// `%LOCALAPPDATA%\NexQ\agent-sandbox`: the empty cwd the agent runs in.
+pub fn sandbox_dir() -> PathBuf {
+    let base = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("NexQ").join("agent-sandbox")
+}
+
+/// Apply cwd (created if missing), stripped env and CREATE_NO_WINDOW.
+pub fn configure_command(cmd: &mut std::process::Command, sandbox: &Path) {
+    let _ = std::fs::create_dir_all(sandbox);
+    cmd.current_dir(sandbox);
+    for key in STRIPPED_ENV {
+        cmd.env_remove(key);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg() -> SessionConfig {
+        SessionConfig { model: "haiku".into(), effort: "low".into(), system_prompt: "sp".into() }
+    }
+
+    #[test]
+    fn build_args_exact() {
+        let args = build_args(&cfg(), Path::new("C:\\t\\sp.txt"));
+        let joined = args.join("\u{1}");
+        assert_eq!(args[0], "-p");
+        for seq in [
+            vec!["--input-format", "stream-json"],
+            vec!["--output-format", "stream-json"],
+            vec!["--tools", ""],
+            vec!["--disallowedTools", "*"],
+            vec!["--permission-prompts", "none"],
+            vec!["--model", "haiku"],
+            vec!["--effort", "low"],
+            vec!["--system-prompt-file", "C:\\t\\sp.txt"],
+        ] {
+            assert!(joined.contains(&seq.join("\u{1}")), "missing {seq:?}");
+        }
+        for flag in ["--verbose", "--include-partial-messages", "--safe-mode", "--no-session-persistence"] {
+            assert!(args.iter().any(|a| a == flag), "missing {flag}");
+        }
+        assert!(!args.iter().any(|a| a == "--bare"));
+        let pos = |f: &str| args.iter().position(|a| a == f).unwrap();
+        assert!(pos("--model") < pos("--effort") && pos("--effort") < pos("--system-prompt-file"));
+    }
+
+    #[test]
+    fn configure_command_strips_env() {
+        std::env::set_var("ANTHROPIC_API_KEY", "sk-test");
+        let dir = std::env::temp_dir().join("nexq-cli-agent-test-sandbox");
+        let mut cmd = std::process::Command::new("claude.exe");
+        configure_command(&mut cmd, &dir);
+        for key in STRIPPED_ENV {
+            assert!(
+                cmd.get_envs().any(|(k, v)| k == key && v.is_none()),
+                "{key} not stripped"
+            );
+        }
+        assert_eq!(cmd.get_current_dir(), Some(dir.as_path()));
+        assert!(dir.is_dir());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
