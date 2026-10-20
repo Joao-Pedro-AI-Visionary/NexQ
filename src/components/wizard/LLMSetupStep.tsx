@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback } from "react";
 import { useConfigStore } from "../../stores/configStore";
+import { useAgentStore } from "../../stores/agentStore";
 import {
   listModels,
   setLLMProvider,
   setActiveModel,
   storeApiKey,
   testLLMConnection,
+  openClaudeLoginTerminal,
 } from "../../lib/ipc";
 import type { LLMProviderType, ModelInfo } from "../../lib/types";
 import {
@@ -20,6 +22,7 @@ import {
   Zap,
   Brain,
   RefreshCw,
+  Terminal,
 } from "lucide-react";
 
 interface LLMSetupStepProps {
@@ -78,6 +81,17 @@ export function LLMSetupStep({
 
   const hasLocalLLM = ollamaRunning || lmStudioRunning;
 
+  // Claude Code on this PC: offered as a provider once detected.
+  const claudeStatus = useAgentStore((s) => s.status);
+  const claudeChecking = useAgentStore((s) => s.checking);
+  const refreshClaudeStatus = useAgentStore((s) => s.refreshStatus);
+  const claudeCliConfig = useConfigStore((s) => s.claudeCliConfig);
+  useEffect(() => {
+    refreshClaudeStatus();
+  }, [refreshClaudeStatus]);
+  const claudeInstalled = !!claudeStatus?.installed;
+  const claudeLoggedIn = !!claudeStatus?.auth?.logged_in;
+
   const [selectedProvider, setSelectedProvider] = useState<LLMProviderType>(
     hasLocalLLM
       ? ollamaRunning
@@ -106,6 +120,22 @@ export function LLMSetupStep({
   const requiresApiKey = ["openai", "anthropic", "groq", "gemini", "openrouter"].includes(
     selectedProvider
   );
+  const isClaudeCli = selectedProvider === "claude_cli";
+
+  // Claude has no model to pick (Fast / Deep come from its settings); the
+  // backend still needs one, so the Fast model fills the slot.
+  async function handleUseClaude() {
+    const model = claudeCliConfig.fast_model;
+    try {
+      await setLLMProvider(JSON.stringify({ provider_type: "claude_cli" }));
+      await setActiveModel("claude_cli", model);
+      setConfigProvider("claude_cli");
+      setConfigModel(model);
+    } catch (err) {
+      setConnectionStatus("error");
+      setConnectionMessage(err instanceof Error ? err.message : "Couldn't switch to Claude");
+    }
+  }
 
   const buildProviderConfig = useCallback(() => {
     const config: Record<string, unknown> = {
@@ -248,6 +278,75 @@ export function LLMSetupStep({
           </div>
         )}
 
+        {/* Subscription (local CLI): Claude Code, when detected */}
+        {claudeInstalled && (
+          <div className="space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Subscription <span className="ml-1 normal-case tracking-normal text-warning">Beta</span>
+            </p>
+            <ProviderButton
+              label="Claude"
+              description={
+                claudeLoggedIn
+                  ? `Your Claude login${claudeStatus?.auth?.email ? ` (${claudeStatus.auth.email})` : ""}`
+                  : "Claude Code found — log in to use it"
+              }
+              icon={<Terminal className="h-5 w-5" />}
+              selected={isClaudeCli}
+              onClick={() => handleProviderSelect("claude_cli")}
+            />
+          </div>
+        )}
+
+        {isClaudeCli && (
+          <div className="space-y-3 rounded-xl border border-border/30 bg-secondary/20 px-5 py-4">
+            <p className="text-xs text-muted-foreground">
+              Uses your own Claude login on this PC. NexQ never sees your credentials.
+            </p>
+            {claudeLoggedIn ? (
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  onClick={handleUseClaude}
+                  className="inline-flex items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 px-4 py-2 text-xs font-semibold text-primary transition-colors hover:bg-primary/10"
+                >
+                  <CheckCircle className="h-3.5 w-3.5" />
+                  Use Claude
+                </button>
+                {llmProvider === "claude_cli" && (
+                  <span className="flex items-center gap-1 text-xs text-success">
+                    <CheckCircle className="h-3 w-3" />
+                    Claude is your AI provider
+                  </span>
+                )}
+                {connectionStatus === "error" && (
+                  <span className="flex items-center gap-1 text-xs text-destructive">
+                    <XCircle className="h-3 w-3" />
+                    {connectionMessage}
+                  </span>
+                )}
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  onClick={() => openClaudeLoginTerminal().catch(() => {})}
+                  className="inline-flex items-center gap-2 rounded-xl border border-border/40 bg-background px-4 py-2 text-xs font-semibold text-foreground transition-colors hover:bg-accent"
+                >
+                  <Terminal className="h-3.5 w-3.5" />
+                  Open terminal to log in
+                </button>
+                <button
+                  onClick={() => refreshClaudeStatus()}
+                  disabled={claudeChecking}
+                  className="inline-flex items-center gap-2 rounded-xl border border-border/40 bg-background px-4 py-2 text-xs font-semibold text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {claudeChecking ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                  Check again
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Cloud Provider Cards */}
         <div className="space-y-2">
           <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
@@ -304,50 +403,52 @@ export function LLMSetupStep({
         )}
 
         {/* Test Connection & Load Models */}
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            onClick={handleTestConnection}
-            disabled={
-              connectionStatus === "testing" ||
-              (requiresApiKey && !apiKey)
-            }
-            className="inline-flex items-center gap-2 rounded-xl border border-border/40 bg-background px-4 py-2 text-xs font-semibold text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {connectionStatus === "testing" ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <CheckCircle className="h-3.5 w-3.5" />
+        {!isClaudeCli && (
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={handleTestConnection}
+              disabled={
+                connectionStatus === "testing" ||
+                (requiresApiKey && !apiKey)
+              }
+              className="inline-flex items-center gap-2 rounded-xl border border-border/40 bg-background px-4 py-2 text-xs font-semibold text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {connectionStatus === "testing" ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <CheckCircle className="h-3.5 w-3.5" />
+              )}
+              Test Connection
+            </button>
+            <button
+              onClick={handleLoadModels}
+              disabled={modelsLoading || (requiresApiKey && !apiKey)}
+              className="inline-flex items-center gap-2 rounded-xl border border-border/40 bg-background px-4 py-2 text-xs font-semibold text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {modelsLoading ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <RefreshCw className="h-3 w-3" />
+              )}
+              Load Models
+            </button>
+            {connectionStatus === "success" && (
+              <span className="flex items-center gap-1 text-xs text-success">
+                <CheckCircle className="h-3 w-3" />
+                {connectionMessage}
+              </span>
             )}
-            Test Connection
-          </button>
-          <button
-            onClick={handleLoadModels}
-            disabled={modelsLoading || (requiresApiKey && !apiKey)}
-            className="inline-flex items-center gap-2 rounded-xl border border-border/40 bg-background px-4 py-2 text-xs font-semibold text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {modelsLoading ? (
-              <Loader2 className="h-3 w-3 animate-spin" />
-            ) : (
-              <RefreshCw className="h-3 w-3" />
+            {connectionStatus === "error" && (
+              <span className="flex items-center gap-1 text-xs text-destructive">
+                <XCircle className="h-3 w-3" />
+                {connectionMessage}
+              </span>
             )}
-            Load Models
-          </button>
-          {connectionStatus === "success" && (
-            <span className="flex items-center gap-1 text-xs text-success">
-              <CheckCircle className="h-3 w-3" />
-              {connectionMessage}
-            </span>
-          )}
-          {connectionStatus === "error" && (
-            <span className="flex items-center gap-1 text-xs text-destructive">
-              <XCircle className="h-3 w-3" />
-              {connectionMessage}
-            </span>
-          )}
-        </div>
+          </div>
+        )}
 
         {/* Model Selection */}
-        {models.length > 0 && (
+        {!isClaudeCli && models.length > 0 && (
           <div className="space-y-2">
             <label className="text-sm font-medium text-foreground">
               Select Model

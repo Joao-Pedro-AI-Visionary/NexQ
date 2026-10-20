@@ -14,6 +14,8 @@ import {
 } from "../lib/ipc";
 import type { LLMProviderType, ModelInfo, OpenRouterModel } from "../lib/types";
 import { OpenRouterModelCatalog } from "./openrouter/OpenRouterModelCatalog";
+import { ClaudeCliSettings, claudeTierLabel } from "./ClaudeCliSettings";
+import { useAgentStore } from "../stores/agentStore";
 import {
   CheckCircle,
   XCircle,
@@ -125,6 +127,9 @@ export function LLMSettings() {
   const setConfigModel = useConfigStore((s) => s.setLLMModel);
   const verifiedCloudProviders = useConfigStore((s) => s.verifiedCloudProviders);
   const setVerifiedCloudProviders = useConfigStore((s) => s.setVerifiedCloudProviders);
+  const claudeCliConfig = useConfigStore((s) => s.claudeCliConfig);
+  const lastModelByProvider = useConfigStore((s) => s.lastModelByProvider);
+  const claudeStatus = useAgentStore((s) => s.status);
 
   const [selectedProvider, setSelectedProvider] = useState<LLMProviderType>(llmProvider);
   const [models, setModels] = useState<ModelInfo[]>([]);
@@ -283,6 +288,11 @@ export function LLMSettings() {
   const requiresApiKey = info?.requiresKey ?? false;
   const isLocal = info?.isLocal ?? false;
   const isCustom = selectedProvider === "custom";
+  const isClaudeCli = selectedProvider === "claude_cli";
+  // Claude can be made active once the CLI is found and logged in (or while
+  // its login state is unknown); it has no model of its own to pick here.
+  const claudeUnusable =
+    isClaudeCli && !!claudeStatus && (!claudeStatus.installed || claudeStatus.auth?.logged_in === false);
 
   return (
     <div className="space-y-6">
@@ -292,19 +302,28 @@ export function LLMSettings() {
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium text-foreground">
             Active: {PROVIDER_DISPLAY[llmProvider]?.label || llmProvider}
-            {llmModel ? ` / ${llmModel}` : " — no model selected"}
+            {llmProvider === "claude_cli" ? "" : llmModel ? ` / ${llmModel}` : " — no model selected"}
           </p>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            {llmModel
-              ? "This provider and model will be used for AI responses"
-              : "Select a provider, test connection, and load models below"}
+            {llmProvider === "claude_cli"
+              ? `Fast: ${claudeTierLabel(claudeCliConfig.fast_model, claudeCliConfig.fast_effort)} — Deep: ${claudeTierLabel(claudeCliConfig.deep_model, claudeCliConfig.deep_effort)}`
+              : llmModel
+                ? "This provider and model will be used for AI responses"
+                : "Select a provider, test connection, and load models below"}
           </p>
         </div>
       </div>
 
+      {/* Subscription (local CLI) providers */}
+      <ClaudeCliSettings
+        selected={isClaudeCli}
+        active={llmProvider === "claude_cli"}
+        onSelect={() => handleProviderChange("claude_cli")}
+      />
+
       {/* Provider Selection */}
       <div className="rounded-xl border border-border/30 bg-card/50 p-5">
-        <h3 className="mb-3 text-sm font-semibold text-primary/80">Provider</h3>
+        <h3 className="mb-3 text-sm font-semibold text-primary/80">API & local providers</h3>
         <div className="grid grid-cols-4 gap-2.5">
           {ALL_PROVIDERS.map((pType) => {
             const display = PROVIDER_DISPLAY[pType];
@@ -446,71 +465,76 @@ export function LLMSettings() {
         </div>
       )}
 
-      {/* Connection Test & Model Loading */}
-      <div className="rounded-xl border border-border/30 bg-card/50 p-5">
-        <h3 className="mb-3 text-sm font-semibold text-primary/80">Connection</h3>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleTestConnection}
-            disabled={connectionStatus === "testing" || (requiresApiKey && !apiKey) || (isCustom && !customBaseUrl)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border/50 bg-background px-4 py-2 text-sm font-medium text-foreground transition-all duration-150 hover:bg-accent hover:-translate-y-px active:translate-y-px active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:active:scale-100 cursor-pointer"
-          >
-            {connectionStatus === "testing" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wifi className="h-3.5 w-3.5" />}
-            Test Connection
-          </button>
-          <button
-            onClick={handleLoadModels}
-            disabled={modelsLoading || (requiresApiKey && !apiKey) || (isCustom && !customBaseUrl)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border/50 bg-background px-4 py-2 text-sm font-medium text-foreground transition-all duration-150 hover:bg-accent hover:-translate-y-px active:translate-y-px active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:active:scale-100 cursor-pointer"
-          >
-            {modelsLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-            Load Models
-          </button>
-          {connectionStatus === "success" && (
-            <div className="flex items-center gap-1 text-success">
-              <CheckCircle className="h-3.5 w-3.5" />
-              <span className="text-xs">{connectionMessage}</span>
-            </div>
-          )}
-          {connectionStatus === "error" && (
-            <div className="flex items-center gap-1 text-destructive">
-              <XCircle className="h-3.5 w-3.5" />
-              <span className="text-xs truncate max-w-[200px]">{connectionMessage}</span>
+      {/* Connection Test & Model Loading (Claude has its own above) */}
+      {!isClaudeCli && (
+        <div className="rounded-xl border border-border/30 bg-card/50 p-5">
+          <h3 className="mb-3 text-sm font-semibold text-primary/80">Connection</h3>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleTestConnection}
+              disabled={connectionStatus === "testing" || (requiresApiKey && !apiKey) || (isCustom && !customBaseUrl)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border/50 bg-background px-4 py-2 text-sm font-medium text-foreground transition-all duration-150 hover:bg-accent hover:-translate-y-px active:translate-y-px active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:active:scale-100 cursor-pointer"
+            >
+              {connectionStatus === "testing" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wifi className="h-3.5 w-3.5" />}
+              Test Connection
+            </button>
+            <button
+              onClick={handleLoadModels}
+              disabled={modelsLoading || (requiresApiKey && !apiKey) || (isCustom && !customBaseUrl)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border/50 bg-background px-4 py-2 text-sm font-medium text-foreground transition-all duration-150 hover:bg-accent hover:-translate-y-px active:translate-y-px active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:active:scale-100 cursor-pointer"
+            >
+              {modelsLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+              Load Models
+            </button>
+            {connectionStatus === "success" && (
+              <div className="flex items-center gap-1 text-success">
+                <CheckCircle className="h-3.5 w-3.5" />
+                <span className="text-xs">{connectionMessage}</span>
+              </div>
+            )}
+            {connectionStatus === "error" && (
+              <div className="flex items-center gap-1 text-destructive">
+                <XCircle className="h-3.5 w-3.5" />
+                <span className="text-xs truncate max-w-[200px]">{connectionMessage}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Model Selection (Claude uses its Fast / Deep settings instead) */}
+      {!isClaudeCli && (
+        <div className="rounded-xl border border-border/30 bg-card/50 p-5">
+          <h3 className="mb-3 text-sm font-semibold text-primary/80">Model</h3>
+          {selectedProvider === "openrouter" && openRouterModels.length > 0 ? (
+            <OpenRouterModelCatalog models={openRouterModels} />
+          ) : models.length > 0 ? (
+            <select
+              value={selectedModel}
+              onChange={(e) => handleModelSelect(e.target.value)}
+              className="w-full rounded-lg border border-border/50 bg-background px-3.5 py-2.5 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20 cursor-pointer"
+            >
+              <option value="">Select a model...</option>
+              {models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}{m.context_window ? ` (${Math.round(m.context_window / 1000)}K ctx)` : ""}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <div className="rounded-lg border border-border/30 bg-accent/20 px-4 py-3">
+              <p className="text-xs text-muted-foreground">
+                {modelsError || (modelsLoading ? "Loading models..." : 'Click "Load Models" to fetch available models')}
+              </p>
             </div>
           )}
         </div>
-      </div>
-
-      {/* Model Selection */}
-      <div className="rounded-xl border border-border/30 bg-card/50 p-5">
-        <h3 className="mb-3 text-sm font-semibold text-primary/80">Model</h3>
-        {selectedProvider === "openrouter" && openRouterModels.length > 0 ? (
-          <OpenRouterModelCatalog models={openRouterModels} />
-        ) : models.length > 0 ? (
-          <select
-            value={selectedModel}
-            onChange={(e) => handleModelSelect(e.target.value)}
-            className="w-full rounded-lg border border-border/50 bg-background px-3.5 py-2.5 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20 cursor-pointer"
-          >
-            <option value="">Select a model...</option>
-            {models.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name}{m.context_window ? ` (${Math.round(m.context_window / 1000)}K ctx)` : ""}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <div className="rounded-lg border border-border/30 bg-accent/20 px-4 py-3">
-            <p className="text-xs text-muted-foreground">
-              {modelsError || (modelsLoading ? "Loading models..." : 'Click "Load Models" to fetch available models')}
-            </p>
-          </div>
-        )}
-      </div>
+      )}
 
       {/* Make Active button — only when different from active AND provider is ready */}
       {selectedProvider !== llmProvider && (
         <button
+          disabled={claudeUnusable}
           onClick={async () => {
             try {
               if (apiKey) await storeApiKey(selectedProvider, apiKey).catch(() => {});
@@ -520,13 +544,19 @@ export function LLMSettings() {
               if (!verifiedCloudProviders.includes(selectedProvider)) {
                 setVerifiedCloudProviders([...verifiedCloudProviders, selectedProvider]);
               }
-              if (selectedModel) {
-                await setActiveModel(selectedProvider, selectedModel).catch(() => {});
-                setConfigModel(selectedModel);
+              // Claude ignores the model (Fast / Deep come from its settings) but
+              // the backend needs one. Other providers fall back to the model
+              // last used with them.
+              const model = isClaudeCli
+                ? claudeCliConfig.fast_model
+                : selectedModel || lastModelByProvider[selectedProvider] || "";
+              if (model) {
+                await setActiveModel(selectedProvider, model).catch(() => {});
+                setConfigModel(model);
               }
             } catch {}
           }}
-          className="w-full rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 text-sm font-medium text-primary transition-all duration-150 hover:bg-primary/10 hover:-translate-y-px active:translate-y-px active:scale-[0.99] cursor-pointer"
+          className="w-full rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 text-sm font-medium text-primary transition-all duration-150 hover:bg-primary/10 hover:-translate-y-px active:translate-y-px active:scale-[0.99] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:active:scale-100"
         >
           Set {PROVIDER_DISPLAY[selectedProvider]?.label || selectedProvider} as Active Provider
         </button>

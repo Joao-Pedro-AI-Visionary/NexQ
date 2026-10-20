@@ -12,6 +12,7 @@ import type {
   GroqConfig,
   AudioMode,
   AIScenario,
+  ClaudeCliConfig,
 } from "../lib/types";
 
 const DEFAULT_DEEPGRAM_CONFIG: DeepgramConfig = {
@@ -39,6 +40,36 @@ const DEFAULT_GROQ_CONFIG: GroqConfig = {
 };
 
 const STORE_FILE = "config.json";
+
+/** Claude CLI defaults (mirror Rust `ClaudeCliConfig::default`). */
+export const DEFAULT_CLAUDE_CLI_CONFIG: ClaudeCliConfig = {
+  fast_model: "haiku",
+  fast_effort: "low",
+  deep_model: "sonnet",
+  deep_effort: "medium",
+  fallback_provider: null,
+  fallback_model: null,
+};
+
+/**
+ * Providers that can stand in for Claude CLI. "custom" is left out: the
+ * fallback is built from the provider type alone and custom needs its URL.
+ */
+export const CLAUDE_FALLBACK_PROVIDERS: LLMProviderType[] = [
+  "ollama", "lm_studio", "openai", "anthropic", "groq", "gemini", "openrouter",
+];
+
+function isFallbackCandidate(provider: string): boolean {
+  return (CLAUDE_FALLBACK_PROVIDERS as string[]).includes(provider);
+}
+
+/** Push the Claude CLI config to the backend, which holds it in memory only. */
+function pushClaudeCliConfig(config: ClaudeCliConfig): void {
+  import("../lib/ipc").then(({ setClaudeCliConfig }) =>
+    setClaudeCliConfig(config)
+      .catch((e) => console.warn("[configStore] Failed to push Claude CLI config:", e))
+  );
+}
 
 const DEFAULT_HOTKEYS: HotkeyConfig = {
   toggle_assist: "Space",
@@ -86,6 +117,16 @@ interface ConfigState {
   sttLanguage: string;
   llmProvider: LLMProviderType;
   llmModel: string;
+  /** Last model used with each provider (default model of the Claude fallback). */
+  lastModelByProvider: Record<string, string>;
+
+  // Claude CLI (subscription) settings; the backend gets a copy on load and on change.
+  claudeCliConfig: ClaudeCliConfig;
+  /**
+   * The user picked the fallback themselves. Until then the fallback follows
+   * the last active non-CLI provider and its model.
+   */
+  claudeCliFallbackPinned: boolean;
 
   // Audio (legacy — kept for backward compat, new code uses meetingAudioConfig)
   micDeviceId: string | null;
@@ -188,6 +229,10 @@ interface ConfigState {
   setSTTLanguage: (language: string) => void;
   setLLMProvider: (provider: LLMProviderType) => void;
   setLLMModel: (model: string) => void;
+  /** Replace the Claude CLI config (persisted + pushed to the backend). */
+  setClaudeCliConfig: (config: ClaudeCliConfig) => void;
+  /** The user's fallback choice: pins it so it no longer follows the active provider. */
+  setClaudeCliFallback: (provider: string | null, model: string | null) => void;
   setMicDeviceId: (id: string | null) => void;
   setSystemDeviceId: (id: string | null) => void;
   setRecordingEnabled: (enabled: boolean) => void;
@@ -238,12 +283,28 @@ interface ConfigState {
   loadConfig: () => Promise<void>;
 }
 
+/**
+ * While the fallback is not pinned, point it at `provider` (a non-CLI
+ * provider just made active) with the last model used there.
+ */
+function followFallback(provider: string): void {
+  const state = useConfigStore.getState();
+  if (state.claudeCliFallbackPinned || !isFallbackCandidate(provider)) return;
+  const model = state.lastModelByProvider[provider] ?? null;
+  const cfg = state.claudeCliConfig;
+  if (cfg.fallback_provider === provider && cfg.fallback_model === model) return;
+  state.setClaudeCliConfig({ ...cfg, fallback_provider: provider, fallback_model: model });
+}
+
 export const useConfigStore = create<ConfigState>((set) => ({
   theme: "dark",
   sttProvider: "windows_native",
   sttLanguage: "en-US",
   llmProvider: "ollama",
   llmModel: "",
+  lastModelByProvider: {},
+  claudeCliConfig: DEFAULT_CLAUDE_CLI_CONFIG,
+  claudeCliFallbackPinned: false,
   micDeviceId: null,
   systemDeviceId: null,
   recordingEnabled: false,
@@ -332,10 +393,44 @@ export const useConfigStore = create<ConfigState>((set) => ({
   setLLMProvider: (provider) => {
     set({ llmProvider: provider });
     persistValue("llmProvider", provider);
+    followFallback(provider);
   },
   setLLMModel: (model) => {
     set({ llmModel: model });
     persistValue("llmModel", model);
+    const { llmProvider, lastModelByProvider } = useConfigStore.getState();
+    if (model && isFallbackCandidate(llmProvider) && lastModelByProvider[llmProvider] !== model) {
+      const next = { ...lastModelByProvider, [llmProvider]: model };
+      set({ lastModelByProvider: next });
+      persistValue("lastModelByProvider", next);
+      followFallback(llmProvider);
+    }
+  },
+  setClaudeCliConfig: (config) => {
+    const { llmProvider, llmModel } = useConfigStore.getState();
+    set({ claudeCliConfig: config });
+    persistValue("claudeCliConfig", config);
+    pushClaudeCliConfig(config);
+    // While Claude is active the generic model slot mirrors the Fast model:
+    // the provider ignores it, but the backend needs one and the footer shows it.
+    if (llmProvider === "claude_cli" && llmModel !== config.fast_model) {
+      set({ llmModel: config.fast_model });
+      persistValue("llmModel", config.fast_model);
+      import("../lib/ipc").then(({ setActiveModel }) =>
+        setActiveModel("claude_cli", config.fast_model)
+          .catch((e) => console.warn("[configStore] Failed to set Claude model:", e))
+      );
+    }
+  },
+  setClaudeCliFallback: (provider, model) => {
+    set({ claudeCliFallbackPinned: true });
+    persistValue("claudeCliFallbackPinned", true);
+    const cfg = useConfigStore.getState().claudeCliConfig;
+    useConfigStore.getState().setClaudeCliConfig({
+      ...cfg,
+      fallback_provider: provider,
+      fallback_model: provider ? model : null,
+    });
   },
   setMicDeviceId: (id) => {
     set({ micDeviceId: id });
@@ -692,6 +787,23 @@ export const useConfigStore = create<ConfigState>((set) => ({
       const trayAutoDetectMeeting = await store.get<boolean>("trayAutoDetectMeeting");
       const trayStealthEnabled = await store.get<boolean>("trayStealthEnabled");
       const stealthShortcut = await store.get<string>("stealthShortcut");
+      const storedLastModels = await store.get<Record<string, string>>("lastModelByProvider");
+      const storedClaudeCliConfig = await store.get<Partial<ClaudeCliConfig>>("claudeCliConfig");
+      const claudeCliFallbackPinned = (await store.get<boolean>("claudeCliFallbackPinned")) ?? false;
+
+      // Last model per provider; seeded from the saved active provider on upgrade.
+      const lastModelByProvider: Record<string, string> = { ...(storedLastModels ?? {}) };
+      if (llmProvider && llmModel && isFallbackCandidate(llmProvider) && !lastModelByProvider[llmProvider]) {
+        lastModelByProvider[llmProvider] = llmModel;
+      }
+      // Claude CLI config: saved values over the defaults (tolerates fields
+      // added later). Without a saved config the fallback starts as the last
+      // active non-CLI provider and its model.
+      const claudeCliConfig: ClaudeCliConfig = { ...DEFAULT_CLAUDE_CLI_CONFIG, ...(storedClaudeCliConfig ?? {}) };
+      if (!storedClaudeCliConfig && !claudeCliFallbackPinned && llmProvider && isFallbackCandidate(llmProvider)) {
+        claudeCliConfig.fallback_provider = llmProvider;
+        claudeCliConfig.fallback_model = lastModelByProvider[llmProvider] ?? null;
+      }
 
       // Auto-migrate: if no meetingAudioConfig exists but old fields do,
       // build a MeetingAudioConfig from legacy fields.
@@ -797,6 +909,9 @@ export const useConfigStore = create<ConfigState>((set) => ({
         ...(sttLanguage != null && { sttLanguage }),
         ...(llmProvider != null && { llmProvider }),
         ...(llmModel != null && { llmModel }),
+        lastModelByProvider,
+        claudeCliConfig,
+        claudeCliFallbackPinned,
         ...(micDeviceId !== undefined && { micDeviceId }),
         ...(systemDeviceId !== undefined && { systemDeviceId }),
         ...(recordingEnabled != null && { recordingEnabled }),
@@ -890,6 +1005,15 @@ export const useConfigStore = create<ConfigState>((set) => ({
       store.onKeyChange<string>("llmModel", (val) => {
         if (val != null) set({ llmModel: val });
       });
+      store.onKeyChange<ClaudeCliConfig>("claudeCliConfig", (val) => {
+        if (val != null) set({ claudeCliConfig: { ...DEFAULT_CLAUDE_CLI_CONFIG, ...val } });
+      });
+      store.onKeyChange<boolean>("claudeCliFallbackPinned", (val) => {
+        if (val != null) set({ claudeCliFallbackPinned: val });
+      });
+      store.onKeyChange<Record<string, string>>("lastModelByProvider", (val) => {
+        if (val != null) set({ lastModelByProvider: val });
+      });
       store.onKeyChange<ContextStrategy>("contextStrategy", (val) => {
         if (val != null) set({ contextStrategy: val });
       });
@@ -939,10 +1063,15 @@ export const useConfigStore = create<ConfigState>((set) => ({
           .catch((e) => console.warn("[configStore] Failed to sync pause threshold on load:", e))
       );
 
+      // Sync the Claude CLI config to the backend (it starts with the defaults
+      // and keeps the config in memory only).
+      pushClaudeCliConfig(claudeCliConfig);
+
       // Sync persisted LLM provider + model to Rust backend on startup.
       // The Rust side starts with Ollama as default; this pushes the user's saved provider.
+      // Claude CLI ignores the model; its slot carries the Fast model.
       const loadedLLMProvider = llmProvider ?? "ollama";
-      const loadedLLMModel = llmModel ?? "";
+      const loadedLLMModel = loadedLLMProvider === "claude_cli" ? claudeCliConfig.fast_model : (llmModel ?? "");
       if (loadedLLMProvider) {
         import("../lib/ipc").then(async ({ setLLMProvider: ipcSetLLM, setActiveModel: ipcSetModel, getApiKey: ipcGetKey }) => {
           try {

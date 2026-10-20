@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useAIActionsStore } from "../stores/aiActionsStore";
+import { useConfigStore } from "../stores/configStore";
 import type { ActionConfig, InstructionPresets } from "../lib/types";
 import {
   ChevronDown,
@@ -181,6 +182,11 @@ function HelpPanel({ id }: { id: string }) {
   );
 }
 
+/** Hint under a control the Claude CLI path ignores. */
+function CliUnusedHint() {
+  return <p className="mt-1 text-meta text-muted-foreground/70">Not used with Claude CLI</p>;
+}
+
 /** Small toggle switch (h-5 w-9) */
 function Toggle({
   checked,
@@ -225,6 +231,9 @@ export function AIActionsSettings() {
   const removeCustomAction = useAIActionsStore((s) => s.removeCustomAction);
   const setInstructionPresets = useAIActionsStore((s) => s.setInstructionPresets);
   const setCustomInstructions = useAIActionsStore((s) => s.setCustomInstructions);
+  // Claude CLI sessions get the transcript as deltas and run without
+  // temperature or tools, so those controls don't apply.
+  const cliActive = useConfigStore((s) => s.llmProvider === "claude_cli");
 
   const [expandedActions, setExpandedActions] = useState<Record<string, boolean>>({});
   const [expandedOverrides, setExpandedOverrides] = useState<Record<string, boolean>>({});
@@ -547,31 +556,35 @@ export function AIActionsSettings() {
 
               {/* Temperature */}
               <div>
-                <div className="flex items-center justify-between">
-                  <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                    Temperature
-                    <HelpButton id="temperature" activeId={openHelp} onToggle={toggleHelp} />
-                  </label>
-                  <span className="rounded-md bg-secondary/50 px-2 py-0.5 text-xs font-medium tabular-nums text-foreground">
-                    {configs.globalDefaults.temperature.toFixed(1)}
-                  </span>
-                </div>
-                {openHelp === "temperature" && <HelpPanel id="temperature" />}
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.1}
-                  value={configs.globalDefaults.temperature}
-                  onChange={(e) =>
-                    handleGlobalDefaultChange("temperature", Number(e.target.value))
-                  }
-                  className="mt-2 w-full cursor-pointer accent-primary"
-                />
-                <div className="mt-1 flex justify-between text-meta text-muted-foreground/70">
-                  <span>Precise 0.0</span>
-                  <span>Creative 1.0</span>
-                </div>
+                <fieldset disabled={cliActive} className={`min-w-0 ${cliActive ? "opacity-50" : ""}`}>
+                  <div className="flex items-center justify-between">
+                    <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                      Temperature
+                      <HelpButton id="temperature" activeId={openHelp} onToggle={toggleHelp} />
+                    </label>
+                    <span className="rounded-md bg-secondary/50 px-2 py-0.5 text-xs font-medium tabular-nums text-foreground">
+                      {configs.globalDefaults.temperature.toFixed(1)}
+                    </span>
+                  </div>
+                  {openHelp === "temperature" && <HelpPanel id="temperature" />}
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.1}
+                    value={configs.globalDefaults.temperature}
+                    onChange={(e) =>
+                      handleGlobalDefaultChange("temperature", Number(e.target.value))
+                    }
+                    aria-label="Temperature"
+                    className="mt-2 w-full cursor-pointer accent-primary disabled:cursor-not-allowed"
+                  />
+                  <div className="mt-1 flex justify-between text-meta text-muted-foreground/70">
+                    <span>Precise 0.0</span>
+                    <span>Creative 1.0</span>
+                  </div>
+                </fieldset>
+                {cliActive && <CliUnusedHint />}
               </div>
             </div>
           </div>
@@ -587,34 +600,38 @@ export function AIActionsSettings() {
             <div className="space-y-4">
               {/* Transcript Window */}
               <div>
-                <div className="flex items-center justify-between">
-                  <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                    Transcript Window
-                    <HelpButton id="transcriptWindow" activeId={openHelp} onToggle={toggleHelp} />
-                  </label>
-                  <span className="rounded-md bg-secondary/50 px-2 py-0.5 text-xs font-medium tabular-nums text-foreground">
-                    {globalWindowMin} min
-                  </span>
-                </div>
-                {openHelp === "transcriptWindow" && <HelpPanel id="transcriptWindow" />}
-                <input
-                  type="range"
-                  min={1}
-                  max={30}
-                  step={1}
-                  value={globalWindowMin}
-                  onChange={(e) =>
-                    handleGlobalDefaultChange(
-                      "transcriptWindowSeconds",
-                      minToSecs(Number(e.target.value))
-                    )
-                  }
-                  className="mt-2 w-full cursor-pointer accent-primary"
-                />
-                <div className="mt-1 flex justify-between text-meta text-muted-foreground/70">
-                  <span>1 min</span>
-                  <span>30 min</span>
-                </div>
+                <fieldset disabled={cliActive} className={`min-w-0 ${cliActive ? "opacity-50" : ""}`}>
+                  <div className="flex items-center justify-between">
+                    <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                      Transcript Window
+                      <HelpButton id="transcriptWindow" activeId={openHelp} onToggle={toggleHelp} />
+                    </label>
+                    <span className="rounded-md bg-secondary/50 px-2 py-0.5 text-xs font-medium tabular-nums text-foreground">
+                      {globalWindowMin} min
+                    </span>
+                  </div>
+                  {openHelp === "transcriptWindow" && <HelpPanel id="transcriptWindow" />}
+                  <input
+                    type="range"
+                    min={1}
+                    max={30}
+                    step={1}
+                    value={globalWindowMin}
+                    onChange={(e) =>
+                      handleGlobalDefaultChange(
+                        "transcriptWindowSeconds",
+                        minToSecs(Number(e.target.value))
+                      )
+                    }
+                    aria-label="Transcript Window"
+                    className="mt-2 w-full cursor-pointer accent-primary disabled:cursor-not-allowed"
+                  />
+                  <div className="mt-1 flex justify-between text-meta text-muted-foreground/70">
+                    <span>1 min</span>
+                    <span>30 min</span>
+                  </div>
+                </fieldset>
+                {cliActive && <CliUnusedHint />}
               </div>
 
               <div className="h-px bg-border/20" />
@@ -667,6 +684,7 @@ export function AIActionsSettings() {
                 onContextToggle={(k, v) => handleContextToggle(action.mode, k, v)}
                 onOverrideChange={(k, v) => handleOverrideChange(action.mode, k, v)}
                 showReset={true}
+                cliActive={cliActive}
               />
             ))}
           </div>
@@ -694,6 +712,7 @@ export function AIActionsSettings() {
                   onContextToggle={(k, v) => handleContextToggle(action.mode, k, v)}
                   onOverrideChange={(k, v) => handleOverrideChange(action.mode, k, v)}
                   showReset={false}
+                  cliActive={cliActive}
                   onDelete={() => handleRemoveCustomAction(action.mode)}
                 />
               ))}
@@ -775,6 +794,8 @@ interface ActionCardProps {
   onContextToggle: (key: string, value: boolean) => void;
   onOverrideChange: (key: string, value: number | null) => void;
   showReset: boolean;
+  /** Claude CLI is active: web search, transcript window and temperature don't apply. */
+  cliActive: boolean;
   onDelete?: () => void;
 }
 
@@ -791,6 +812,7 @@ function ActionCard({
   onContextToggle,
   onOverrideChange,
   showReset,
+  cliActive,
   onDelete,
 }: ActionCardProps) {
   const handleDeleteClick = useCallback(
@@ -896,18 +918,29 @@ function ActionCard({
                 { key: "includeCustomInstructions", label: "Custom Instructions", checked: action.includeCustomInstructions },
                 { key: "includeDetectedQuestion", label: "Detected Question", checked: action.includeDetectedQuestion },
                 { key: "webSearch", label: "Web Search", checked: action.webSearch },
-              ].map(({ key, label, checked }) => (
-                <label key={key} className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={(e) => onContextToggle(key, e.target.checked)}
-                    className="h-3.5 w-3.5 rounded border-border/50 accent-primary"
-                  />
-                  <span className="text-xs text-foreground">{label}</span>
-                </label>
-              ))}
+              ].map(({ key, label, checked }) => {
+                const unused = cliActive && key === "webSearch";
+                return (
+                  <label
+                    key={key}
+                    title={unused ? "Not used with Claude CLI" : undefined}
+                    className={`flex items-center gap-2 ${unused ? "cursor-not-allowed opacity-50" : "cursor-pointer"}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={unused}
+                      onChange={(e) => onContextToggle(key, e.target.checked)}
+                      className="h-3.5 w-3.5 rounded border-border/50 accent-primary"
+                    />
+                    <span className="text-xs text-foreground">{label}</span>
+                  </label>
+                );
+              })}
             </div>
+            {cliActive && (
+              <p className="mt-1.5 text-meta text-muted-foreground/70">Web Search: not used with Claude CLI</p>
+            )}
           </div>
 
           {/* Override Defaults (Collapsible) */}
@@ -928,53 +961,56 @@ function ActionCard({
               <div className="mt-2.5 space-y-3 rounded-lg border border-border/30 bg-secondary/10 p-3">
                 {/* Transcript Window Override */}
                 <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <label className="text-meta font-medium text-muted-foreground">
-                      Transcript Window
-                    </label>
-                    <span className="rounded bg-secondary/50 px-1.5 py-0.5 text-meta font-medium tabular-nums text-foreground">
-                      {formatWindowDisplay(action.transcriptWindowSeconds)}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <label className="flex items-center gap-1.5 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={action.transcriptWindowSeconds !== null}
-                        onChange={(e) =>
-                          onOverrideChange(
-                            "transcriptWindowSeconds",
-                            e.target.checked ? 120 : null
-                          )
-                        }
-                        className="h-3 w-3 rounded border-border/50 accent-primary"
-                      />
-                      <span className="text-meta text-muted-foreground">Override</span>
-                    </label>
-                    {action.transcriptWindowSeconds !== null && (
-                      <input
-                        type="range"
-                        min={0}
-                        max={30}
-                        step={1}
-                        value={windowDisplayMin ?? 2}
-                        onChange={(e) => {
-                          const min = Number(e.target.value);
-                          onOverrideChange(
-                            "transcriptWindowSeconds",
-                            min === 0 ? 0 : minToSecs(min)
-                          );
-                        }}
-                        className="flex-1 cursor-pointer accent-primary"
-                      />
-                    )}
-                  </div>
-                  {action.transcriptWindowSeconds !== null && (
-                    <div className="mt-1 flex justify-between text-meta text-muted-foreground/60">
-                      <span>All</span>
-                      <span>30 min</span>
+                  <fieldset disabled={cliActive} className={`min-w-0 ${cliActive ? "opacity-50" : ""}`}>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-meta font-medium text-muted-foreground">
+                        Transcript Window
+                      </label>
+                      <span className="rounded bg-secondary/50 px-1.5 py-0.5 text-meta font-medium tabular-nums text-foreground">
+                        {formatWindowDisplay(action.transcriptWindowSeconds)}
+                      </span>
                     </div>
-                  )}
+                    <div className="flex items-center gap-2">
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={action.transcriptWindowSeconds !== null}
+                          onChange={(e) =>
+                            onOverrideChange(
+                              "transcriptWindowSeconds",
+                              e.target.checked ? 120 : null
+                            )
+                          }
+                          className="h-3 w-3 rounded border-border/50 accent-primary"
+                        />
+                        <span className="text-meta text-muted-foreground">Override</span>
+                      </label>
+                      {action.transcriptWindowSeconds !== null && (
+                        <input
+                          type="range"
+                          min={0}
+                          max={30}
+                          step={1}
+                          value={windowDisplayMin ?? 2}
+                          onChange={(e) => {
+                            const min = Number(e.target.value);
+                            onOverrideChange(
+                              "transcriptWindowSeconds",
+                              min === 0 ? 0 : minToSecs(min)
+                            );
+                          }}
+                          className="flex-1 cursor-pointer accent-primary"
+                        />
+                      )}
+                    </div>
+                    {action.transcriptWindowSeconds !== null && (
+                      <div className="mt-1 flex justify-between text-meta text-muted-foreground/60">
+                        <span>All</span>
+                        <span>30 min</span>
+                      </div>
+                    )}
+                  </fieldset>
+                  {cliActive && <CliUnusedHint />}
                 </div>
 
                 {/* RAG Top-K Override */}
@@ -1014,42 +1050,45 @@ function ActionCard({
 
                 {/* Temperature Override */}
                 <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <label className="text-meta font-medium text-muted-foreground">
-                      Temperature
-                    </label>
-                    <span className="rounded bg-secondary/50 px-1.5 py-0.5 text-meta font-medium tabular-nums text-foreground">
-                      {action.temperature === null
-                        ? "Default"
-                        : action.temperature.toFixed(1)}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <label className="flex items-center gap-1.5 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={action.temperature !== null}
-                        onChange={(e) =>
-                          onOverrideChange("temperature", e.target.checked ? 0.3 : null)
-                        }
-                        className="h-3 w-3 rounded border-border/50 accent-primary"
-                      />
-                      <span className="text-meta text-muted-foreground">Override</span>
-                    </label>
-                    {action.temperature !== null && (
-                      <input
-                        type="range"
-                        min={0}
-                        max={1}
-                        step={0.1}
-                        value={action.temperature}
-                        onChange={(e) =>
-                          onOverrideChange("temperature", Number(e.target.value))
-                        }
-                        className="flex-1 cursor-pointer accent-primary"
-                      />
-                    )}
-                  </div>
+                  <fieldset disabled={cliActive} className={`min-w-0 ${cliActive ? "opacity-50" : ""}`}>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-meta font-medium text-muted-foreground">
+                        Temperature
+                      </label>
+                      <span className="rounded bg-secondary/50 px-1.5 py-0.5 text-meta font-medium tabular-nums text-foreground">
+                        {action.temperature === null
+                          ? "Default"
+                          : action.temperature.toFixed(1)}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={action.temperature !== null}
+                          onChange={(e) =>
+                            onOverrideChange("temperature", e.target.checked ? 0.3 : null)
+                          }
+                          className="h-3 w-3 rounded border-border/50 accent-primary"
+                        />
+                        <span className="text-meta text-muted-foreground">Override</span>
+                      </label>
+                      {action.temperature !== null && (
+                        <input
+                          type="range"
+                          min={0}
+                          max={1}
+                          step={0.1}
+                          value={action.temperature}
+                          onChange={(e) =>
+                            onOverrideChange("temperature", Number(e.target.value))
+                          }
+                          className="flex-1 cursor-pointer accent-primary"
+                        />
+                      )}
+                    </div>
+                  </fieldset>
+                  {cliActive && <CliUnusedHint />}
                 </div>
               </div>
             )}

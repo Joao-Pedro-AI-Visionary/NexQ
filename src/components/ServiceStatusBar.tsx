@@ -16,6 +16,8 @@ import { hasApiKey, listLocalSTTEngines, setLLMProvider, setActiveModel, getApiK
 import type { STTProviderType, LLMProviderType, LocalSTTEngineInfo } from "../lib/types";
 import { showToast } from "../stores/toastStore";
 import { useUpdaterStore } from "../stores/updaterStore";
+import { useAgentStore } from "../stores/agentStore";
+import { claudeTierLabel } from "../settings/ClaudeCliSettings";
 import { restartToUpdate } from "../hooks/useUpdater";
 
 // ── Human-friendly provider labels ──
@@ -945,17 +947,31 @@ function LLMPickerDropdown({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const verifiedProviders = useConfigStore((s) => s.verifiedCloudProviders);
+  const claudeCliConfig = useConfigStore((s) => s.claudeCliConfig);
+  const claudeStatus = useAgentStore((s) => s.status);
+  const refreshClaudeStatus = useAgentStore((s) => s.refreshStatus);
+
+  // Detect Claude once per window so a logged-in CLI shows up here.
+  useEffect(() => {
+    if (!useAgentStore.getState().status) refreshClaudeStatus();
+  }, [refreshClaudeStatus]);
+  const claudeAvailable = currentProvider === "claude_cli" || !!claudeStatus?.auth?.logged_in;
 
   // Internal state: pending provider (may differ from active while browsing)
   const [pendingProvider, setPendingProvider] = useState(currentProvider);
   const [models, setModels] = useState<{ id: string; name: string }[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
 
-  // Load models when pending provider changes
+  // Load models when pending provider changes (Claude has none to pick:
+  // Fast / Deep come from its settings)
   useEffect(() => {
     let cancelled = false;
-    setModelsLoading(true);
     setModels([]);
+    if (pendingProvider === "claude_cli") {
+      setModelsLoading(false);
+      return;
+    }
+    setModelsLoading(true);
     (async () => {
       try {
         const { listModels } = await import("../lib/ipc");
@@ -1069,47 +1085,89 @@ function LLMPickerDropdown({
         </div>
       )}
 
-      {available.length === 0 && (
+      {claudeAvailable && (
+        <div className={available.length > 0 ? "border-t border-border/20" : ""}>
+          <div className="flex items-center gap-1.5 bg-muted/20 px-3 py-1.5 border-b border-border/20">
+            <Cpu className="h-2.5 w-2.5 text-muted-foreground" />
+            <span className="text-meta font-semibold uppercase tracking-wider text-muted-foreground/70">Subscription</span>
+          </div>
+          <button
+            onClick={() => setPendingProvider("claude_cli")}
+            className={`flex w-full items-center gap-2.5 px-3 py-2 text-xs transition-colors cursor-pointer ${
+              pendingProvider === "claude_cli" ? "bg-primary/10 text-primary" : "text-foreground/80 hover:bg-accent/40"
+            }`}
+          >
+            <Brain className={`h-3.5 w-3.5 shrink-0 ${pendingProvider === "claude_cli" ? "text-primary" : "text-muted-foreground"}`} />
+            <span className="flex-1 text-left font-medium">Claude</span>
+            {currentProvider === "claude_cli" && <span className="text-meta text-primary/80">active</span>}
+          </button>
+        </div>
+      )}
+
+      {available.length === 0 && !claudeAvailable && (
         <div className="px-4 py-3 text-meta text-muted-foreground/60">
           No verified providers — test connection in Settings first
         </div>
       )}
 
-      {/* ── Model section (for pending provider) ── */}
-      <div className="border-t border-border/20">
-        <div className="flex items-center gap-1.5 bg-muted/20 px-3 py-1.5 border-b border-border/20">
-          <Brain className="h-2.5 w-2.5 text-violet-400" />
-          <span className="text-meta font-semibold uppercase tracking-wider text-muted-foreground/70">
-            Model — {LLM_LABELS[pendingProvider] || pendingProvider}
-          </span>
-          {modelsLoading && (
-            <span className="text-meta text-muted-foreground/60 animate-pulse ml-auto">loading...</span>
-          )}
+      {/* ── Claude: no model list, Fast / Deep come from its settings ── */}
+      {pendingProvider === "claude_cli" ? (
+        <div className="border-t border-border/20">
+          <button
+            onClick={() => onApply("claude_cli", claudeCliConfig.fast_model)}
+            className={`flex w-full items-center gap-2.5 px-3 py-2 text-xs transition-colors cursor-pointer ${
+              currentProvider === "claude_cli" ? "bg-primary/10 text-primary" : "text-foreground/80 hover:bg-accent/40"
+            }`}
+          >
+            <span className="flex-1 text-left">
+              <span className="block font-medium">
+                {currentProvider === "claude_cli" ? "Using Claude" : "Use Claude"}
+              </span>
+              <span className="block text-meta text-muted-foreground">
+                Fast {claudeTierLabel(claudeCliConfig.fast_model, claudeCliConfig.fast_effort)}, Deep{" "}
+                {claudeTierLabel(claudeCliConfig.deep_model, claudeCliConfig.deep_effort)}
+              </span>
+            </span>
+            {currentProvider === "claude_cli" && <CheckCircle className="h-3 w-3 shrink-0 text-primary" />}
+          </button>
         </div>
-        {models.length > 0 ? (
-          <div className="max-h-[160px] overflow-y-auto">
-            {models.map((m) => {
-              const isCurrentModel = currentProvider === pendingProvider && currentModel === m.id;
-              return (
-                <button
-                  key={m.id}
-                  onClick={() => onApply(pendingProvider, m.id)}
-                  className={`flex w-full items-center gap-2.5 px-3 py-1.5 text-xs transition-colors cursor-pointer ${
-                    isCurrentModel ? "bg-primary/10 text-primary" : "text-foreground/80 hover:bg-accent/40"
-                  }`}
-                >
-                  <span className="flex-1 text-left font-medium truncate">{formatModel(m.id)}</span>
-                  {isCurrentModel && <CheckCircle className="h-3 w-3 shrink-0 text-primary" />}
-                </button>
-              );
-            })}
+      ) : (
+        /* ── Model section (for pending provider) ── */
+        <div className="border-t border-border/20">
+          <div className="flex items-center gap-1.5 bg-muted/20 px-3 py-1.5 border-b border-border/20">
+            <Brain className="h-2.5 w-2.5 text-violet-400" />
+            <span className="text-meta font-semibold uppercase tracking-wider text-muted-foreground/70">
+              Model — {LLM_LABELS[pendingProvider] || pendingProvider}
+            </span>
+            {modelsLoading && (
+              <span className="text-meta text-muted-foreground/60 animate-pulse ml-auto">loading...</span>
+            )}
           </div>
-        ) : !modelsLoading ? (
-          <div className="px-3 py-2 text-meta text-muted-foreground/60">
-            No models available
-          </div>
-        ) : null}
-      </div>
+          {models.length > 0 ? (
+            <div className="max-h-[160px] overflow-y-auto">
+              {models.map((m) => {
+                const isCurrentModel = currentProvider === pendingProvider && currentModel === m.id;
+                return (
+                  <button
+                    key={m.id}
+                    onClick={() => onApply(pendingProvider, m.id)}
+                    className={`flex w-full items-center gap-2.5 px-3 py-1.5 text-xs transition-colors cursor-pointer ${
+                      isCurrentModel ? "bg-primary/10 text-primary" : "text-foreground/80 hover:bg-accent/40"
+                    }`}
+                  >
+                    <span className="flex-1 text-left font-medium truncate">{formatModel(m.id)}</span>
+                    {isCurrentModel && <CheckCircle className="h-3 w-3 shrink-0 text-primary" />}
+                  </button>
+                );
+              })}
+            </div>
+          ) : !modelsLoading ? (
+            <div className="px-3 py-2 text-meta text-muted-foreground/60">
+              No models available
+            </div>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }
