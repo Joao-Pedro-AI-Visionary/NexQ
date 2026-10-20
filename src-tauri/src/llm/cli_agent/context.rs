@@ -37,6 +37,7 @@ impl DeltaCursor {
 
 const SUMMARY_HEADER: &str = "## Meeting summary";
 const TRANSCRIPT_HEADER: &str = "## Meeting transcript";
+const DOCUMENTS_HEADER: &str = "## Context documents";
 /// Room kept in every chunk for " (part N of M)" and the newline after the header.
 const PART_SUFFIX_RESERVE: usize = 32;
 
@@ -64,6 +65,47 @@ pub fn build_preload_messages(
             transcript.iter().map(format_line),
             max_chars,
         );
+    }
+    out
+}
+
+/// Context documents as preload messages of at most `max_chars` characters
+/// each, under a `## Context documents` header. Blank text gives none.
+pub fn build_document_preload(documents: &str, max_chars: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    if !documents.trim().is_empty() {
+        push_chunked(
+            &mut out,
+            DOCUMENTS_HEADER,
+            documents.trim().lines().map(str::to_string),
+            max_chars,
+        );
+    }
+    out
+}
+
+/// Pack `messages` (in order) into as few messages as possible, joined by a
+/// blank line, each at most `max_chars` characters unless a single message
+/// is already longer (it is then kept whole).
+pub fn pack_messages(messages: &[String], max_chars: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_len = 0usize;
+    for message in messages {
+        let len = message.chars().count();
+        if !current.is_empty() && current_len + 2 + len > max_chars {
+            out.push(std::mem::take(&mut current));
+            current_len = 0;
+        }
+        if !current.is_empty() {
+            current.push_str("\n\n");
+            current_len += 2;
+        }
+        current.push_str(message);
+        current_len += len;
+    }
+    if !current.is_empty() {
+        out.push(current);
     }
     out
 }
@@ -283,6 +325,32 @@ mod tests {
         assert!(msgs.iter().all(|m| m.chars().count() <= 200));
         let body: String = msgs.iter().flat_map(|m| m.lines().skip(1)).collect();
         assert_eq!(body, format!("[00:00] You: {long}"));
+    }
+
+    #[test]
+    fn document_preload_chunks_under_header() {
+        assert!(build_document_preload(" 
+ ", 1_000).is_empty());
+        let docs = (0..50).map(|i| format!("line {i:02} of the doc")).collect::<Vec<_>>().join("
+");
+        let msgs = build_document_preload(&docs, 300);
+        assert!(msgs.len() > 1);
+        assert!(msgs.iter().all(|m| m.chars().count() <= 300));
+        assert!(msgs[0].starts_with("## Context documents (part 1 of "));
+        let body: Vec<&str> = msgs.iter().flat_map(|m| m.lines().skip(1)).collect();
+        assert_eq!(body.join("
+"), docs);
+    }
+
+    #[test]
+    fn pack_messages_joins_up_to_the_cap() {
+        let m = |s: &str| s.to_string();
+        assert!(pack_messages(&[], 10).is_empty());
+        assert_eq!(pack_messages(&[m("aaa"), m("bbb"), m("ccc")], 8), vec!["aaa
+
+bbb", "ccc"]);
+        // A message longer than the cap is kept whole.
+        assert_eq!(pack_messages(&[m("a"), m("0123456789"), m("b")], 5), vec!["a", "0123456789", "b"]);
     }
 
     #[test]

@@ -133,6 +133,23 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
       const resolvedMode: AudioMode = audioMode ?? get().audioMode;
       const resolvedScenario: AIScenario = scenario ?? get().aiScenario;
 
+      // 0. Set active scenario in scenarioStore + push prompts to Rust backend.
+      // Before start_meeting: a Claude CLI live session starts there with the
+      // scenario prompt as its system prompt.
+      try {
+        const { useScenarioStore } = await import("./scenarioStore");
+        useScenarioStore.getState().setActiveScenario(resolvedScenario);
+
+        // Push scenario prompts to Rust backend for scenario-aware intelligence
+        const template = useScenarioStore.getState().getActiveTemplate();
+        const { setActiveScenario } = await import("../lib/ipc");
+        await setActiveScenario(
+          template.system_prompt,
+          template.summary_prompt,
+          template.question_detection_prompt
+        );
+      } catch { /* non-critical */ }
+
       // 1. Create meeting record in SQLite
       const meeting = await ipcStartMeeting(title);
 
@@ -166,21 +183,6 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
             );
           }
         }
-      } catch { /* non-critical */ }
-
-      // 1d. Set active scenario in scenarioStore + push prompts to Rust backend
-      try {
-        const { useScenarioStore } = await import("./scenarioStore");
-        useScenarioStore.getState().setActiveScenario(resolvedScenario);
-
-        // Push scenario prompts to Rust backend for scenario-aware intelligence
-        const template = useScenarioStore.getState().getActiveTemplate();
-        const { setActiveScenario } = await import("../lib/ipc");
-        await setActiveScenario(
-          template.system_prompt,
-          template.summary_prompt,
-          template.question_detection_prompt
-        );
       } catch { /* non-critical */ }
 
       // 2. Sync recording toggle to backend before capture starts
@@ -532,3 +534,13 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
     }
   },
 }));
+
+/**
+ * Meeting id that routes a meeting-view AI request (summary, action items,
+ * bookmark suggestions) to that past meeting's Claude session. Undefined for
+ * the running meeting, which uses the live session.
+ */
+export function pastMeetingIdFor(meeting: { id: string } | null): string | undefined {
+  if (!meeting) return undefined;
+  return useMeetingStore.getState().activeMeeting?.id === meeting.id ? undefined : meeting.id;
+}

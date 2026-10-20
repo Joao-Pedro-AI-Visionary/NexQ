@@ -284,6 +284,9 @@ pub struct StreamStartPayload {
     pub transcript_segments_count: usize,
     pub transcript_segments_total: usize,
     pub request_id: Option<String>,
+    /// The Claude session that answered (`live:<meeting>:fast`...); `None`
+    /// on the stateless path.
+    pub session_key: Option<String>,
 }
 
 /// Metadata about a single RAG chunk, sent to the frontend for AI log display.

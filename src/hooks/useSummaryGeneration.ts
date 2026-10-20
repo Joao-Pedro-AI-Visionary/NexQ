@@ -6,7 +6,7 @@ import {
   onStreamError,
 } from "../lib/events";
 import { generateAssist, updateMeetingSummary } from "../lib/ipc";
-import { useMeetingStore } from "../stores/meetingStore";
+import { useMeetingStore, pastMeetingIdFor } from "../stores/meetingStore";
 import type { Meeting } from "../lib/types";
 
 export interface SummaryGenerationState {
@@ -112,6 +112,7 @@ export function useSummaryGeneration(
       await generateAssist("MeetingSummary", undefined, {
         requestId,
         transcriptSegments: segments,
+        pastMeetingId: pastMeetingIdFor(meeting),
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

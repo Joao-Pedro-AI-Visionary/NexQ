@@ -304,6 +304,16 @@ export interface ClaudeCliConfig {
   deep_effort: string;
   /** Provider id used when Claude is unavailable; null = no fallback. */
   fallback_provider: string | null;
+  /** Model used on the fallback provider; null = its first listed model. */
+  fallback_model: string | null;
+}
+
+/** Mirrors Rust `AgentFallbackPayload` (payload of `agent_fallback`). */
+export interface AgentFallbackEvent {
+  /** Short reason, e.g. "not logged in", "usage limit reached". */
+  reason: string;
+  /** Display name of the provider now answering, e.g. "Ollama". */
+  provider: string;
 }
 
 /** Mirrors Rust `SessionUsage`: cumulative estimate for one session scope. */
@@ -571,6 +581,8 @@ export interface StreamStartEvent {
   transcript_segments_count: number;
   transcript_segments_total: number;
   request_id: string | null;
+  /** The Claude session that answered ("live:<meeting>:fast"...); null on the stateless path. */
+  session_key: string | null;
 }
 
 export interface StreamEndEvent {

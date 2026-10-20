@@ -12,6 +12,7 @@ use crate::intelligence::IntelligenceEngine;
 use crate::llm::cli_agent::manager::{
     AgentSessionManager, ClaudeCliConfig, ClaudeSpawner, NoopStatusSink,
 };
+use crate::llm::cli_agent::routing::{HealthTracker, MeetingSessions};
 use crate::llm::gemini_cache::CachedContent;
 use crate::llm::openrouter_models::OpenRouterModelCache;
 use crate::llm::LLMRouter;
@@ -121,6 +122,20 @@ pub struct AppState {
     pub agent_sessions: Arc<AgentSessionManager>,
     /// Claude CLI model settings, read whenever a session is spawned.
     pub claude_cli_config: Arc<RwLock<ClaudeCliConfig>>,
+    /// Whether Claude can take requests (else they go to the fallback).
+    pub claude_health: Arc<HealthTracker>,
+    /// What each open meeting session was given, for restarts.
+    pub meeting_sessions: Arc<MeetingSessions>,
+    /// The running meeting (set by `start_meeting`, cleared by `end_meeting`).
+    pub live_meeting: Arc<Mutex<Option<LiveMeeting>>>,
+}
+
+/// The meeting between `start_meeting` and `end_meeting`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveMeeting {
+    pub id: String,
+    /// Start time, Unix epoch milliseconds (transcript times are relative to it).
+    pub start_ms: i64,
 }
 
 impl AppState {
@@ -161,6 +176,9 @@ impl AppState {
                 claude_cli_config.clone(),
             )),
             claude_cli_config,
+            claude_health: Arc::new(HealthTracker::default()),
+            meeting_sessions: Arc::new(MeetingSessions::default()),
+            live_meeting: Arc::new(Mutex::new(None)),
         }
     }
 }

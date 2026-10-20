@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import type { Meeting, MeetingBookmark, RecordingInfo, TranslationResult } from "../../lib/types";
-import { getMeeting, getRecordingInfo, getAllMeetingTranslations, translateSegments } from "../../lib/ipc";
+import { getMeeting, getRecordingInfo, getAllMeetingTranslations, translateSegments, startPastMeetingSession, closePastMeetingSession } from "../../lib/ipc";
 import { onTranscriptFinal, onRecordingReady, onTranslationResult, onTranslationError } from "../../lib/events";
 import { useMeetingStore } from "../../stores/meetingStore";
 import { useTranslationStore } from "../../stores/translationStore";
@@ -124,6 +124,20 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
   // Live transcript subscription
   const activeMeetingId = useMeetingStore((s) => s.activeMeeting?.id);
   const isActiveMeeting = activeMeetingId === meetingId;
+
+  // Claude CLI: keep a warm session holding this meeting's transcript and
+  // summary while the view is open; closed on leaving. The running meeting
+  // uses its live session instead.
+  const llmProvider = useConfigStore((s) => s.llmProvider);
+  useEffect(() => {
+    if (isDemoActive || isActiveMeeting || llmProvider !== "claude_cli") return;
+    startPastMeetingSession(meetingId).catch((err) =>
+      console.warn("[MeetingDetails] Claude session did not start:", err)
+    );
+    return () => {
+      closePastMeetingSession(meetingId).catch(() => {});
+    };
+  }, [meetingId, isActiveMeeting, isDemoActive, llmProvider]);
 
   useEffect(() => {
     if (!isActiveMeeting) return;

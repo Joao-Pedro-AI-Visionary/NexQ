@@ -1,12 +1,196 @@
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
-use tauri::{command, AppHandle, State};
+use tauri::{command, AppHandle, Manager, State};
 
 use crate::db::meetings::{
     self, MeetingActionItem, MeetingBookmark, MeetingSpeaker, MeetingTopicSection,
     MeetingUpdate, TranscriptSegment,
 };
-use crate::state::AppState;
+use crate::llm::cli_agent::context::{build_preload_messages, Seg};
+use crate::llm::cli_agent::manager::{tier_for, SessionInit, SessionKey, SessionScope, Tier};
+use crate::llm::cli_agent::protocol::AgentErrorKind;
+use crate::llm::cli_agent::routing::{self, SessionRecord, PRELOAD_MESSAGE_CHARS};
+use crate::state::{AppState, LiveMeeting};
+
+/// Global custom instructions (AI Actions settings).
+fn custom_instructions(state: &AppState) -> String {
+    state
+        .intelligence
+        .as_ref()
+        .and_then(|i| i.lock().ok())
+        .map(|engine| engine.get_action_configs().custom_instructions.clone())
+        .unwrap_or_default()
+}
+
+/// What a live-meeting Claude session starts with: the scenario prompt,
+/// speaker context and custom instructions as its system prompt, and the
+/// context documents as preload when they fit the cap (else RAG mode). A
+/// Deep session (Recap) also gets the transcript so far (`finals`).
+pub(crate) fn live_session_record(state: &AppState, tier: Tier, finals: &[Seg]) -> SessionRecord {
+    let (scenario_prompt, speaker_context) = state
+        .active_scenario
+        .read()
+        .map(|s| (s.system_prompt.clone(), s.speaker_context.clone()))
+        .unwrap_or_default();
+    let documents = state
+        .context
+        .as_ref()
+        .and_then(|c| c.lock().ok())
+        .map(|c| c.get_assembled_context())
+        .unwrap_or_default();
+    let (mut preload, rag_mode) = routing::document_preload(&documents);
+    let mut segments_sent = 0;
+    if tier == Tier::Deep {
+        preload.extend(build_preload_messages(finals, None, PRELOAD_MESSAGE_CHARS));
+        segments_sent = finals.len();
+    }
+    SessionRecord {
+        system_prompt: routing::live_system_prompt(
+            &scenario_prompt,
+            &speaker_context,
+            &custom_instructions(state),
+        ),
+        preload,
+        replay: Vec::new(),
+        segments_sent,
+        rag_mode,
+    }
+}
+
+/// What a past-meeting Claude session starts with: the meeting's summary (if
+/// any) and its final transcript with speaker names and `[mm:ss]` times.
+pub(crate) fn past_session_record(state: &AppState, meeting_id: &str) -> Result<SessionRecord, String> {
+    let db = state
+        .database
+        .as_ref()
+        .ok_or_else(|| "Database not initialized".to_string())?;
+    let db = db
+        .lock()
+        .map_err(|e| format!("Failed to lock database: {}", e))?;
+    let meeting = meetings::get_meeting(db.connection(), meeting_id)
+        .map_err(|e| format!("Failed to load meeting: {}", e))?;
+    let names: HashMap<String, String> = meetings::list_meeting_speakers(db.connection(), meeting_id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| (s.speaker_id, s.display_name))
+        .collect();
+    drop(db);
+
+    let start_ms = chrono::DateTime::parse_from_rfc3339(&meeting.start_time)
+        .map(|t| t.timestamp_millis())
+        .unwrap_or(0);
+    let transcript = past_transcript(&meeting.transcript, &names, start_ms);
+    Ok(SessionRecord {
+        system_prompt: routing::past_system_prompt(&custom_instructions(state)),
+        preload: build_preload_messages(&transcript, meeting.summary.as_deref(), PRELOAD_MESSAGE_CHARS),
+        ..SessionRecord::default()
+    })
+}
+
+/// Final segments of a stored transcript (JSON array of segments), labelled
+/// with the meeting's speaker names where known.
+fn past_transcript(transcript: &serde_json::Value, names: &HashMap<String, String>, start_ms: i64) -> Vec<Seg> {
+    let Some(items) = transcript.as_array() else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter(|item| item.get("is_final").and_then(|v| v.as_bool()).unwrap_or(true))
+        .filter_map(|item| {
+            let text = item.get("text")?.as_str()?.trim();
+            if text.is_empty() {
+                return None;
+            }
+            let speaker = item.get("speaker").and_then(|v| v.as_str()).unwrap_or("Unknown");
+            let named = item
+                .get("speaker_id")
+                .and_then(|v| v.as_str())
+                .and_then(|id| names.get(id))
+                .or_else(|| names.get(speaker));
+            let label = named
+                .map(String::as_str)
+                .unwrap_or_else(|| routing::speaker_label(speaker));
+            let timestamp_ms = item.get("timestamp_ms").and_then(|v| v.as_i64()).unwrap_or(0);
+            Some(Seg {
+                text: text.to_string(),
+                speaker: label.to_string(),
+                timestamp_ms: routing::relative_ms(timestamp_ms, start_ms),
+            })
+        })
+        .collect()
+}
+
+/// Record `key`'s session (unless already recorded) and start it in the
+/// background. A definite outage found at start (not installed / not logged
+/// in) marks Claude unavailable so requests go straight to the fallback.
+fn start_session_in_background(app: &AppHandle, key: SessionKey, record: SessionRecord) {
+    let state = app.state::<AppState>();
+    if !state.meeting_sessions.contains(&key) {
+        state.meeting_sessions.insert(key.clone(), record);
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        let Some(record) = state.meeting_sessions.get(&key) else {
+            return;
+        };
+        let init = SessionInit {
+            system_prompt: record.system_prompt,
+            preload: record.preload,
+        };
+        if let Err(e) = state.agent_sessions.ensure(&key, init).await {
+            log::warn!("Claude session {} did not start: {e}", routing::session_key_label(&key));
+            if let Some(kind @ (AgentErrorKind::NotInstalled | AgentErrorKind::NotLoggedIn)) =
+                routing::unavailable_kind(&e)
+            {
+                state.claude_health.mark_unavailable(kind);
+            }
+        }
+    });
+}
+
+/// Forget and close every session of `scope` without blocking the caller
+/// (closing waits for a session that is still starting).
+fn close_scope_in_background(state: &AppState, scope: SessionScope) {
+    state.meeting_sessions.remove_scope(&scope);
+    let sessions = state.agent_sessions.clone();
+    tauri::async_runtime::spawn(async move { sessions.close_scope(&scope).await });
+}
+
+/// Start the Claude session of a past meeting opened in the meeting view
+/// (Deep tier; summary + transcript preloaded). Does nothing unless the
+/// Claude CLI is the active provider. Returns at once; the session starts in
+/// the background.
+#[command]
+pub async fn start_past_meeting_session(
+    meeting_id: String,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    if !routing::claude_is_active(&state) {
+        return Ok(());
+    }
+    let scope = SessionScope::Past(meeting_id.clone());
+    let cfg = state.claude_cli_config.read().map(|c| c.clone()).unwrap_or_default();
+    let key = SessionKey {
+        tier: tier_for("MeetingSummary", &scope, &cfg),
+        scope,
+    };
+    let record = past_session_record(&state, &meeting_id)?;
+    start_session_in_background(&app, key, record);
+    Ok(())
+}
+
+/// Close the Claude session of a past meeting (the meeting view was left).
+#[command]
+pub async fn close_past_meeting_session(
+    meeting_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    close_scope_in_background(&state, SessionScope::Past(meeting_id));
+    Ok(())
+}
 
 #[command]
 pub async fn save_meeting_ai_interactions(
@@ -48,6 +232,7 @@ pub async fn save_meeting_ai_interactions(
 pub async fn start_meeting(
     title: Option<String>,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<String, String> {
     let db = state
         .database
@@ -87,6 +272,26 @@ pub async fn start_meeting(
         }
     }
 
+    // Live Claude session: start the Fast session now so the first request
+    // finds it warm (the frontend pushes the scenario before this call).
+    let start_ms = chrono::DateTime::parse_from_rfc3339(&meeting.start_time)
+        .map(|t| t.timestamp_millis())
+        .unwrap_or_else(|_| chrono::Utc::now().timestamp_millis());
+    if let Ok(mut live) = state.live_meeting.lock() {
+        *live = Some(LiveMeeting {
+            id: meeting.id.clone(),
+            start_ms,
+        });
+    }
+    if routing::claude_is_active(&state) {
+        let key = SessionKey {
+            scope: SessionScope::Live(meeting.id.clone()),
+            tier: Tier::Fast,
+        };
+        let record = live_session_record(&state, Tier::Fast, &[]);
+        start_session_in_background(&app, key, record);
+    }
+
     serde_json::to_string(&meeting).map_err(|e| format!("Failed to serialize meeting: {}", e))
 }
 
@@ -97,6 +302,12 @@ pub async fn end_meeting(
     app: AppHandle,
 ) -> Result<(), String> {
     state.meeting_active.store(false, Ordering::SeqCst);
+    if let Ok(mut live) = state.live_meeting.lock() {
+        if live.as_ref().map(|m| m.id == meeting_id).unwrap_or(true) {
+            *live = None;
+        }
+    }
+    close_scope_in_background(&state, SessionScope::Live(meeting_id.clone()));
 
     let db_arc = state
         .database

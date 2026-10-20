@@ -6,7 +6,7 @@ import {
   onStreamError,
 } from "../lib/events";
 import { generateAssist, saveMeetingActionItems } from "../lib/ipc";
-import { useMeetingStore } from "../stores/meetingStore";
+import { useMeetingStore, pastMeetingIdFor } from "../stores/meetingStore";
 import { showToast } from "../stores/toastStore";
 import type { Meeting, ActionItem } from "../lib/types";
 
@@ -223,6 +223,7 @@ export function useActionItemsExtraction(
       await generateAssist("ActionItemsExtraction", customQuestion, {
         requestId,
         transcriptSegments: segments,
+        pastMeetingId: pastMeetingIdFor(meeting),
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

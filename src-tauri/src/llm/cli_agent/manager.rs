@@ -94,6 +94,8 @@ pub struct ClaudeCliConfig {
     pub deep_effort: String,
     /// Provider id used when Claude is unavailable; `None` = no fallback.
     pub fallback_provider: Option<String>,
+    /// Model used on the fallback provider; `None` = its first listed model.
+    pub fallback_model: Option<String>,
 }
 
 impl Default for ClaudeCliConfig {
@@ -104,6 +106,7 @@ impl Default for ClaudeCliConfig {
             deep_model: "sonnet".into(),
             deep_effort: "medium".into(),
             fallback_provider: None,
+            fallback_model: None,
         }
     }
 }

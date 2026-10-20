@@ -201,6 +201,7 @@ impl IntelligenceEngine {
                 transcript_segments_count,
                 transcript_segments_total,
                 request_id: params.request_id.clone(),
+                session_key: None,
             },
         );
 

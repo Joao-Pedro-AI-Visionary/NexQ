@@ -5,6 +5,7 @@
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AgentSessionStatus,
+  AgentFallbackEvent,
   AudioLevelEvent,
   BatchTranslationProgress,
   ModelDownloadProgress,
@@ -323,6 +324,13 @@ export function onAgentSessionStatus(
   handler: (status: AgentSessionStatus) => void
 ): Promise<UnlistenFn> {
   return listen<AgentSessionStatus>("agent_session_status", (e) => handler(e.payload));
+}
+
+/** Claude became unavailable; requests now go to the fallback provider (once per outage). */
+export function onAgentFallback(
+  handler: (event: AgentFallbackEvent) => void
+): Promise<UnlistenFn> {
+  return listen<AgentFallbackEvent>("agent_fallback", (e) => handler(e.payload));
 }
 
 // Tray events are handled via raw listen() calls in App.tsx

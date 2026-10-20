@@ -754,3 +754,13 @@ export async function getAgentSessions(): Promise<AgentSessionStatus[]> {
 export async function openClaudeLoginTerminal(): Promise<void> {
   return invoke("open_claude_login_terminal");
 }
+
+/** Start the Claude session of a past meeting (no-op unless Claude CLI is active). */
+export async function startPastMeetingSession(meetingId: string): Promise<void> {
+  return invoke("start_past_meeting_session", { meetingId });
+}
+
+/** Close the Claude session of a past meeting (meeting view left). */
+export async function closePastMeetingSession(meetingId: string): Promise<void> {
+  return invoke("close_past_meeting_session", { meetingId });
+}

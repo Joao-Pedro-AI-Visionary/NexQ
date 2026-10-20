@@ -1,9 +1,21 @@
+use std::sync::Arc;
+
 use tauri::{command, AppHandle, Emitter, State};
 
 use crate::intelligence::action_config::{AllActionConfigs, InstructionPresets};
 use crate::intelligence::IntelligenceEngine;
-use crate::llm::provider::GenerationParams;
-use crate::llm::provider::{RagChunkInfo, StreamEndPayload};
+use crate::llm::cli_agent::context::Seg;
+use crate::llm::cli_agent::manager::{OnDelta, SessionKey, SessionScope};
+use crate::llm::cli_agent::protocol::AgentErrorKind;
+use crate::llm::cli_agent::routing::{
+    self, choose_route, AgentFallbackPayload, ClaudeHealth, Route,
+};
+use crate::llm::cli_agent::session::AgentError;
+use crate::llm::provider::{
+    emit_end, emit_error, emit_token, is_cancelled, CancelToken, GenerationParams, LLMProvider,
+    RagChunkInfo, StreamEndPayload, StreamStartPayload,
+};
+use crate::llm::{create_provider, ProviderConfig, ProviderType};
 use crate::rag;
 use crate::state::AppState;
 
@@ -108,12 +120,372 @@ fn count_total_segments(segments_json: &str) -> usize {
         .unwrap_or(0)
 }
 
+/// Document excerpts found by RAG retrieval for one request, plus the
+/// metadata the AI Log shows.
+#[derive(Default)]
+struct RagRetrieval {
+    /// Formatted excerpts for the prompt (empty when nothing matched).
+    context_text: String,
+    query: Option<String>,
+    chunks: Vec<RagChunkInfo>,
+    filtered: usize,
+    total_candidates: usize,
+}
+
+/// Search the indexed documents for `question_text` and the recent
+/// transcript (`transcript_excerpt`), keeping the `top_k` best chunks.
+async fn retrieve_rag(
+    state: &AppState,
+    question_text: Option<String>,
+    transcript_excerpt: String,
+    top_k: usize,
+) -> Result<RagRetrieval, String> {
+    let mut out = RagRetrieval::default();
+
+    // Dual search: search with question alone, then with question+transcript, merge results.
+    // This prevents transcript noise from drowning out a clear question match,
+    // while still benefiting from transcript context when relevant.
+    let has_question = question_text.is_some();
+    let has_transcript = !transcript_excerpt.is_empty();
+
+    // Skip the search when nothing is indexed: search_async embeds the query
+    // via Ollama *before* touching the index, so an empty index still cost
+    // 1–2 embed round trips (and possibly an Ollama model swap) on every
+    // Assist/Ask before the LLM call started. If the status query fails, search anyway.
+    let has_indexed_chunks = state.database.as_ref().map_or(false, |db| {
+        db.lock()
+            .ok()
+            .and_then(|guard| rag::RagManager::get_status(guard.connection()).ok())
+            .map_or(true, |status| status.total_chunks > 0)
+    });
+
+    if !(has_question || has_transcript) || !has_indexed_chunks {
+        return Ok(out);
+    }
+    let (Some(rag_arc), Some(db_arc)) = (state.rag.as_ref(), state.database.as_ref()) else {
+        return Ok(out);
+    };
+
+    let (mut config, embedder_url, embedding_model) = {
+        let rag_guard = rag_arc.lock().map_err(|e| e.to_string())?;
+        (rag_guard.config().clone(), rag_guard.embedder_url(), rag_guard.embedding_model())
+    };
+    config.top_k = top_k;
+
+    let mut all_chunks: Vec<rag::search::ScoredChunk> = Vec::new();
+
+    // Search 1: question only (clean semantic match)
+    if let Some(ref q) = question_text {
+        out.query = Some(q.clone());
+        match rag::RagManager::search_async(db_arc, q, &config, &embedder_url, &embedding_model).await {
+            Ok(chunks) => all_chunks.extend(chunks),
+            Err(e) => log::warn!("RAG search (question-only) failed: {}", e),
+        }
+    }
+
+    // Search 2: question + transcript (contextual match)
+    if has_question && has_transcript {
+        let combined = format!("{}\n\n{}", question_text.as_ref().unwrap(), transcript_excerpt);
+        if out.query.is_none() {
+            out.query = Some(combined.clone());
+        }
+        match rag::RagManager::search_async(db_arc, &combined, &config, &embedder_url, &embedding_model).await {
+            Ok(chunks) => all_chunks.extend(chunks),
+            Err(e) => log::warn!("RAG search (combined) failed: {}", e),
+        }
+    } else if !has_question && has_transcript {
+        // No question at all — search with transcript only as last resort
+        out.query = Some(transcript_excerpt.clone());
+        match rag::RagManager::search_async(db_arc, &transcript_excerpt, &config, &embedder_url, &embedding_model).await {
+            Ok(chunks) => all_chunks.extend(chunks),
+            Err(e) => log::warn!("RAG search (transcript-only) failed: {}", e),
+        }
+    }
+
+    // Deduplicate: keep highest normalized_score per chunk_id
+    let mut best: std::collections::HashMap<String, rag::search::ScoredChunk> = std::collections::HashMap::new();
+    for chunk in all_chunks {
+        let entry = best.entry(chunk.chunk_id.clone()).or_insert(chunk.clone());
+        if chunk.normalized_score > entry.normalized_score {
+            *entry = chunk;
+        }
+    }
+    let mut merged: Vec<rag::search::ScoredChunk> = best.into_values().collect();
+    merged.sort_by(|a, b| b.normalized_score.partial_cmp(&a.normalized_score).unwrap_or(std::cmp::Ordering::Equal));
+    merged.truncate(top_k);
+
+    // Build metadata for AI log
+    for c in &merged {
+        out.chunks.push(RagChunkInfo {
+            source: c.source_file.clone(),
+            chunk_index: c.chunk_index,
+            text: c.text.clone(),
+            normalized_score: c.normalized_score,
+            raw_score: c.score,
+        });
+    }
+    out.total_candidates = top_k;
+    if merged.len() < top_k {
+        out.filtered = top_k - merged.len();
+    }
+    if !merged.is_empty() {
+        out.context_text = rag::prompt_builder::build_rag_context(&merged, "");
+    }
+    Ok(out)
+}
+
+/// The last 500 characters of `text` (the RAG query's transcript context).
+fn tail_chars(text: &str, n: usize) -> String {
+    let count = text.chars().count();
+    text.chars().skip(count.saturating_sub(n)).collect()
+}
+
+/// The meeting scope of a request: the past meeting it names, else the
+/// running meeting, else none (Utility).
+fn request_scope(state: &AppState, past_meeting_id: Option<&str>) -> SessionScope {
+    if let Some(id) = past_meeting_id.filter(|id| !id.is_empty()) {
+        return SessionScope::Past(id.to_string());
+    }
+    match state.live_meeting.lock().ok().and_then(|m| m.clone()) {
+        Some(meeting) => SessionScope::Live(meeting.id),
+        None => SessionScope::Utility,
+    }
+}
+
+/// Where this request goes (see `choose_route`).
+fn request_route(state: &AppState, mode: &str, scope: &SessionScope) -> Route {
+    let active = state
+        .llm
+        .as_ref()
+        .and_then(|l| l.lock().ok())
+        .and_then(|r| r.active_provider_type().cloned());
+    let Some(active) = active else {
+        return Route::Stateless;
+    };
+    let cfg = state
+        .claude_cli_config
+        .read()
+        .map(|c| c.clone())
+        .unwrap_or_default();
+    choose_route(&active, state.claude_health.get(), scope, mode, &cfg)
+}
+
+/// Fallback provider, model and display name for `config` (type only): the
+/// API key comes from the credential store; the model is the configured
+/// fallback model, else the provider's first listed model.
+async fn resolve_fallback(
+    state: &AppState,
+    mut config: ProviderConfig,
+) -> Result<(Arc<tokio::sync::Mutex<Box<dyn LLMProvider>>>, String, String), String> {
+    let provider_type = ProviderType::from_str(&config.provider_type).map_err(|e| e.to_string())?;
+    if config.api_key.is_none() {
+        config.api_key = state
+            .credentials
+            .as_ref()
+            .and_then(|c| c.lock().ok())
+            .and_then(|c| c.get_key(&config.provider_type).ok().flatten());
+    }
+    let provider = create_provider(&config)
+        .map_err(|e| format!("Fallback provider {} unavailable: {}", provider_type.display_name(), e))?;
+    let configured = state
+        .claude_cli_config
+        .read()
+        .ok()
+        .and_then(|c| c.fallback_model.clone())
+        .filter(|m| !m.trim().is_empty());
+    let model = match configured {
+        Some(model) => model,
+        None => provider
+            .list_models()
+            .await
+            .ok()
+            .and_then(|models| models.into_iter().next())
+            .map(|m| m.id)
+            .ok_or_else(|| {
+                format!("Fallback provider {} has no model to use", provider_type.display_name())
+            })?,
+    };
+    Ok((
+        Arc::new(tokio::sync::Mutex::new(provider)),
+        model,
+        provider_type.display_name().to_string(),
+    ))
+}
+
+/// Everything the Claude session path needs from `generate_assist`.
+struct SessionAssist<'a> {
+    key: SessionKey,
+    mode: &'a str,
+    custom_question: Option<&'a str>,
+    detected_question: Option<String>,
+    transcript_segments: Option<&'a str>,
+    task_instructions: String,
+    include_rag: bool,
+    include_instructions: bool,
+    include_question: bool,
+    rag_top_k: usize,
+    temperature: f64,
+    params: GenerationParams,
+    cancel: Arc<CancelToken>,
+}
+
+/// How the Claude session path ended.
+enum SessionOutcome {
+    /// Answered, stopped, or failed with an error that is not an outage
+    /// (already reported to the UI).
+    Done(Result<(), String>),
+    /// Claude is unavailable (after one restart where it applies).
+    Unavailable(AgentErrorKind, String),
+}
+
+/// Answer one request on the meeting's warm Claude session: only the
+/// transcript the session has not seen goes out, with the action's own
+/// prompt and presets as `## Task instructions`.
+async fn session_assist(state: &AppState, app: &AppHandle, req: SessionAssist<'_>) -> SessionOutcome {
+    let start = std::time::Instant::now();
+    let SessionAssist { key, mode, params, cancel, .. } = &req;
+
+    let finals = match &key.scope {
+        SessionScope::Live(_) => {
+            let start_ms = state.live_meeting.lock().ok().and_then(|m| m.clone()).map(|m| m.start_ms).unwrap_or(0);
+            req.transcript_segments
+                .map(|json| routing::segments_from_json(json, start_ms))
+                .unwrap_or_default()
+        }
+        // The whole transcript is preloaded into a past-meeting session.
+        _ => Vec::new(),
+    };
+
+    if !state.meeting_sessions.contains(key) {
+        let record = match &key.scope {
+            SessionScope::Live(_) => Ok(crate::commands::meeting_commands::live_session_record(state, key.tier, &finals)),
+            SessionScope::Past(id) => crate::commands::meeting_commands::past_session_record(state, id),
+            SessionScope::Utility => Err("Utility requests have no meeting session".to_string()),
+        };
+        match record {
+            Ok(record) => state.meeting_sessions.insert(key.clone(), record),
+            Err(e) => {
+                emit_error(app, params, &e);
+                return SessionOutcome::Done(Err(e));
+            }
+        }
+    }
+    let record = state.meeting_sessions.get(key).unwrap_or_default();
+
+    // Documents over the preload cap: retrieve the relevant excerpts per request.
+    let mut rag = RagRetrieval::default();
+    if record.rag_mode && req.include_rag {
+        let question_text = req
+            .custom_question
+            .filter(|q| !q.is_empty())
+            .map(str::to_string)
+            .or_else(|| req.detected_question.clone());
+        let recent: String = finals
+            .iter()
+            .map(|s| format!("{}: {}", s.speaker, s.text))
+            .collect::<Vec<_>>()
+            .join("\n");
+        match retrieve_rag(state, question_text, tail_chars(&recent, 500), req.rag_top_k).await {
+            Ok(found) => rag = found,
+            Err(e) => log::warn!("RAG retrieval for the Claude session failed: {e}"),
+        }
+    }
+    // Bookmark suggestions answer with segment ids, which the preloaded
+    // transcript does not carry.
+    let id_transcript = match (*mode, req.transcript_segments) {
+        ("BookmarkSuggestions", Some(json)) => build_transcript_from_segments(json, 0, true),
+        _ => String::new(),
+    };
+
+    let session_key = routing::session_key_label(key);
+    let rag_context = rag.context_text.clone();
+    let compose = |new: &[Seg]| {
+        routing::compose_delta(
+            new,
+            &[
+                ("## Relevant document excerpts", rag_context.as_str()),
+                ("## Transcript lines with segment ids", id_transcript.as_str()),
+            ],
+            &req.task_instructions,
+            req.custom_question,
+            req.detected_question.as_deref(),
+        )
+    };
+    let on_sent = |prompt: &str, model: &str, new_count: usize| {
+        let _ = app.emit(
+            "llm_stream_start",
+            StreamStartPayload {
+                mode: mode.to_string(),
+                model: model.to_string(),
+                provider: ProviderType::ClaudeCli.display_name().to_string(),
+                system_prompt: record.system_prompt.clone(),
+                user_prompt: prompt.to_string(),
+                include_transcript: new_count > 0,
+                include_rag: !rag.chunks.is_empty(),
+                include_instructions: req.include_instructions,
+                include_question: req.include_question,
+                temperature: req.temperature,
+                rag_query: rag.query.clone(),
+                rag_chunks: rag.chunks.clone(),
+                rag_chunks_filtered: rag.filtered,
+                rag_total_candidates: rag.total_candidates,
+                transcript_window_seconds: 0,
+                transcript_segments_count: new_count,
+                transcript_segments_total: finals.len(),
+                request_id: params.request_id.clone(),
+                session_key: Some(session_key.clone()),
+            },
+        );
+    };
+    let make_on_delta = || -> OnDelta {
+        let app = app.clone();
+        let params = params.clone();
+        Box::new(move |token: &str| {
+            if !token.is_empty() && !is_cancelled(&params) {
+                emit_token(&app, &params, token, None);
+            }
+        })
+    };
+
+    let result = routing::ask_meeting_session(
+        &state.agent_sessions,
+        &state.meeting_sessions,
+        key,
+        &finals,
+        compose,
+        on_sent,
+        make_on_delta,
+        cancel.clone(),
+    )
+    .await;
+
+    match result {
+        // A stopped stream already got its end from `cancel_generation`.
+        _ if cancel.is_cancelled() => SessionOutcome::Done(Ok(())),
+        Ok(turn) => {
+            let total = turn.input_tokens + turn.cache_read_tokens + turn.output_tokens;
+            emit_end(app, params, total, start.elapsed().as_millis() as u64);
+            SessionOutcome::Done(Ok(()))
+        }
+        Err(e) => match routing::unavailable_kind(&e) {
+            None if e == AgentError::Cancelled => SessionOutcome::Done(Ok(())),
+            None => {
+                let message = e.to_string();
+                emit_error(app, params, &message);
+                SessionOutcome::Done(Err(message))
+            }
+            Some(kind) => SessionOutcome::Unavailable(kind, e.to_string()),
+        },
+    }
+}
+
 #[command]
 pub async fn generate_assist(
     mode: String,
     custom_question: Option<String>,
     transcript_segments: Option<String>,
     request_id: Option<String>,
+    past_meeting_id: Option<String>,
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
@@ -121,7 +493,7 @@ pub async fn generate_assist(
     let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     // Extract what we need from the intelligence engine under its lock
-    let (generation_guard, last_question, cancel_token, action_config_snapshot, composed_instructions) = {
+    let (generation_guard, last_question, cancel_token, action_config_snapshot, composed_instructions, presets) = {
         let intel = state
             .intelligence
             .as_ref()
@@ -132,6 +504,7 @@ pub async fn generate_assist(
 
         // The guard releases the engine on every exit path (early returns included),
         // and only once this function, and so `stream_completion`, has finished.
+        // It covers the Claude session path and the fallback alike.
         let guard = engine
             .begin_generation(&request_id)
             .ok_or_else(|| "Generation already in progress".to_string())?;
@@ -146,11 +519,13 @@ pub async fn generate_assist(
             &all_configs.instruction_presets,
             &all_configs.custom_instructions,
         );
+        // Presets alone: in a Claude session the custom text is in the session prompt.
+        let presets = compose_instructions(&all_configs.instruction_presets, "");
 
         let question = engine.last_detected_question().cloned();
         let cancel = guard.cancel_token();
 
-        (guard, question, cancel, (action_cfg, global_defaults), composed)
+        (guard, question, cancel, (action_cfg, global_defaults), composed, presets)
     };
 
     let (action_cfg, global_defaults) = action_config_snapshot;
@@ -179,6 +554,98 @@ pub async fn generate_assist(
         // Action has include_detected_question=false and no custom question
         None
     };
+
+    // Resolve per-action settings
+    // Read default top-K from RagConfig (Context Strategy) — single source of truth
+    let rag_default_top_k = state.rag.as_ref()
+        .and_then(|r| r.lock().ok())
+        .map(|r| r.config().top_k)
+        .unwrap_or(5);
+    let rag_top_k = action_cfg.as_ref().and_then(|c| c.rag_top_k).unwrap_or(rag_default_top_k);
+
+    let include_rag = action_cfg.as_ref().map(|c| c.include_rag_chunks).unwrap_or(true);
+    let include_transcript = action_cfg.as_ref().map(|c| c.include_transcript).unwrap_or(true);
+    // include_question already computed above
+    let include_instructions = action_cfg.as_ref().map(|c| c.include_custom_instructions).unwrap_or(true);
+
+    // Build generation params from per-action overrides or global defaults
+    let temperature = action_cfg
+        .as_ref()
+        .and_then(|c| c.temperature)
+        .unwrap_or(global_defaults.temperature);
+
+    // ── Route: warm Claude session, fallback provider, or stateless ──
+    let scope = request_scope(&state, past_meeting_id.as_deref());
+    let mut route = request_route(&state, &mode, &scope);
+
+    if let Route::ClaudeSession(key) = &route {
+        // The action's own prompt (or the mode template) and presets travel in
+        // the user message; the scenario prompt is the session's system prompt.
+        let action_prompt = action_cfg
+            .as_ref()
+            .map(|c| c.system_prompt.clone())
+            .unwrap_or_else(|| crate::intelligence::prompt_templates::get_system_prompt(&mode).to_string());
+        let task_instructions = if include_instructions && !presets.is_empty() {
+            format!("{}\n\n{}", action_prompt, presets)
+        } else {
+            action_prompt
+        };
+        let req = SessionAssist {
+            key: key.clone(),
+            mode: &mode,
+            custom_question: custom_question.as_deref(),
+            detected_question: if custom_question.is_none() {
+                effective_question.as_ref().map(|q| q.text.clone())
+            } else {
+                None
+            },
+            transcript_segments: transcript_segments.as_deref(),
+            task_instructions,
+            include_rag,
+            include_instructions,
+            include_question,
+            rag_top_k,
+            temperature,
+            params: GenerationParams {
+                temperature: None,
+                max_tokens: None,
+                cache_name: None,
+                enable_web_search: false,
+                request_id: Some(request_id.clone()),
+                silent: false,
+                cancel: Some(cancel_token.clone()),
+            },
+            cancel: cancel_token.clone(),
+        };
+        match session_assist(&state, &app_handle, req).await {
+            SessionOutcome::Done(result) => {
+                // Release the engine only now that the stream has fully stopped.
+                drop(generation_guard);
+                return result;
+            }
+            SessionOutcome::Unavailable(kind, reason) => {
+                log::warn!("Claude unavailable ({reason}); falling back");
+                state.claude_health.mark_unavailable(kind);
+                // Same decision as for a request arriving while Claude is down.
+                match request_route(&state, &mode, &scope) {
+                    fallback @ Route::Fallback(_) => route = fallback,
+                    _ => {
+                        let params = GenerationParams {
+                            request_id: Some(request_id.clone()),
+                            cancel: Some(cancel_token.clone()),
+                            ..GenerationParams::default()
+                        };
+                        let message = format!("Claude unavailable ({}): {}", routing::reason_label(kind), reason);
+                        emit_error(&app_handle, &params, &message);
+                        drop(generation_guard);
+                        return Err(message);
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Today's stateless full-prompt path (active or fallback provider) ──
 
     // Determine transcript window: per-action override or global default
     let window_seconds = action_cfg
@@ -218,19 +685,6 @@ pub async fn generate_assist(
         .filter(|l| l.starts_with("["))
         .count();
 
-    // Resolve per-action settings
-    // Read default top-K from RagConfig (Context Strategy) — single source of truth
-    let rag_default_top_k = state.rag.as_ref()
-        .and_then(|r| r.lock().ok())
-        .map(|r| r.config().top_k)
-        .unwrap_or(5);
-    let rag_top_k = action_cfg.as_ref().and_then(|c| c.rag_top_k).unwrap_or(rag_default_top_k);
-
-    let include_rag = action_cfg.as_ref().map(|c| c.include_rag_chunks).unwrap_or(true);
-    let include_transcript = action_cfg.as_ref().map(|c| c.include_transcript).unwrap_or(true);
-    // include_question already computed above
-    let include_instructions = action_cfg.as_ref().map(|c| c.include_custom_instructions).unwrap_or(true);
-
     // Resolve base system prompt: per-action config > active scenario > hardcoded template.
     // Active scenario is set by the frontend at meeting start based on the selected AI scenario.
     let base_system_prompt = action_cfg
@@ -254,28 +708,74 @@ pub async fn generate_assist(
         base_system_prompt
     };
 
-    // Build generation params from per-action overrides or global defaults
-    let temperature = action_cfg
-        .as_ref()
-        .and_then(|c| c.temperature)
-        .unwrap_or(global_defaults.temperature);
+    // Get the LLM provider and model info: the fallback provider when Claude
+    // is unavailable, else the active one.
+    let (provider_arc, model, provider_name, provider_type) = match &route {
+        Route::Fallback(config) => {
+            match resolve_fallback(&state, config.clone()).await {
+                Ok((provider, model, name)) => {
+                    if state.claude_health.take_fallback_notice() {
+                        let reason = match state.claude_health.get() {
+                            ClaudeHealth::Unavailable(kind) => routing::reason_label(kind),
+                            ClaudeHealth::Healthy => "unavailable",
+                        };
+                        let _ = app_handle.emit(
+                            routing::FALLBACK_EVENT,
+                            AgentFallbackPayload {
+                                reason: reason.to_string(),
+                                provider: name.clone(),
+                            },
+                        );
+                    }
+                    let provider_type = ProviderType::from_str(&config.provider_type).ok();
+                    (provider, model, name, provider_type)
+                }
+                Err(message) => {
+                    let params = GenerationParams {
+                        request_id: Some(request_id.clone()),
+                        cancel: Some(cancel_token.clone()),
+                        ..GenerationParams::default()
+                    };
+                    emit_error(&app_handle, &params, &message);
+                    return Err(message);
+                }
+            }
+        }
+        _ => {
+            let llm = state
+                .llm
+                .as_ref()
+                .ok_or_else(|| "LLM router not initialized".to_string())?;
+            let router = llm
+                .lock()
+                .map_err(|e| format!("Failed to lock LLM router: {}", e))?;
+
+            let provider = router
+                .get_provider()
+                .map_err(|e| format!("No active LLM provider: {}", e))?;
+
+            let model_name = router.active_model().to_string();
+            if model_name.is_empty() {
+                return Err("No active model selected".to_string());
+            }
+
+            let ptype = router
+                .active_provider_type()
+                .map(|pt| pt.display_name().to_string())
+                .unwrap_or_else(|| "Unknown".to_string());
+
+            (provider, model_name, ptype, router.active_provider_type().cloned())
+        }
+    };
 
     // Check for active Gemini context cache — only applies when Gemini is the provider
-    let active_cache_name = {
-        let is_gemini = state.llm.as_ref()
-            .and_then(|l| l.lock().ok())
-            .and_then(|r| r.active_provider_type().cloned())
-            .map(|pt| pt == crate::llm::ProviderType::Gemini)
-            .unwrap_or(false);
-
-        if is_gemini {
-            state.gemini_cache
-                .lock()
-                .ok()
-                .and_then(|slot| slot.as_ref().map(|c| c.name.clone()))
-        } else {
-            None
-        }
+    let active_cache_name = if provider_type == Some(ProviderType::Gemini) {
+        state.gemini_cache
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(|c| c.name.clone()))
+    } else {
+        None
     };
 
     let enable_web_search = action_cfg.as_ref().map(|c| c.web_search).unwrap_or(false);
@@ -290,157 +790,27 @@ pub async fn generate_assist(
         cancel: Some(cancel_token.clone()),
     };
 
-    // RAG metadata for StreamStartEvent
-    let mut rag_query_text: Option<String> = None;
-    let mut rag_chunk_infos: Vec<RagChunkInfo> = Vec::new();
-    let mut rag_chunks_filtered: usize = 0;
-    let mut rag_total_candidates: usize = 0;
-
-    let context_text = {
-        let mut parts: Vec<String> = Vec::new();
-
-        // When Gemini cache is active, skip RAG entirely — no Ollama embed needed.
-        // The full context is already cached on Gemini servers.
-        if include_rag && active_cache_name.is_none() {
-            // Note: we don't check config.enabled here — the action-level include_rag
-            // toggle is the user's intent. If they enabled RAG for this action and have
-            // indexed files, we should search. (config.enabled defaults to false and is
-            // inconsistently set, while Test Knowledge Base ignores it entirely.)
-            {
-                // RAG query sources (priority: custom_question > effective_question > transcript)
-                // custom_question is what the user typed (Ask mode) or the clicked question (Assist mode)
-                // effective_question is the auto-detected question from the meeting
-                let question_text = custom_question.as_deref()
-                    .filter(|q| !q.is_empty())
-                    .map(|q| q.to_string())
-                    .or_else(|| effective_question.as_ref().map(|q| q.text.clone()));
-
-                let transcript_excerpt: String = transcript_text
-                    .chars().rev().take(500).collect::<String>()
-                    .chars().rev().collect();
-
-                // Dual search: search with question alone, then with question+transcript, merge results.
-                // This prevents transcript noise from drowning out a clear question match,
-                // while still benefiting from transcript context when relevant.
-                let has_question = question_text.is_some();
-                let has_transcript = !transcript_excerpt.is_empty();
-
-                // Skip the search when nothing is indexed: search_async embeds the query
-                // via Ollama *before* touching the index, so an empty index still cost
-                // 1–2 embed round trips (and possibly an Ollama model swap) on every
-                // Assist/Ask before the LLM call started. If the status query fails, search anyway.
-                let has_indexed_chunks = state.database.as_ref().map_or(false, |db| {
-                    db.lock()
-                        .ok()
-                        .and_then(|guard| rag::RagManager::get_status(guard.connection()).ok())
-                        .map_or(true, |status| status.total_chunks > 0)
-                });
-
-                if (has_question || has_transcript) && has_indexed_chunks {
-                    if let (Some(rag_arc), Some(db_arc)) =
-                        (state.rag.as_ref(), state.database.as_ref()) {
-
-                        let (mut config, embedder_url, embedding_model) = {
-                            let rag_guard = rag_arc.lock().map_err(|e| e.to_string())?;
-                            (rag_guard.config().clone(), rag_guard.embedder_url(), rag_guard.embedding_model())
-                        };
-                        config.top_k = rag_top_k;
-
-                        let mut all_chunks: Vec<rag::search::ScoredChunk> = Vec::new();
-
-                        // Search 1: question only (clean semantic match)
-                        if let Some(ref q) = question_text {
-                            rag_query_text = Some(q.clone());
-                            match rag::RagManager::search_async(db_arc, q, &config, &embedder_url, &embedding_model).await {
-                                Ok(chunks) => all_chunks.extend(chunks),
-                                Err(e) => log::warn!("RAG search (question-only) failed: {}", e),
-                            }
-                        }
-
-                        // Search 2: question + transcript (contextual match)
-                        if has_question && has_transcript {
-                            let combined = format!("{}\n\n{}", question_text.as_ref().unwrap(), transcript_excerpt);
-                            if rag_query_text.is_none() {
-                                rag_query_text = Some(combined.clone());
-                            }
-                            match rag::RagManager::search_async(db_arc, &combined, &config, &embedder_url, &embedding_model).await {
-                                Ok(chunks) => all_chunks.extend(chunks),
-                                Err(e) => log::warn!("RAG search (combined) failed: {}", e),
-                            }
-                        } else if !has_question && has_transcript {
-                            // No question at all — search with transcript only as last resort
-                            rag_query_text = Some(transcript_excerpt.clone());
-                            match rag::RagManager::search_async(db_arc, &transcript_excerpt, &config, &embedder_url, &embedding_model).await {
-                                Ok(chunks) => all_chunks.extend(chunks),
-                                Err(e) => log::warn!("RAG search (transcript-only) failed: {}", e),
-                            }
-                        }
-
-                        // Deduplicate: keep highest normalized_score per chunk_id
-                        let mut best: std::collections::HashMap<String, rag::search::ScoredChunk> = std::collections::HashMap::new();
-                        for chunk in all_chunks {
-                            let entry = best.entry(chunk.chunk_id.clone()).or_insert(chunk.clone());
-                            if chunk.normalized_score > entry.normalized_score {
-                                *entry = chunk;
-                            }
-                        }
-                        let mut merged: Vec<rag::search::ScoredChunk> = best.into_values().collect();
-                        merged.sort_by(|a, b| b.normalized_score.partial_cmp(&a.normalized_score).unwrap_or(std::cmp::Ordering::Equal));
-                        merged.truncate(rag_top_k);
-
-                        // Build metadata for AI log
-                        for c in &merged {
-                            rag_chunk_infos.push(RagChunkInfo {
-                                source: c.source_file.clone(),
-                                chunk_index: c.chunk_index,
-                                text: c.text.clone(),
-                                normalized_score: c.normalized_score,
-                                raw_score: c.score,
-                            });
-                        }
-                        rag_total_candidates = rag_top_k;
-                        if merged.len() < rag_top_k {
-                            rag_chunks_filtered = rag_top_k - merged.len();
-                        }
-                        if !merged.is_empty() {
-                            parts.push(rag::prompt_builder::build_rag_context(&merged, ""));
-                        }
-                    }
-                }
-            }
-        }
-
-        parts.join("\n\n")
+    // When Gemini cache is active, skip RAG entirely — no Ollama embed needed.
+    // The full context is already cached on Gemini servers.
+    // Note: we don't check config.enabled here — the action-level include_rag
+    // toggle is the user's intent. If they enabled RAG for this action and have
+    // indexed files, we should search. (config.enabled defaults to false and is
+    // inconsistently set, while Test Knowledge Base ignores it entirely.)
+    let rag = if include_rag && active_cache_name.is_none() {
+        // RAG query sources (priority: custom_question > effective_question > transcript)
+        // custom_question is what the user typed (Ask mode) or the clicked question (Assist mode)
+        // effective_question is the auto-detected question from the meeting
+        let question_text = custom_question.as_deref()
+            .filter(|q| !q.is_empty())
+            .map(|q| q.to_string())
+            .or_else(|| effective_question.as_ref().map(|q| q.text.clone()));
+        retrieve_rag(&state, question_text, tail_chars(&transcript_text, 500), rag_top_k).await?
+    } else {
+        RagRetrieval::default()
     };
 
+    let context_text = rag.context_text;
     let include_context = !context_text.is_empty();
-
-    // Get the LLM provider and model info
-    let (provider_arc, model, provider_name) = {
-        let llm = state
-            .llm
-            .as_ref()
-            .ok_or_else(|| "LLM router not initialized".to_string())?;
-        let router = llm
-            .lock()
-            .map_err(|e| format!("Failed to lock LLM router: {}", e))?;
-
-        let provider = router
-            .get_provider()
-            .map_err(|e| format!("No active LLM provider: {}", e))?;
-
-        let model_name = router.active_model().to_string();
-        if model_name.is_empty() {
-            return Err("No active model selected".to_string());
-        }
-
-        let ptype = router
-            .active_provider_type()
-            .map(|pt| pt.display_name().to_string())
-            .unwrap_or_else(|| "Unknown".to_string());
-
-        (provider, model_name, ptype)
-    };
 
     // Run the generation asynchronously
     let mode_clone = mode.clone();
@@ -461,10 +831,10 @@ pub async fn generate_assist(
         provider_name,
         params,
         temperature,
-        rag_query_text,
-        rag_chunk_infos,
-        rag_chunks_filtered,
-        rag_total_candidates,
+        rag.query,
+        rag.chunks,
+        rag.filtered,
+        rag.total_candidates,
         window_seconds,
         included_segments,
         total_segments,

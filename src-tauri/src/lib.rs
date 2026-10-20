@@ -337,6 +337,10 @@ pub fn run() {
             tauri::async_runtime::spawn(llm::cli_agent::manager::run_idle_reaper(
                 app_state.agent_sessions.clone(),
             ));
+            // Re-probe an unavailable Claude every 60 s (no model call).
+            tauri::async_runtime::spawn(llm::cli_agent::routing::run_health_probe(
+                app.handle().clone(),
+            ));
 
             app.manage(app_state);
 
@@ -599,6 +603,8 @@ pub fn run() {
             meeting_commands::save_meeting_topic_sections,
             meeting_commands::rename_speaker,
             meeting_commands::update_meeting_mode,
+            meeting_commands::start_past_meeting_session,
+            meeting_commands::close_past_meeting_session,
             // == COMMANDS: settings ==
             settings_commands::get_config,
             settings_commands::set_config,

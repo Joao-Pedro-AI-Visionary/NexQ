@@ -7,6 +7,7 @@ import {
 } from "../lib/events";
 import { addMeetingBookmark, generateAssist } from "../lib/ipc";
 import type { Meeting, MeetingBookmark } from "../lib/types";
+import { pastMeetingIdFor } from "../stores/meetingStore";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -346,6 +347,7 @@ export function useBookmarkSuggestions(
       await generateAssist("BookmarkSuggestions", customQuestion, {
         requestId,
         transcriptSegments: segments,
+        pastMeetingId: pastMeetingIdFor(meeting),
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
