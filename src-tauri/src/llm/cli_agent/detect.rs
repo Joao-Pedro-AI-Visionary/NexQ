@@ -1,7 +1,7 @@
 //! Locate the `claude` binary and query version/login state (no model calls).
 
 use super::command::{configure_command, sandbox_dir};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -34,7 +34,7 @@ fn first_exe_line(stdout: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClaudeAuthStatus {
     pub logged_in: bool,
     pub auth_method: String,

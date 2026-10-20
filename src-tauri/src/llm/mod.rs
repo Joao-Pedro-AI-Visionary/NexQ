@@ -26,6 +26,8 @@ pub enum ProviderType {
     Gemini,
     Openrouter,
     Custom,
+    /// The local Claude Code CLI on the user's own subscription login.
+    ClaudeCli,
 }
 
 impl ProviderType {
@@ -39,6 +41,7 @@ impl ProviderType {
             "gemini" => Ok(Self::Gemini),
             "openrouter" => Ok(Self::Openrouter),
             "custom" => Ok(Self::Custom),
+            "claude_cli" => Ok(Self::ClaudeCli),
             _ => Err(LLMError::NotConfigured(format!(
                 "Unknown provider type: {}",
                 s
@@ -56,6 +59,7 @@ impl ProviderType {
             Self::Gemini => "gemini",
             Self::Openrouter => "openrouter",
             Self::Custom => "custom",
+            Self::ClaudeCli => "claude_cli",
         }
     }
 
@@ -69,6 +73,7 @@ impl ProviderType {
             Self::Gemini => "Google Gemini",
             Self::Openrouter => "OpenRouter",
             Self::Custom => "Custom",
+            Self::ClaudeCli => "Claude (subscription)",
         }
     }
 
@@ -81,7 +86,7 @@ impl ProviderType {
             Self::Groq => "https://api.groq.com/openai/v1",
             Self::Gemini => "https://generativelanguage.googleapis.com",
             Self::Openrouter => "https://openrouter.ai/api/v1",
-            Self::Custom => "",
+            Self::Custom | Self::ClaudeCli => "",
         }
     }
 
@@ -93,7 +98,7 @@ impl ProviderType {
     }
 
     pub fn is_local(&self) -> bool {
-        matches!(self, Self::Ollama | Self::LmStudio)
+        matches!(self, Self::Ollama | Self::LmStudio | Self::ClaudeCli)
     }
 }
 
@@ -188,6 +193,9 @@ pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn LLMProvider>, 
                 auth_header: config.auth_header.clone(),
             }))
         }
+        // Needs no config: it reaches the session manager through the
+        // `AppHandle` passed to every `stream_completion` call.
+        ProviderType::ClaudeCli => Box::new(cli_agent::provider::ClaudeCliProvider::new()),
     };
 
     Ok(provider)
@@ -273,6 +281,7 @@ impl LLMRouter {
             ProviderType::Gemini,
             ProviderType::Openrouter,
             ProviderType::Custom,
+            ProviderType::ClaudeCli,
         ];
 
         all_types
@@ -315,6 +324,26 @@ mod tests {
         let err = create_provider(&cfg("custom", None, None)).err();
         assert!(err.is_some(), "custom without base_url must fail");
         assert_eq!(router.active_provider_type(), Some(&ProviderType::Ollama));
+    }
+
+    #[test]
+    fn claude_cli_provider_type_roundtrip() {
+        let pt = ProviderType::from_str("claude_cli").unwrap();
+        assert_eq!(pt, ProviderType::ClaudeCli);
+        assert_eq!(pt.as_str(), "claude_cli");
+        assert_eq!(ProviderType::from_str(pt.as_str()).unwrap(), pt);
+        assert_eq!(serde_json::to_string(&pt).unwrap(), "\"claude_cli\"");
+        assert_eq!(pt.display_name(), "Claude (subscription)");
+    }
+
+    #[test]
+    fn claude_cli_requires_no_key() {
+        assert!(!ProviderType::ClaudeCli.requires_api_key());
+        assert!(ProviderType::ClaudeCli.is_local());
+        assert!(create_provider(&cfg("claude_cli", None, None)).is_ok());
+        assert!(LLMRouter::get_all_providers()
+            .iter()
+            .any(|p| p.provider_type == "claude_cli" && !p.requires_api_key && p.is_local));
     }
 
     #[test]

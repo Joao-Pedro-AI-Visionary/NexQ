@@ -264,7 +264,8 @@ export type LLMProviderType =
   | "groq"
   | "gemini"
   | "openrouter"
-  | "custom";
+  | "custom"
+  | "claude_cli";
 
 export interface LLMProviderConfig {
   type: LLMProviderType;
@@ -272,6 +273,56 @@ export interface LLMProviderConfig {
   base_url: string;
   requires_api_key: boolean;
   is_local: boolean;
+}
+
+// == CLAUDE CLI (SUBSCRIPTION) TYPES ==
+
+/** Mirrors Rust `ClaudeAuthStatus` (output of `claude auth status`). */
+export interface ClaudeAuthStatus {
+  logged_in: boolean;
+  auth_method: string;
+  subscription_type: string | null;
+  email: string | null;
+}
+
+/** Mirrors Rust `ClaudeCliStatus` (`claude_cli_status` command). */
+export interface ClaudeCliStatus {
+  installed: boolean;
+  binary_path: string | null;
+  version: string | null;
+  /** null when not installed or the `auth status` probe failed. */
+  auth: ClaudeAuthStatus | null;
+}
+
+/** Mirrors Rust `ClaudeCliConfig` (`set_claude_cli_config` command). */
+export interface ClaudeCliConfig {
+  fast_model: string;
+  /** "low" | "medium" | "high" | "xhigh" | "max" */
+  fast_effort: string;
+  deep_model: string;
+  deep_effort: string;
+  /** Provider id used when Claude is unavailable; null = no fallback. */
+  fallback_provider: string | null;
+}
+
+/** Mirrors Rust `SessionUsage`: cumulative estimate for one session scope. */
+export interface SessionUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+}
+
+/** Mirrors Rust `AgentSessionStatus` (payload of `agent_session_status`). */
+export interface AgentSessionStatus {
+  scope: "live" | "past" | "utility";
+  meeting_id: string | null;
+  tier: "fast" | "deep";
+  state: "starting" | "ready" | "busy" | "error" | "closed";
+  model: string;
+  /** Readable reason for `error`. */
+  detail: string | null;
+  /** Cumulative usage of the whole scope (all tiers). */
+  usage: SessionUsage;
 }
 
 // == DEEPGRAM CONFIG ==

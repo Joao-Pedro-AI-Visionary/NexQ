@@ -31,6 +31,9 @@ import type {
   OpusMtModelStatus,
   TrayState,
   UpdateInfo,
+  AgentSessionStatus,
+  ClaudeCliConfig,
+  ClaudeCliStatus,
 } from "./types";
 
 // == IPC: Audio (Sub-PRD 3) ==
@@ -728,4 +731,26 @@ export async function installUpdateNow(): Promise<void> {
 
 export async function getPendingUpdate(): Promise<UpdateInfo | null> {
   return invoke<UpdateInfo | null>("get_pending_update");
+}
+
+// == IPC: Claude CLI (subscription) ==
+
+/** Detect `claude.exe`, its version and login state (no model call). */
+export async function claudeCliStatus(): Promise<ClaudeCliStatus> {
+  return invoke<ClaudeCliStatus>("claude_cli_status");
+}
+
+/** Replace the Fast/Deep model settings; applies to sessions started afterwards. */
+export async function setClaudeCliConfig(config: ClaudeCliConfig): Promise<void> {
+  return invoke("set_claude_cli_config", { config });
+}
+
+/** Status of every open Claude session. */
+export async function getAgentSessions(): Promise<AgentSessionStatus[]> {
+  return invoke<AgentSessionStatus[]>("get_agent_sessions");
+}
+
+/** Open a visible terminal running `claude` so the user can log in. */
+export async function openClaudeLoginTerminal(): Promise<void> {
+  return invoke("open_claude_login_terminal");
 }

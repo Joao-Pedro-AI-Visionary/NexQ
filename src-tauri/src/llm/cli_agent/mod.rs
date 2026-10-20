@@ -8,6 +8,7 @@ pub mod context;
 pub mod detect;
 pub mod manager;
 pub mod protocol;
+pub mod provider;
 pub mod session;
 
 /// Which CLI agent a session talks to.

@@ -28,6 +28,7 @@ const LLM_LABELS: Record<string, string> = {
   gemini: "Gemini",
   openrouter: "OpenRouter",
   custom: "Custom",
+  claude_cli: "Claude",
 };
 
 const STT_LABELS: Record<string, string> = {

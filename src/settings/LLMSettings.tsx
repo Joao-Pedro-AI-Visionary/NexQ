@@ -42,6 +42,9 @@ const PROVIDER_DISPLAY: Record<
   gemini: { label: "Google Gemini", description: "Gemini Pro, Flash", requiresKey: true, isLocal: false },
   openrouter: { label: "OpenRouter", description: "Multi-provider gateway", requiresKey: true, isLocal: false },
   custom: { label: "Custom", description: "Your own endpoint", requiresKey: false, isLocal: false },
+  // Not in ALL_PROVIDERS: it gets its own "Subscription (local CLI)" group.
+  // isLocal is false here because that flag drives the local-server hints below.
+  claude_cli: { label: "Claude (subscription)", description: "Your own Claude login (beta)", requiresKey: false, isLocal: false },
 };
 
 const ALL_PROVIDERS: LLMProviderType[] = [

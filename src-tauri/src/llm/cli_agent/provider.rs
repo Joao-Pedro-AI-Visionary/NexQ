@@ -1,0 +1,368 @@
+//! `ClaudeCliProvider`: the `LLMProvider` face of the Claude CLI, so every
+//! existing caller works with the user's subscription on day one.
+//!
+//! `stream_completion` runs on the shared Utility Fast session. That session
+//! outlives any single request, so each call's system prompt travels inside
+//! the user message as an `## Instructions` block instead of the session's
+//! system prompt. The `model` argument is not used: the session model comes
+//! from `ClaudeCliConfig` (Fast tier).
+//!
+//! The provider holds no state. It reaches the session manager through the
+//! `AppHandle` every `stream_completion` call already receives, so
+//! `create_provider` needs no access to `AppState`.
+
+use super::detect::{claude_status, find_claude_binary};
+use super::manager::{AgentSessionManager, OnDelta, SessionInit, SessionKey, SessionScope, Tier};
+use super::protocol::{AgentErrorKind, TurnResult};
+use super::session::AgentError;
+use crate::llm::provider::{
+    emit_end, emit_error, emit_token, is_cancelled, CancelToken, CompletionStats,
+    GenerationParams, LLMError, LLMMessage, LLMProvider, ModelInfo, TokenSink,
+};
+use crate::state::AppState;
+use std::sync::Arc;
+use tauri::Manager;
+
+/// System prompt of the Utility session. Requests are unrelated to each other
+/// (translation, knowledge-base test, wizard), so earlier turns must not leak
+/// into later answers.
+pub const UTILITY_SYSTEM_PROMPT: &str = "You are the assistant inside NexQ, a meeting \
+assistant app. Every user message is a separate, self-contained request: follow its \
+## Instructions section when present and answer only that request. Do not refer to or \
+rely on earlier messages.";
+
+/// Static model list: CLI aliases that always resolve to the latest model.
+const MODELS: [(&str, &str); 4] = [
+    ("haiku", "Claude Haiku"),
+    ("sonnet", "Claude Sonnet"),
+    ("opus", "Claude Opus"),
+    ("fable", "Claude Fable"),
+];
+
+pub struct ClaudeCliProvider;
+
+impl ClaudeCliProvider {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for ClaudeCliProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The session serving every caller without a meeting scope.
+pub fn utility_key() -> SessionKey {
+    SessionKey {
+        scope: SessionScope::Utility,
+        tier: Tier::Fast,
+    }
+}
+
+/// One user message for the session: system messages become a leading
+/// `## Instructions` block, the other messages follow in order.
+pub fn build_utility_prompt(messages: &[LLMMessage]) -> String {
+    let instructions: Vec<&str> = messages
+        .iter()
+        .filter(|m| m.role == "system" && !m.content.trim().is_empty())
+        .map(|m| m.content.as_str())
+        .collect();
+    let body: Vec<&str> = messages
+        .iter()
+        .filter(|m| m.role != "system")
+        .map(|m| m.content.as_str())
+        .collect();
+    let body = body.join("\n\n");
+    if instructions.is_empty() {
+        body
+    } else {
+        format!("## Instructions\n\n{}\n\n{}", instructions.join("\n\n"), body)
+    }
+}
+
+/// Start (or reuse) the Utility Fast session and ask `prompt` on it.
+pub async fn ask_utility(
+    manager: &AgentSessionManager,
+    prompt: &str,
+    on_delta: OnDelta,
+    cancel: Arc<CancelToken>,
+) -> Result<TurnResult, AgentError> {
+    let key = utility_key();
+    let init = SessionInit {
+        system_prompt: UTILITY_SYSTEM_PROMPT.to_string(),
+        preload: Vec::new(),
+    };
+    // Not raced against `cancel`: dropping a spawn mid-way would leave the
+    // session status stuck on "starting". Cancellation is checked right after.
+    manager.ensure(&key, init).await?;
+    if cancel.is_cancelled() {
+        return Err(AgentError::Cancelled);
+    }
+    manager.ask(&key, prompt, on_delta, cancel).await
+}
+
+/// Map a session error onto the provider error the callers already handle.
+pub fn to_llm_error(err: AgentError) -> LLMError {
+    if err == AgentError::Cancelled {
+        return LLMError::Cancelled;
+    }
+    let message = err.to_string();
+    match err.kind() {
+        AgentErrorKind::NotInstalled => LLMError::NotConfigured(message),
+        AgentErrorKind::NotLoggedIn => LLMError::AuthError(message),
+        _ => LLMError::ProviderError(message),
+    }
+}
+
+fn stats_from(turn: &TurnResult) -> CompletionStats {
+    CompletionStats {
+        prompt_tokens: turn.input_tokens,
+        completion_tokens: turn.output_tokens,
+        total_tokens: turn.input_tokens + turn.output_tokens,
+        latency_ms: turn.duration_ms,
+    }
+}
+
+#[async_trait::async_trait]
+impl LLMProvider for ClaudeCliProvider {
+    fn provider_name(&self) -> &str {
+        "claude_cli"
+    }
+
+    async fn list_models(&self) -> Result<Vec<ModelInfo>, LLMError> {
+        Ok(MODELS
+            .iter()
+            .map(|(id, name)| ModelInfo {
+                id: id.to_string(),
+                name: name.to_string(),
+                provider: "claude_cli".to_string(),
+                context_window: None,
+            })
+            .collect())
+    }
+
+    /// `Ok(true)` when `claude.exe` is installed and logged in.
+    async fn test_connection(&self) -> Result<bool, LLMError> {
+        let bin = tokio::task::spawn_blocking(find_claude_binary)
+            .await
+            .ok()
+            .flatten()
+            .ok_or_else(|| LLMError::NotConfigured("Claude CLI is not installed".to_string()))?;
+        let (_version, auth) = claude_status(&bin)
+            .await
+            .map_err(LLMError::ConnectionFailed)?;
+        if !auth.logged_in {
+            return Err(LLMError::AuthError(
+                "Claude CLI is not logged in. Run `claude` in a terminal to log in.".to_string(),
+            ));
+        }
+        Ok(true)
+    }
+
+    async fn stream_completion(
+        &self,
+        messages: Vec<LLMMessage>,
+        _model: &str,
+        params: GenerationParams,
+        app_handle: tauri::AppHandle,
+        sink: Option<TokenSink>,
+    ) -> Result<CompletionStats, LLMError> {
+        let manager = match app_handle.try_state::<AppState>() {
+            Some(state) => state.agent_sessions.clone(),
+            None => {
+                let msg = "Claude CLI sessions are not initialized";
+                emit_error(&app_handle, &params, msg);
+                return Err(LLMError::NotConfigured(msg.to_string()));
+            }
+        };
+        let cancel = params
+            .cancel
+            .clone()
+            .unwrap_or_else(|| Arc::new(CancelToken::new()));
+        let prompt = build_utility_prompt(&messages);
+
+        let on_delta: OnDelta = {
+            let app = app_handle.clone();
+            let params = params.clone();
+            Box::new(move |token: &str| {
+                if !token.is_empty() && !is_cancelled(&params) {
+                    emit_token(&app, &params, token, sink.as_ref());
+                }
+            })
+        };
+
+        match ask_utility(&manager, &prompt, on_delta, cancel).await {
+            Ok(turn) => {
+                if is_cancelled(&params) {
+                    return Err(LLMError::Cancelled);
+                }
+                let stats = stats_from(&turn);
+                emit_end(&app_handle, &params, stats.total_tokens, stats.latency_ms);
+                Ok(stats)
+            }
+            Err(e) => {
+                let err = to_llm_error(e);
+                // A stopped stream already got its end from `cancel_generation`.
+                if matches!(err, LLMError::Cancelled) || is_cancelled(&params) {
+                    return Err(LLMError::Cancelled);
+                }
+                emit_error(&app_handle, &params, &err.to_string());
+                Err(err)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm::cli_agent::command::SessionConfig;
+    use crate::llm::cli_agent::manager::{
+        ClaudeCliConfig, NoopStatusSink, SessionHandle, SessionSpawner,
+    };
+    use async_trait::async_trait;
+    use std::sync::{Mutex, RwLock};
+
+    fn msg(role: &str, content: &str) -> LLMMessage {
+        LLMMessage {
+            role: role.to_string(),
+            content: content.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn claude_cli_list_models_static() {
+        let models = ClaudeCliProvider::new().list_models().await.unwrap();
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["haiku", "sonnet", "opus", "fable"]);
+        let names: Vec<&str> = models.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["Claude Haiku", "Claude Sonnet", "Claude Opus", "Claude Fable"]);
+        assert!(models.iter().all(|m| m.provider == "claude_cli"));
+    }
+
+    #[test]
+    fn claude_cli_prompt_prepends_instructions() {
+        let prompt = build_utility_prompt(&[msg("system", "Be brief."), msg("user", "Hi")]);
+        assert_eq!(prompt, "## Instructions\n\nBe brief.\n\nHi");
+        // No system message: the user text goes as-is.
+        assert_eq!(build_utility_prompt(&[msg("user", "Translate x")]), "Translate x");
+    }
+
+    #[test]
+    fn claude_cli_errors_map_to_llm_errors() {
+        assert!(matches!(to_llm_error(AgentError::Cancelled), LLMError::Cancelled));
+        assert!(matches!(
+            to_llm_error(AgentError::Spawn("Claude CLI not installed: claude.exe not found".into())),
+            LLMError::NotConfigured(_)
+        ));
+        assert!(matches!(
+            to_llm_error(AgentError::Cli(AgentErrorKind::NotLoggedIn, "Not logged in".into())),
+            LLMError::AuthError(_)
+        ));
+        assert!(matches!(
+            to_llm_error(AgentError::Cli(AgentErrorKind::RateLimited, "usage limit".into())),
+            LLMError::ProviderError(_)
+        ));
+    }
+
+    /// Records what the manager spawned and asked; streams two deltas.
+    #[derive(Default)]
+    struct Recorder {
+        configs: Mutex<Vec<SessionConfig>>,
+        prompts: Mutex<Vec<String>>,
+    }
+
+    struct FakeSession(Arc<Recorder>);
+
+    #[async_trait]
+    impl SessionHandle for FakeSession {
+        async fn append_context(&self, _text: &str) -> Result<(), AgentError> {
+            Ok(())
+        }
+        async fn ask(
+            &self,
+            prompt: &str,
+            on_delta: OnDelta,
+            cancel: Arc<CancelToken>,
+        ) -> Result<TurnResult, AgentError> {
+            self.0.prompts.lock().unwrap().push(prompt.to_string());
+            if cancel.is_cancelled() {
+                return Err(AgentError::Cancelled);
+            }
+            on_delta("Hel");
+            on_delta("lo");
+            Ok(TurnResult {
+                text: "Hello".into(),
+                input_tokens: 12,
+                output_tokens: 2,
+                duration_ms: 40,
+                ..Default::default()
+            })
+        }
+        fn is_alive(&self) -> bool {
+            true
+        }
+        async fn close(&self) {}
+        fn model(&self) -> String {
+            "haiku".into()
+        }
+    }
+
+    struct FakeSpawner(Arc<Recorder>);
+
+    #[async_trait]
+    impl SessionSpawner for FakeSpawner {
+        async fn spawn(&self, cfg: SessionConfig) -> Result<Arc<dyn SessionHandle>, AgentError> {
+            self.0.configs.lock().unwrap().push(cfg);
+            Ok(Arc::new(FakeSession(self.0.clone())))
+        }
+    }
+
+    fn manager(rec: &Arc<Recorder>) -> AgentSessionManager {
+        AgentSessionManager::new(
+            Arc::new(FakeSpawner(rec.clone())),
+            Arc::new(NoopStatusSink),
+            Arc::new(RwLock::new(ClaudeCliConfig::default())),
+        )
+    }
+
+    #[tokio::test]
+    async fn claude_cli_ask_utility_reuses_one_fast_session() {
+        let rec = Arc::new(Recorder::default());
+        let mgr = manager(&rec);
+        let streamed = Arc::new(Mutex::new(String::new()));
+
+        for _ in 0..2 {
+            let out = streamed.clone();
+            let on_delta: OnDelta = Box::new(move |t: &str| out.lock().unwrap().push_str(t));
+            let turn = ask_utility(&mgr, "q", on_delta, Arc::new(CancelToken::new()))
+                .await
+                .unwrap();
+            assert_eq!(stats_from(&turn).total_tokens, 14);
+        }
+
+        let configs = rec.configs.lock().unwrap();
+        assert_eq!(configs.len(), 1, "the Utility session is spawned once");
+        assert_eq!(configs[0].model, "haiku");
+        assert_eq!(configs[0].effort, "low");
+        assert_eq!(configs[0].system_prompt, UTILITY_SYSTEM_PROMPT);
+        assert_eq!(rec.prompts.lock().unwrap().len(), 2);
+        assert_eq!(streamed.lock().unwrap().as_str(), "HelloHello");
+        assert_eq!(mgr.usage(&SessionScope::Utility).input_tokens, 24);
+    }
+
+    #[tokio::test]
+    async fn claude_cli_ask_utility_cancelled_before_ask() {
+        let rec = Arc::new(Recorder::default());
+        let mgr = manager(&rec);
+        let cancel = Arc::new(CancelToken::new());
+        cancel.cancel();
+        let err = ask_utility(&mgr, "q", Box::new(|_: &str| {}), cancel)
+            .await
+            .unwrap_err();
+        assert_eq!(err, AgentError::Cancelled);
+        assert!(rec.prompts.lock().unwrap().is_empty(), "nothing is sent once cancelled");
+    }
+}

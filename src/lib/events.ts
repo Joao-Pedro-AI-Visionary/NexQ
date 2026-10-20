@@ -4,6 +4,7 @@
 
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  AgentSessionStatus,
   AudioLevelEvent,
   BatchTranslationProgress,
   ModelDownloadProgress,
@@ -313,6 +314,15 @@ export function onOverlayMeetingReady(
 /** Ask every window to end the meeting (same path as the tray's Stop). */
 export function emitStopMeeting(): Promise<void> {
   return emit("tray_stop_meeting");
+}
+
+// == CLAUDE CLI EVENTS ==
+
+/** A Claude session changed state (starting / ready / busy / error / closed). */
+export function onAgentSessionStatus(
+  handler: (status: AgentSessionStatus) => void
+): Promise<UnlistenFn> {
+  return listen<AgentSessionStatus>("agent_session_status", (e) => handler(e.payload));
 }
 
 // Tray events are handled via raw listen() calls in App.tsx

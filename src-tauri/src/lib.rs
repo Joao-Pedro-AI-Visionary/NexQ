@@ -53,6 +53,8 @@ use commands::translation_model_commands;
 use commands::tray_commands;
 // == MODULE COMMANDS: updater ==
 use commands::updater_commands;
+// == MODULE COMMANDS: claude cli ==
+use commands::claude_cli_commands;
 
 /// Enable live blur-behind on a window via the undocumented `SetWindowCompositionAttribute`
 /// (user32). `DwmEnableBlurBehindWindow` (used automatically by tao for `transparent: true`)
@@ -655,6 +657,11 @@ pub fn run() {
             updater_commands::download_update,
             updater_commands::install_update_now,
             updater_commands::get_pending_update,
+            // == COMMANDS: claude cli ==
+            claude_cli_commands::claude_cli_status,
+            claude_cli_commands::set_claude_cli_config,
+            claude_cli_commands::get_agent_sessions,
+            claude_cli_commands::open_claude_login_terminal,
         ])
         .build(tauri::generate_context!())
         .expect("error while building NexQ")
