@@ -1,3 +1,49 @@
+# [2.22.0](https://github.com/naxhq/NexQ/compare/v2.21.1...v2.22.0) (2026-10-20)
+
+
+### Bug Fixes
+
+* **app:** launching NexQ again during a meeting shows the overlay ([c354625](https://github.com/naxhq/NexQ/commit/c354625e663d68a34f8fa89b41218665df3e72e0))
+* **claude-cli:** drop-safe manager ask and atomic idle reaping ([9517f11](https://github.com/naxhq/NexQ/commit/9517f11ca9ffd618a09e2bb4173e31ff48da6f12))
+* **claude-cli:** identity delta cursor; benign close; rate-limit backoff; overflow recovery ([cf54ad5](https://github.com/naxhq/NexQ/commit/cf54ad5b7a337a28262e2e1c19af4683611e53a0))
+* **claude-cli:** per-segment ids everywhere; close races; classification order ([0505de4](https://github.com/naxhq/NexQ/commit/0505de4581bd094682f1cf1f94bd2b3cd15abad1))
+* **claude-cli:** recycle utility session; robust login launch ([3bdb088](https://github.com/naxhq/NexQ/commit/3bdb088761bbe2736bd2f2c629810e6ddb2058dd))
+* **claude:** never recreate an ended meeting's session from an in-flight request ([1a5a875](https://github.com/naxhq/NexQ/commit/1a5a8756a08f6c083a667b46ecebf0f979aebfac))
+* **claude:** never show an API-billed login as connected; detect npm installs ([d0b1a02](https://github.com/naxhq/NexQ/commit/d0b1a02bac5887cc16e727e383f44c4080ac7de8))
+* **launcher:** make rename cancel authoritative ([64fe873](https://github.com/naxhq/NexQ/commit/64fe8734534d2cc88ac50e659ae80a86f7eaf6e7))
+* **launcher:** renaming a meeting from the list now saves ([5940e06](https://github.com/naxhq/NexQ/commit/5940e06b5edc830cacbb85729871cfc07a8a5870))
+* **llm:** awaitable cancel token; no stray end/error after stop ([023e323](https://github.com/naxhq/NexQ/commit/023e3233abd1b42f258bc502fb4372b73a6283ae))
+* **llm:** cancel stops in-flight streams ([c5c86a1](https://github.com/naxhq/NexQ/commit/c5c86a12b2a7c30d005bb7ce580b4b5ff11d8895))
+* **llm:** no wrong-provider fallback; embed test manifest; browse without activating ([4d00206](https://github.com/naxhq/NexQ/commit/4d002063a99056dc544da6546e21967f51b2b8bd))
+* **llm:** provider browsing and tests no longer switch active provider ([f7b33d2](https://github.com/naxhq/NexQ/commit/f7b33d26d3ef84cace599042595924d9e15f0e01))
+* **llm:** request-scoped streams; stop translation token leakage ([49daf37](https://github.com/naxhq/NexQ/commit/49daf37256fe9abf13a2ed7e6cf3fc0bb401ba44))
+* **meeting:** end an overlay-held meeting in every window from the launcher ([5917d49](https://github.com/naxhq/NexQ/commit/5917d499d832178edcb1bb719830bbebc7d7a08c))
+* **meetings:** single authoritative window persists speaker data ([bd132e5](https://github.com/naxhq/NexQ/commit/bd132e567df95ecacd738cc4885aaa18175ce311))
+* **settings:** remember models per provider; settings edge cases ([6590a94](https://github.com/naxhq/NexQ/commit/6590a943cf71b8c7ddeb5178b9236280d411fadb))
+* **tray:** prevent second app instance and duplicate tray icon ([d52c4f7](https://github.com/naxhq/NexQ/commit/d52c4f7ccbd555a34233a94862dba012e1d66923))
+* **ui:** reliable fallback toast window; usage-limit state from error kind ([a615b23](https://github.com/naxhq/NexQ/commit/a615b230a6cb102708bc2378065b64f46e62d65e))
+* **updater:** installing on quit no longer reopens NexQ ([2b4cd4a](https://github.com/naxhq/NexQ/commit/2b4cd4a0c787c7e20a321a6e4493d074fb783954))
+* **updater:** never lose meeting data when updating ([df334d2](https://github.com/naxhq/NexQ/commit/df334d26cd28fee4909a03a33d4e7367efe7fd8c))
+
+
+### Features
+
+* **claude-cli:** persistent hidden claude session with FIFO turns ([02c096d](https://github.com/naxhq/NexQ/commit/02c096d466dc8c4eb0dcefc30d61fcffa359f9b5))
+* **claude-cli:** provider type, status and config commands ([9c200cb](https://github.com/naxhq/NexQ/commit/9c200cbbdca4050617abc54cef4731f47fc1d90f))
+* **claude-cli:** session manager, delta cursor and preload builders ([7706758](https://github.com/naxhq/NexQ/commit/77067584098f11a5b1098f711cd29e6c13220fec))
+* **claude-cli:** stream-json protocol, detection and launch args ([be4e677](https://github.com/naxhq/NexQ/commit/be4e67726c0cc1d12c4e0e7f40e4df7e9f24d8ae))
+* **claude-cli:** warm meeting sessions with delta prompts and fallback ([7ffe316](https://github.com/naxhq/NexQ/commit/7ffe316a01d0714caad38d31e5b441c9653c84da))
+* **meetings:** ask a past meeting with saved chat history ([c9beab0](https://github.com/naxhq/NexQ/commit/c9beab0e1c4005f0d4cd9317e298700455398c97))
+* **settings:** Claude subscription provider settings (beta) ([f866004](https://github.com/naxhq/NexQ/commit/f8660040876bb62a56e1a0fbb40f7fab5c84b99e))
+* **ui:** Claude session status and usage in footer ([0ec7770](https://github.com/naxhq/NexQ/commit/0ec77705d2c5c97cf64212798ea4fd1e73fa0464))
+* **updater:** silent background updates with restart pill and install on quit ([3eb1f04](https://github.com/naxhq/NexQ/commit/3eb1f0472ebf7f16384d24c7499bb9fc6f7c382f))
+
+
+### Performance Improvements
+
+* **meeting-details:** virtualize transcript and keep tabs mounted ([b215f20](https://github.com/naxhq/NexQ/commit/b215f20145df00715028e0843735d2013b89a88d))
+* **player:** cache waveform layer and cap peaks ([ac0c684](https://github.com/naxhq/NexQ/commit/ac0c6848b27f4b725479013b1727a7903829ae7d))
+* **player:** stream audio via asset protocol and throttle playback time ([1a5c535](https://github.com/naxhq/NexQ/commit/1a5c535340faef60c848a3e1f4dbab8bdf0823f4))
 ## [2.21.1](https://github.com/naxhq/NexQ/compare/v2.21.0...v2.21.1) (2026-09-28)
 
 
