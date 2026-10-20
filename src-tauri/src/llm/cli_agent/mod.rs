@@ -4,7 +4,9 @@
 //! Only `Claude` has spawning code; `Gemini` and `Codex` are placeholders.
 
 pub mod command;
+pub mod context;
 pub mod detect;
+pub mod manager;
 pub mod protocol;
 pub mod session;
 

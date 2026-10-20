@@ -4,7 +4,7 @@
 //! Configuration travels inside the system prompt file (`--system-prompt-file`),
 //! one `key=value` directive per line, because the session strips/controls the
 //! child environment and parallel tests cannot share process env vars:
-//! - `fake_mode=normal|slow|crash_mid_turn` (default `normal`)
+//! - `fake_mode=normal|slow|crash_mid_turn|hang` (default `normal`)
 //! - `fake_record=<path>`: every stdin line received is appended to this file.
 //!
 //! Behaviour:
@@ -17,6 +17,8 @@
 //!   result with text `<msg>`. Any other query `q`: `answer:<q>` in 3-char deltas.
 //! - `slow`: one delta per character, 100 ms apart.
 //! - `crash_mid_turn`: exits with code 1 right after the first delta.
+//! - `hang`: after the first delta, sleeps forever without exiting or
+//!   printing anything (a wedged CLI).
 //! - stdin EOF: exits 0.
 
 use serde_json::{json, Value};
@@ -124,6 +126,12 @@ fn main() {
             if mode == "crash_mid_turn" {
                 eprintln!("fake_claude: crashing mid-turn");
                 std::process::exit(1);
+            }
+            if mode == "hang" {
+                eprintln!("fake_claude: hanging mid-turn");
+                loop {
+                    std::thread::sleep(Duration::from_secs(3600));
+                }
             }
             if mode == "slow" {
                 std::thread::sleep(Duration::from_millis(100));

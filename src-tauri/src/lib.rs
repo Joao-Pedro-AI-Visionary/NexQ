@@ -326,6 +326,16 @@ pub fn run() {
             app_state.opus_mt_manager = Some(Arc::new(Mutex::new(opus_mt_mgr)));
             log::info!("OPUS-MT model manager initialized");
 
+            // -- Claude CLI session manager (sessions start lazily) --
+            app_state.agent_sessions = Arc::new(llm::cli_agent::manager::AgentSessionManager::new(
+                Arc::new(llm::cli_agent::manager::ClaudeSpawner),
+                Arc::new(llm::cli_agent::manager::TauriStatusSink(app.handle().clone())),
+                app_state.claude_cli_config.clone(),
+            ));
+            tauri::async_runtime::spawn(llm::cli_agent::manager::run_idle_reaper(
+                app_state.agent_sessions.clone(),
+            ));
+
             app.manage(app_state);
 
             // -- Auto-detect first Ollama model in background --
@@ -656,6 +666,13 @@ pub fn run() {
                 if *code != Some(tauri::RESTART_EXIT_CODE) {
                     updater_commands::on_exit_requested(app, api);
                 }
+            }
+            // Close Claude CLI sessions (each gets 2 s, in parallel). If the
+            // process exits elsewhere (e.g. inside an update install), the
+            // children still see stdin EOF and exit on their own.
+            if let tauri::RunEvent::Exit = &event {
+                let sessions = app.state::<AppState>().agent_sessions.clone();
+                tauri::async_runtime::block_on(sessions.close_all());
             }
         });
 }

@@ -9,6 +9,9 @@ use crate::tray::TrayManager;
 use crate::credentials::CredentialManager;
 use crate::db::DatabaseManager;
 use crate::intelligence::IntelligenceEngine;
+use crate::llm::cli_agent::manager::{
+    AgentSessionManager, ClaudeCliConfig, ClaudeSpawner, NoopStatusSink,
+};
 use crate::llm::gemini_cache::CachedContent;
 use crate::llm::openrouter_models::OpenRouterModelCache;
 use crate::llm::LLMRouter;
@@ -113,10 +116,16 @@ pub struct AppState {
     pub meeting_active: Arc<AtomicBool>,
     /// Post-meeting recording pipelines still running (WAV → Opus + DB update).
     pub recording_jobs: Arc<AtomicUsize>,
+    /// Claude CLI sessions (live / past meeting / utility). `setup` replaces
+    /// this with one that emits `agent_session_status` to the app.
+    pub agent_sessions: Arc<AgentSessionManager>,
+    /// Claude CLI model settings, read whenever a session is spawned.
+    pub claude_cli_config: Arc<RwLock<ClaudeCliConfig>>,
 }
 
 impl AppState {
     pub fn new() -> Self {
+        let claude_cli_config = Arc::new(RwLock::new(ClaudeCliConfig::default()));
         Self {
             database: None,
             audio: Arc::new(Mutex::new(Some(AudioCaptureManager::new()))),
@@ -146,6 +155,12 @@ impl AppState {
             update_downloading: Arc::new(AtomicBool::new(false)),
             meeting_active: Arc::new(AtomicBool::new(false)),
             recording_jobs: Arc::new(AtomicUsize::new(0)),
+            agent_sessions: Arc::new(AgentSessionManager::new(
+                Arc::new(ClaudeSpawner),
+                Arc::new(NoopStatusSink),
+                claude_cli_config.clone(),
+            )),
+            claude_cli_config,
         }
     }
 }

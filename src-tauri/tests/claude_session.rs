@@ -7,7 +7,7 @@
 use nexq_lib::llm::cli_agent::command::SessionConfig;
 use nexq_lib::llm::cli_agent::detect::find_claude_binary;
 use nexq_lib::llm::cli_agent::protocol::AgentErrorKind;
-use nexq_lib::llm::cli_agent::session::{AgentError, ClaudeSession};
+use nexq_lib::llm::cli_agent::session::{AgentError, ClaudeSession, SessionTimeouts};
 use nexq_lib::llm::provider::CancelToken;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -243,6 +243,78 @@ async fn error_result_maps_to_cli_error() {
     assert_eq!(
         session.ask("ok", on_delta, token()).await.unwrap().text,
         "answer:ok"
+    );
+    session.close().await;
+}
+
+/// `spawn` with short hang guards.
+async fn spawn_hanging(inactivity: Duration, drain: Duration) -> ClaudeSession {
+    let timeouts = SessionTimeouts {
+        inactivity,
+        drain,
+        ..SessionTimeouts::default()
+    };
+    ClaudeSession::spawn_with_timeouts(fake_bin(), cfg("hang", None), timeouts)
+        .await
+        .expect("spawn fake")
+}
+
+#[tokio::test]
+async fn hung_turn_times_out_and_session_dies() {
+    let session = spawn_hanging(Duration::from_secs(1), Duration::from_secs(30)).await;
+    let (buf, on_delta) = collector();
+    let started = Instant::now();
+    let result = tokio::time::timeout(Duration::from_secs(10), session.ask("x", on_delta, token()))
+        .await
+        .expect("hung turn never returned");
+    assert_eq!(result, Err(AgentError::Timeout));
+    assert!(
+        started.elapsed() >= Duration::from_millis(900),
+        "timed out early: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        *buf.lock().unwrap(),
+        "ans",
+        "first delta should have streamed"
+    );
+    assert!(!session.is_alive(), "hung session must be reported dead");
+    // Later turns fail fast instead of queueing behind the hung one.
+    let (_, on_delta) = collector();
+    let again =
+        tokio::time::timeout(Duration::from_secs(2), session.ask("y", on_delta, token())).await;
+    assert!(
+        matches!(again, Ok(Err(AgentError::Crashed(_)))),
+        "got {again:?}"
+    );
+    session.close().await;
+}
+
+#[tokio::test]
+async fn cancelled_turn_that_never_finishes_is_killed_after_drain_limit() {
+    let session = spawn_hanging(Duration::from_secs(30), Duration::from_secs(1)).await;
+    let cancel = token();
+    let trigger = cancel.clone();
+    let on_delta = Box::new(move |_: &str| trigger.cancel());
+    let first = tokio::time::timeout(Duration::from_secs(5), session.ask("x", on_delta, cancel))
+        .await
+        .expect("cancel did not return");
+    assert_eq!(first, Err(AgentError::Cancelled));
+    assert!(session.is_alive(), "still draining right after cancel");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while session.is_alive() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        !session.is_alive(),
+        "drain limit did not kill the hung session"
+    );
+    let (_, on_delta) = collector();
+    let again =
+        tokio::time::timeout(Duration::from_secs(2), session.ask("y", on_delta, token())).await;
+    assert!(
+        matches!(again, Ok(Err(AgentError::Crashed(_)))),
+        "got {again:?}"
     );
     session.close().await;
 }

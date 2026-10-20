@@ -1,0 +1,310 @@
+//! Pure builders for session-aware Claude CLI requests: the per-session delta
+//! cursor, the preload messages a fresh session is given (`shouldQuery:false`)
+//! and the delta prompt each AI task sends.
+
+/// One final transcript segment. `timestamp_ms` is milliseconds since the
+/// meeting started (callers convert from wall-clock time), shown as `[mm:ss]`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Seg {
+    pub text: String,
+    pub speaker: String,
+    pub timestamp_ms: u64,
+}
+
+/// How many of a meeting's final segments a session has already been sent.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DeltaCursor {
+    sent: usize,
+}
+
+impl DeltaCursor {
+    /// The segments not yet sent (`finals[sent..]`), marking them sent. If the
+    /// list shrank (e.g. a different transcript), start over and return all.
+    pub fn take_new<'a>(&mut self, finals: &'a [Seg]) -> &'a [Seg] {
+        if finals.len() < self.sent {
+            self.sent = 0;
+        }
+        let new = &finals[self.sent..];
+        self.sent = finals.len();
+        new
+    }
+
+    /// Number of segments already sent.
+    pub fn sent(&self) -> usize {
+        self.sent
+    }
+}
+
+const SUMMARY_HEADER: &str = "## Meeting summary";
+const TRANSCRIPT_HEADER: &str = "## Meeting transcript";
+/// Room kept in every chunk for " (part N of M)" and the newline after the header.
+const PART_SUFFIX_RESERVE: usize = 32;
+
+/// Build the context messages for a fresh session: the summary (if any) and
+/// the transcript as `[mm:ss] Speaker: text` lines, each message at most
+/// `max_chars` characters (headers included). Empty input gives no messages.
+pub fn build_preload_messages(
+    transcript: &[Seg],
+    summary: Option<&str>,
+    max_chars: usize,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(summary) = summary.map(str::trim).filter(|s| !s.is_empty()) {
+        push_chunked(
+            &mut out,
+            SUMMARY_HEADER,
+            summary.lines().map(str::to_string),
+            max_chars,
+        );
+    }
+    if !transcript.is_empty() {
+        push_chunked(
+            &mut out,
+            TRANSCRIPT_HEADER,
+            transcript.iter().map(format_line),
+            max_chars,
+        );
+    }
+    out
+}
+
+/// The user message for one AI task on a session that already holds the
+/// meeting: only the new transcript (section omitted when empty), the task
+/// instructions and the question(s). Blank optional parts are left out.
+pub fn build_delta_prompt(
+    new_segments: &[Seg],
+    task_instructions: &str,
+    question: Option<&str>,
+    detected_question: Option<&str>,
+) -> String {
+    let mut sections = Vec::new();
+    if !new_segments.is_empty() {
+        let lines: Vec<String> = new_segments.iter().map(format_line).collect();
+        sections.push(format!(
+            "## New transcript since last request\n{}",
+            lines.join("\n")
+        ));
+    }
+    for (header, body) in [
+        ("## Task instructions", Some(task_instructions)),
+        ("## Question", question),
+        ("## Detected question", detected_question),
+    ] {
+        if let Some(body) = body.map(str::trim).filter(|b| !b.is_empty()) {
+            sections.push(format!("{header}\n{body}"));
+        }
+    }
+    sections.join("\n\n")
+}
+
+/// `[mm:ss] Speaker: text` on one line (minutes keep counting past 59).
+fn format_line(seg: &Seg) -> String {
+    let secs = seg.timestamp_ms / 1000;
+    let text = seg.text.trim().replace(['\r', '\n'], " ");
+    format!(
+        "[{:02}:{:02}] {}: {}",
+        secs / 60,
+        secs % 60,
+        seg.speaker,
+        text
+    )
+}
+
+/// Pack `lines` into messages of at most `max_chars` characters, each starting
+/// with `header` (plus "(part i of n)" when there are several). A line longer
+/// than the room left after the header is split. Assumes `max_chars` is well
+/// above the header length (callers use ~100k).
+fn push_chunked(
+    out: &mut Vec<String>,
+    header: &str,
+    lines: impl Iterator<Item = String>,
+    max_chars: usize,
+) {
+    let budget = max_chars
+        .saturating_sub(header.chars().count() + PART_SUFFIX_RESERVE)
+        .max(1);
+    let mut bodies: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_len = 0usize;
+    let mut started = false;
+    for line in lines {
+        for piece in split_to_fit(&line, budget) {
+            let piece_len = piece.chars().count();
+            if started && current_len + 1 + piece_len > budget {
+                bodies.push(std::mem::take(&mut current));
+                current_len = 0;
+                started = false;
+            }
+            if started {
+                current.push('\n');
+                current_len += 1;
+            }
+            current.push_str(&piece);
+            current_len += piece_len;
+            started = true;
+        }
+    }
+    if started {
+        bodies.push(current);
+    }
+    let n = bodies.len();
+    for (i, body) in bodies.into_iter().enumerate() {
+        let head = if n == 1 {
+            header.to_string()
+        } else {
+            format!("{header} (part {} of {n})", i + 1)
+        };
+        out.push(format!("{head}\n{body}"));
+    }
+}
+
+/// `line` as pieces of at most `budget` characters.
+fn split_to_fit(line: &str, budget: usize) -> Vec<String> {
+    if line.chars().count() <= budget {
+        return vec![line.to_string()];
+    }
+    let chars: Vec<char> = line.chars().collect();
+    chars.chunks(budget).map(|c| c.iter().collect()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn seg(text: &str, speaker: &str, timestamp_ms: u64) -> Seg {
+        Seg {
+            text: text.into(),
+            speaker: speaker.into(),
+            timestamp_ms,
+        }
+    }
+
+    #[test]
+    fn cursor_sends_only_new() {
+        let (a, b, c, x) = (
+            seg("a", "You", 0),
+            seg("b", "Them", 1),
+            seg("c", "You", 2),
+            seg("x", "Them", 3),
+        );
+        let mut cursor = DeltaCursor::default();
+        assert_eq!(
+            cursor.take_new(&[a.clone(), b.clone()]),
+            &[a.clone(), b.clone()]
+        );
+        assert_eq!(
+            cursor.take_new(&[a.clone(), b.clone(), c.clone()]),
+            &[c.clone()]
+        );
+        assert_eq!(cursor.sent(), 3);
+        assert!(cursor.take_new(&[a, b, c]).is_empty());
+        // Shorter than what was sent: reset and send everything.
+        assert_eq!(cursor.take_new(&[x.clone()]), &[x]);
+        assert_eq!(cursor.sent(), 1);
+    }
+
+    #[test]
+    fn preload_empty() {
+        assert_eq!(
+            build_preload_messages(&[], None, 100_000),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            build_preload_messages(&[], Some("  \n "), 100_000),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn preload_labels_speaker_and_time() {
+        let msgs = build_preload_messages(
+            &[
+                seg("Hello there", "You", 65_400),
+                seg("Hi\nagain", "Them", 3_725_000),
+            ],
+            Some("Short summary."),
+            100_000,
+        );
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0], "## Meeting summary\nShort summary.");
+        assert_eq!(
+            msgs[1],
+            "## Meeting transcript\n[01:05] You: Hello there\n[62:05] Them: Hi again"
+        );
+    }
+
+    #[test]
+    fn preload_chunks_long_transcript() {
+        let segs: Vec<Seg> = (0..30_000u64)
+            .map(|i| {
+                let text = format!("segment number {i:06} with filler text..");
+                assert_eq!(text.len(), 40);
+                seg(&text, if i % 2 == 0 { "You" } else { "Them" }, i * 1_000)
+            })
+            .collect();
+        let msgs = build_preload_messages(&segs, None, 100_000);
+        assert!(
+            msgs.len() > 1,
+            "expected several chunks, got {}",
+            msgs.len()
+        );
+        for (i, m) in msgs.iter().enumerate() {
+            let n = m.chars().count();
+            assert!(n <= 100_000, "chunk {i} has {n} chars");
+            assert!(m.starts_with(&format!(
+                "## Meeting transcript (part {} of {})\n",
+                i + 1,
+                msgs.len()
+            )));
+        }
+        let lines: Vec<&str> = msgs.iter().flat_map(|m| m.lines().skip(1)).collect();
+        assert_eq!(lines.len(), segs.len());
+        for (line, s) in lines.iter().zip(&segs) {
+            let secs = s.timestamp_ms / 1000;
+            let expected = format!(
+                "[{:02}:{:02}] {}: {}",
+                secs / 60,
+                secs % 60,
+                s.speaker,
+                s.text
+            );
+            assert_eq!(*line, expected);
+        }
+    }
+
+    #[test]
+    fn preload_splits_a_line_longer_than_the_cap() {
+        let long = "y".repeat(450);
+        let msgs = build_preload_messages(&[seg(&long, "You", 0)], None, 200);
+        assert!(msgs.len() > 1);
+        assert!(msgs.iter().all(|m| m.chars().count() <= 200));
+        let body: String = msgs.iter().flat_map(|m| m.lines().skip(1)).collect();
+        assert_eq!(body, format!("[00:00] You: {long}"));
+    }
+
+    #[test]
+    fn delta_prompt_omits_empty_transcript_section() {
+        let p = build_delta_prompt(&[], "Answer briefly.", Some("What next?"), None);
+        assert!(!p.contains("## New transcript since last request"));
+        assert_eq!(
+            p,
+            "## Task instructions\nAnswer briefly.\n\n## Question\nWhat next?"
+        );
+    }
+
+    #[test]
+    fn delta_prompt_has_all_sections_in_order() {
+        let p = build_delta_prompt(
+            &[seg("We ship Friday", "Them", 61_000)],
+            "Suggest a reply.",
+            Some("  "),
+            Some("When do we ship?"),
+        );
+        assert_eq!(
+            p,
+            "## New transcript since last request\n[01:01] Them: We ship Friday\n\n\
+             ## Task instructions\nSuggest a reply.\n\n\
+             ## Detected question\nWhen do we ship?"
+        );
+    }
+}

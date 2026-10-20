@@ -18,7 +18,7 @@ use super::protocol::{
 };
 use crate::llm::provider::CancelToken;
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,12 +26,34 @@ use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex as AsyncMutex, OwnedMutexGuard};
 
-const INIT_TIMEOUT: Duration = Duration::from_secs(20);
-/// `shouldQuery:false` turns make no model call and answer at once; this only
-/// guards against a hung process.
-const APPEND_TIMEOUT: Duration = Duration::from_secs(30);
 const CLOSE_GRACE: Duration = Duration::from_secs(2);
 const STDERR_TAIL_LINES: usize = 20;
+
+/// Guards against a hung `claude` process. A session that hits `append`,
+/// `inactivity` or `drain` is killed (reported dead), so the next `ensure`
+/// starts a fresh one instead of every request hanging behind it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionTimeouts {
+    /// Spawn until `system/init` and the priming `result`.
+    pub init: Duration,
+    /// Whole `append_context` turn (`shouldQuery:false` answers at once).
+    pub append: Duration,
+    /// Longest gap between two events while a turn is running.
+    pub inactivity: Duration,
+    /// After a cancelled `ask`, how long its turn may take to reach `result`.
+    pub drain: Duration,
+}
+
+impl Default for SessionTimeouts {
+    fn default() -> Self {
+        Self {
+            init: Duration::from_secs(20),
+            append: Duration::from_secs(30),
+            inactivity: Duration::from_secs(90),
+            drain: Duration::from_secs(60),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum AgentError {
@@ -100,6 +122,17 @@ impl Shared {
             )
         }
     }
+
+    /// Kill an unresponsive process; `reason` becomes its crash reason.
+    fn terminate(&self, reason: &str) {
+        log::warn!("claude session unresponsive ({reason}); killing it");
+        *self.exit_status.lock().unwrap() = Some(reason.to_string());
+        self.alive.store(false, Ordering::SeqCst);
+        if let Some(mut child) = self.child.lock().unwrap().take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 enum TurnMsg {
@@ -115,6 +148,7 @@ pub struct ClaudeSession {
     /// The FIFO turn lock; the holder owns the current turn's events.
     turn: Arc<AsyncMutex<mpsc::UnboundedReceiver<AgentEvent>>>,
     prompt_file: PathBuf,
+    timeouts: SessionTimeouts,
 }
 
 impl ClaudeSession {
@@ -127,6 +161,15 @@ impl ClaudeSession {
     /// empty `shouldQuery:false` message: no model call, just init + an empty
     /// `result`.
     pub async fn spawn(bin: PathBuf, cfg: SessionConfig) -> Result<ClaudeSession, AgentError> {
+        Self::spawn_with_timeouts(bin, cfg, SessionTimeouts::default()).await
+    }
+
+    /// [`spawn`](Self::spawn) with custom hang guards (tests use short ones).
+    pub async fn spawn_with_timeouts(
+        bin: PathBuf,
+        cfg: SessionConfig,
+        timeouts: SessionTimeouts,
+    ) -> Result<ClaudeSession, AgentError> {
         let prompt_file =
             std::env::temp_dir().join(format!("nexq-claude-sp-{}.txt", uuid::Uuid::new_v4()));
         std::fs::write(&prompt_file, &cfg.system_prompt).map_err(|e| {
@@ -155,9 +198,10 @@ impl ClaudeSession {
             stdin_tx: Mutex::new(Some(stdin_tx)),
             turn: Arc::new(AsyncMutex::new(events)),
             prompt_file,
+            timeouts,
         };
 
-        let init = tokio::time::timeout(INIT_TIMEOUT, session.prime())
+        let init = tokio::time::timeout(timeouts.init, session.prime())
             .await
             .unwrap_or(Err(AgentError::Timeout));
 
@@ -183,9 +227,16 @@ impl ClaudeSession {
                 }
             }
         };
-        let result = tokio::time::timeout(APPEND_TIMEOUT, wait)
-            .await
-            .unwrap_or(Err(AgentError::Timeout));
+        let result = match tokio::time::timeout(self.timeouts.append, wait).await {
+            Ok(result) => result,
+            Err(_) => {
+                self.shared.terminate(&format!(
+                    "no reply to context message within {} s",
+                    self.timeouts.append.as_secs()
+                ));
+                Err(AgentError::Timeout)
+            }
+        };
         into_outcome(result).map(|_| ())
     }
 
@@ -315,7 +366,7 @@ impl ClaudeSession {
         }
         self.send_line(user_message(text, query))?;
         let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(drive_turn(guard, tx, self.shared.clone()));
+        tokio::spawn(drive_turn(guard, tx, self.shared.clone(), self.timeouts));
         Ok(rx)
     }
 }
@@ -335,20 +386,49 @@ impl Drop for ClaudeSession {
 }
 
 /// Forward one turn's deltas until its `result` (or process exit), then
-/// release the turn lock. Keeps draining after the receiver is gone.
+/// release the turn lock. Keeps draining after the receiver is gone (a
+/// cancelled `ask`), but at most `timeouts.drain`. No event for
+/// `timeouts.inactivity`, or a drain that runs out, kills the process and
+/// ends the turn with `Timeout`.
 async fn drive_turn(
     mut events: OwnedMutexGuard<mpsc::UnboundedReceiver<AgentEvent>>,
     tx: mpsc::UnboundedSender<TurnMsg>,
     shared: Arc<Shared>,
+    timeouts: SessionTimeouts,
 ) {
+    let mut drain_deadline: Option<tokio::time::Instant> = None;
     let outcome = loop {
-        match events.recv().await {
-            Some(AgentEvent::TextDelta(text)) => {
-                let _ = tx.send(TurnMsg::Delta(text));
+        let wait = match drain_deadline {
+            Some(deadline) => timeouts
+                .inactivity
+                .min(deadline.saturating_duration_since(tokio::time::Instant::now())),
+            None => timeouts.inactivity,
+        };
+        tokio::select! {
+            event = tokio::time::timeout(wait, events.recv()) => match event {
+                Ok(Some(AgentEvent::TextDelta(text))) => {
+                    let _ = tx.send(TurnMsg::Delta(text));
+                }
+                Ok(Some(AgentEvent::TurnComplete(result))) => break Ok(result),
+                Ok(Some(_)) => {}
+                Ok(None) => break Err(AgentError::Crashed(shared.crash_reason())),
+                Err(_) => {
+                    let drained_out = drain_deadline
+                        .is_some_and(|deadline| tokio::time::Instant::now() >= deadline);
+                    shared.terminate(&if drained_out {
+                        format!(
+                            "cancelled turn did not finish within {} s",
+                            timeouts.drain.as_secs()
+                        )
+                    } else {
+                        format!("no output for {} s", timeouts.inactivity.as_secs())
+                    });
+                    break Err(AgentError::Timeout);
+                }
+            },
+            _ = tx.closed(), if drain_deadline.is_none() => {
+                drain_deadline = Some(tokio::time::Instant::now() + timeouts.drain);
             }
-            Some(AgentEvent::TurnComplete(result)) => break Ok(result),
-            Some(_) => {}
-            None => break Err(AgentError::Crashed(shared.crash_reason())),
         }
     };
     let _ = tx.send(TurnMsg::Done(outcome));
@@ -408,11 +488,21 @@ fn start_process(bin: &Path, args: &[String]) -> Result<Started, AgentError> {
     let (stdin_tx, stdin_rx) = std_mpsc::channel::<String>();
     let (event_tx, event_rx) = mpsc::unbounded_channel();
 
-    let spawn_thread = |name: &str, f: Box<dyn FnOnce() + Send>| {
+    // A pipe thread that fails to start must not leave the child running.
+    let kill_shared = shared.clone();
+    let spawn_thread = move |name: &str, f: Box<dyn FnOnce() + Send>| {
         std::thread::Builder::new()
             .name(name.to_string())
             .spawn(f)
-            .map_err(|e| AgentError::Spawn(format!("cannot start {name} thread: {e}")))
+            .map(|_| ())
+            .map_err(|e| {
+                if let Some(mut child) = kill_shared.child.lock().unwrap().take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                kill_shared.alive.store(false, Ordering::SeqCst);
+                AgentError::Spawn(format!("cannot start {name} thread: {e}"))
+            })
     };
 
     spawn_thread(
@@ -437,19 +527,18 @@ fn start_process(bin: &Path, args: &[String]) -> Result<Started, AgentError> {
     spawn_thread(
         "claude-stderr",
         Box::new(move || {
-            for line in BufReader::new(stderr).lines() {
-                let Ok(line) = line else { break };
-                let line = line.trim_end().to_string();
+            let _ = for_each_line(stderr, |line| {
+                let line = line.trim_end();
                 if line.is_empty() {
-                    continue;
+                    return;
                 }
                 log::debug!("claude stderr: {line}");
                 let mut tail = err_shared.stderr_tail.lock().unwrap();
                 if tail.len() == STDERR_TAIL_LINES {
                     tail.pop_front();
                 }
-                tail.push_back(line);
-            }
+                tail.push_back(line.to_string());
+            });
             err_shared.stderr_done.store(true, Ordering::SeqCst);
         }),
     )?;
@@ -458,21 +547,17 @@ fn start_process(bin: &Path, args: &[String]) -> Result<Started, AgentError> {
     spawn_thread(
         "claude-stdout",
         Box::new(move || {
-            for line in BufReader::new(stdout).lines() {
-                let line = match line {
-                    Ok(l) => l,
-                    Err(e) => {
-                        log::warn!("claude stdout read failed: {e}");
-                        break;
-                    }
-                };
-                match parse_line(&line) {
-                    Ok(AgentEvent::Other) => {}
-                    Ok(event) => {
-                        let _ = event_tx.send(event);
-                    }
-                    Err(e) => log::warn!("claude stdout: skipping unparseable line ({e})"),
+            // `Other` events (status, thinking deltas, ...) are forwarded too:
+            // turn drivers ignore them, but they prove the CLI is still alive
+            // for the inactivity watchdog during long thinking phases.
+            let read = for_each_line(stdout, |line| match parse_line(line) {
+                Ok(event) => {
+                    let _ = event_tx.send(event);
                 }
+                Err(e) => log::warn!("claude stdout: skipping unparseable line ({e})"),
+            });
+            if let Err(e) = read {
+                log::warn!("claude stdout read failed: {e}");
             }
             record_exit(&out_shared);
             out_shared.alive.store(false, Ordering::SeqCst);
@@ -481,6 +566,22 @@ fn start_process(bin: &Path, args: &[String]) -> Result<Started, AgentError> {
     )?;
 
     Ok((shared, stdin_tx, event_rx))
+}
+
+/// Call `f` with every line of `reader` (without the line ending) until EOF.
+/// Invalid UTF-8 is replaced rather than ending the stream, so one bad byte
+/// never stops a pipe from being drained.
+fn for_each_line(reader: impl Read, mut f: impl FnMut(&str)) -> std::io::Result<()> {
+    let mut reader = BufReader::new(reader);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        if reader.read_until(b'\n', &mut buf)? == 0 {
+            return Ok(());
+        }
+        let line = String::from_utf8_lossy(&buf);
+        f(line.trim_end_matches(['\r', '\n']));
+    }
 }
 
 /// After stdout EOF: record the exit status and let stderr finish (both
@@ -533,6 +634,16 @@ mod tests {
             AgentError::Cli(AgentErrorKind::RateLimited, "x".into()).kind(),
             AgentErrorKind::RateLimited
         );
+    }
+
+    #[test]
+    fn line_reader_survives_invalid_utf8() {
+        let mut lines = Vec::new();
+        for_each_line(&b"a\n\xff\xfeb\r\n{\"x\":1}"[..], |l| {
+            lines.push(l.to_string())
+        })
+        .unwrap();
+        assert_eq!(lines, vec!["a", "\u{FFFD}\u{FFFD}b", "{\"x\":1}"]);
     }
 
     #[test]
