@@ -34,6 +34,7 @@ import type {
   AgentSessionStatus,
   ClaudeCliConfig,
   ClaudeCliStatus,
+  MeetingChatMessage,
 } from "./types";
 
 // == IPC: Audio (Sub-PRD 3) ==
@@ -763,4 +764,20 @@ export async function startPastMeetingSession(meetingId: string): Promise<void> 
 /** Close the Claude session of a past meeting (meeting view left). */
 export async function closePastMeetingSession(meetingId: string): Promise<void> {
   return invoke("close_past_meeting_session", { meetingId });
+}
+
+// == IPC: Ask this meeting ==
+
+/**
+ * Ask a question about a past meeting. The answer streams through the
+ * `llm_stream_*` events tagged with `requestId` — subscribe before calling.
+ * Resolves once the answer is saved (stop with `cancelGeneration`).
+ */
+export async function askMeeting(meetingId: string, question: string, requestId: string): Promise<void> {
+  return invoke("ask_meeting", { meetingId, question, requestId });
+}
+
+/** The meeting's saved "Ask this meeting" chat, oldest first. */
+export async function listMeetingChat(meetingId: string): Promise<MeetingChatMessage[]> {
+  return invoke<MeetingChatMessage[]>("list_meeting_chat", { meetingId });
 }

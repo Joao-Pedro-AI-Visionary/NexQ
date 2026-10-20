@@ -17,6 +17,7 @@ const PAST_MEETING_MODES: ReadonlySet<string> = new Set([
   "MeetingSummary",
   "ActionItemsExtraction",
   "BookmarkSuggestions",
+  "MeetingAsk",
 ]);
 
 /**

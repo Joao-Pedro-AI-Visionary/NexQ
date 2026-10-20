@@ -12,6 +12,7 @@ pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
     v4_bookmark_segment_id(conn)?;
     v5_recording_columns(conn)?;
     v6_translation_schema(conn)?;
+    v7_meeting_chat(conn)?;
 
     log::info!("Database migrations completed successfully");
     Ok(())
@@ -222,6 +223,28 @@ fn v6_translation_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
 
         CREATE INDEX IF NOT EXISTS idx_translations_meeting
             ON transcript_translations(meeting_id, target_lang);
+        ",
+    )?;
+    Ok(())
+}
+
+/// Schema v7: "Ask this meeting" chat, saved per meeting (`created_at` in Unix ms).
+fn v7_meeting_chat(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS meeting_chat (
+            id              TEXT PRIMARY KEY NOT NULL,
+            meeting_id      TEXT NOT NULL,
+            role            TEXT NOT NULL CHECK(role IN ('user','assistant')),
+            content         TEXT NOT NULL,
+            model           TEXT,
+            input_tokens    INTEGER,
+            output_tokens   INTEGER,
+            created_at      INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_meeting_chat_meeting_id
+            ON meeting_chat(meeting_id);
         ",
     )?;
     Ok(())

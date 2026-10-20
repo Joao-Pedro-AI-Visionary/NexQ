@@ -10,6 +10,7 @@ import { useTranscriptSearch } from "../../hooks/useTranscriptSearch";
 import { useSummaryGeneration } from "../../hooks/useSummaryGeneration";
 import { useActionItemsExtraction } from "../../hooks/useActionItemsExtraction";
 import { useBookmarkSuggestions } from "../../hooks/useBookmarkSuggestions";
+import { useMeetingChat, answeredExchanges } from "../../hooks/useMeetingChat";
 import { useAudioKeyboardShortcuts } from "../../hooks/useAudioKeyboardShortcuts";
 import { exportMeetingAsMarkdown } from "../../lib/export";
 import { mergeConsecutiveSegments } from "../../lib/mergeSegments";
@@ -26,6 +27,7 @@ import { AIInteractionLog } from "./AIInteractionLog";
 import { SpeakersTab } from "./SpeakersTab";
 import { ActionItemsTab } from "./ActionItemsTab";
 import { BookmarksTab } from "./BookmarksTab";
+import { AskMeetingTab } from "./AskMeetingTab";
 import { AudioPlayer, AudioPlayerSkeleton } from "../../components/AudioPlayer";
 import { Loader2 } from "lucide-react";
 
@@ -253,8 +255,16 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
         : prev,
     );
   });
-  const aiBusy =
+  // "Ask this meeting" is for finished meetings (not the running one, not demo).
+  const showAsk = !isDemoActive && !isActiveMeeting;
+  const meetingChat = useMeetingChat(meetingId, {
+    enabled: showAsk,
+    trackSession: showAsk && llmProvider === "claude_cli",
+  });
+  const chatExchanges = useMemo(() => answeredExchanges(meetingChat.items), [meetingChat.items]);
+  const otherAiBusy =
     summaryGeneration.isGenerating || actionExtraction.isExtracting || bookmarkSuggestions.isSuggesting;
+  const aiBusy = otherAiBusy || meetingChat.isAsking;
   useEffect(() => {
     aiBusyRef.current = aiBusy;
   }, [aiBusy]);
@@ -410,9 +420,11 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
         isSummaryGenerating={summaryGeneration.isGenerating}
         isActionsExtracting={actionExtraction.isExtracting}
         isBookmarksSuggesting={bookmarkSuggestions.isSuggesting}
+        showAsk={showAsk}
+        aiLogCount={meeting.ai_interactions.length + chatExchanges.length}
       />
 
-      <div className={`flex-1 min-h-0 ${activeTab === "transcript" ? "overflow-hidden flex flex-col" : "overflow-y-auto"}`} role="tabpanel">
+      <div className={`flex-1 min-h-0 ${activeTab === "transcript" || activeTab === "ask" ? "overflow-hidden flex flex-col" : "overflow-y-auto"}`} role="tabpanel">
         {/* Transcript stays mounted (hidden) so switching back is instant */}
         <div className={activeTab === "transcript" ? "flex flex-1 min-h-0 flex-col" : "hidden"}>
           <TranscriptView
@@ -449,9 +461,21 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
         {activeTab === "summary" && (
           <SummaryView meeting={meeting} generation={summaryGeneration} onExport={handleExport} />
         )}
+        {activeTab === "ask" && showAsk && (
+          <AskMeetingTab
+            chat={meetingChat}
+            otherTaskRunning={otherAiBusy}
+            unavailableReason={
+              meeting.transcript.length === 0 && !meeting.summary
+                ? "This meeting has no transcript to ask about"
+                : null
+            }
+          />
+        )}
         {activeTab === "ai" && (
           <AIInteractionLog
             interactions={meeting.ai_interactions}
+            chat={chatExchanges}
             expandedId={expandedInteraction}
             onToggle={(id) => setExpandedInteraction(expandedInteraction === id ? null : id)}
           />

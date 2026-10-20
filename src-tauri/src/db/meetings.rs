@@ -382,6 +382,7 @@ pub fn delete_meeting(conn: &Connection, id: &str) -> Result<(), DatabaseError> 
     conn.execute("DELETE FROM meeting_bookmarks WHERE meeting_id = ?1", params![id])?;
     conn.execute("DELETE FROM meeting_action_items WHERE meeting_id = ?1", params![id])?;
     conn.execute("DELETE FROM meeting_topic_sections WHERE meeting_id = ?1", params![id])?;
+    super::meeting_chat::delete_chat_messages(conn, id)?;
 
     // Then existing deletes (segments + meeting)
     conn.execute(

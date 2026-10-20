@@ -311,6 +311,20 @@ impl MeetingSessions {
             .unwrap_or_default()
     }
 
+    /// A chat answer to `prompt`: keep it with that prompt in the replay, so
+    /// a restarted session still knows what it answered (follow-ups work).
+    /// Nothing happens if `prompt` is no longer in the replay.
+    pub fn record_reply(&self, key: &SessionKey, prompt: &str, reply: &str) {
+        if reply.trim().is_empty() {
+            return;
+        }
+        if let Some(record) = self.records.lock().unwrap().get_mut(key) {
+            if let Some(entry) = record.replay.iter_mut().rev().find(|delta| delta.as_str() == prompt) {
+                *entry = answered_turn(prompt, reply);
+            }
+        }
+    }
+
     fn record_sent(&self, key: &SessionKey, prompt: &str, sent_ids: HashSet<String>) {
         if let Some(record) = self.records.lock().unwrap().get_mut(key) {
             record.replay.push(prompt.to_string());
@@ -564,6 +578,22 @@ pub fn past_system_prompt(custom_instructions: &str) -> String {
     parts.join("\n\n")
 }
 
+const ANSWER_HEADER: &str = "## Your answer";
+
+/// A request and the answer it got, as replayed into a restarted session.
+pub fn answered_turn(prompt: &str, reply: &str) -> String {
+    format!("{prompt}\n\n{ANSWER_HEADER}\n{}", reply.trim())
+}
+
+/// A saved "Ask this meeting" exchange, as replayed into a fresh session.
+pub fn earlier_exchange(question: &str, answer: &str) -> String {
+    format!(
+        "## Earlier question about this meeting\n{}\n\n{ANSWER_HEADER}\n{}",
+        question.trim(),
+        answer.trim()
+    )
+}
+
 const LIVE_SESSION_RULES: &str = "\
 ## How this session works
 You are connected to a live meeting through NexQ. Context documents and the \
@@ -582,9 +612,11 @@ You are NexQ's assistant for a meeting that has already ended. Its summary \
 transcript line reads \"[mm:ss] [SEGMENT_ID] Speaker: text\". Each request \
 carries \"## Task instructions\" and, when present, a question. Follow the \
 task instructions of the current message only; they replace those of earlier \
-messages. When asked for segment ids, use the [SEGMENT_ID] of the lines. Base \
-your answers on this meeting, answer directly without preamble, and respond \
-in the language used in the meeting.";
+messages. When asked for segment ids, use the [SEGMENT_ID] of the lines. \
+Earlier questions about this meeting and the answers you gave may also \
+arrive as context; use them for follow-up questions. Base your answers on \
+this meeting, answer directly without preamble, and respond in the language \
+used in the meeting.";
 
 /// Preload messages for the context documents, and whether the session must
 /// use RAG retrieval instead (documents over [`DOC_PRELOAD_TOKEN_CAP`]).
@@ -1380,6 +1412,32 @@ mod tests {
         script.fail_next(AgentError::Cancelled);
         ask(&manager, &sessions, &key, &[seg("a", 0)]).await.unwrap_err();
         assert!(sessions.get(&key).unwrap().sent_ids.contains("a"));
+    }
+
+    #[tokio::test]
+    async fn meeting_chat_reply_is_replayed_after_restart() {
+        // A chat question and its answer both reach a restarted session, so
+        // a follow-up still knows what was answered.
+        let (manager, sessions, script, key) = setup(&["transcript"]);
+        let turn = ask(&manager, &sessions, &key, &[]).await.unwrap();
+        let question = last_prompt(&script);
+        sessions.record_reply(&key, &question, &turn.text);
+        sessions.record_reply(&key, "a prompt never sent", "ignored");
+        assert_eq!(sessions.get(&key).unwrap().replay, vec![answered_turn(&question, "ok")]);
+
+        script.fail_next(AgentError::Crashed("exit code 1".into()));
+        ask(&manager, &sessions, &key, &[]).await.unwrap();
+        let replayed = script.appended.lock().unwrap()[1].clone();
+        assert_eq!(replayed, vec!["transcript".to_string(), answered_turn(&question, "ok")]);
+        assert!(replayed[1].ends_with("## Your answer\nok"), "{}", replayed[1]);
+    }
+
+    #[test]
+    fn meeting_chat_earlier_exchange_format() {
+        assert_eq!(
+            earlier_exchange(" When? ", "Friday.\n"),
+            "## Earlier question about this meeting\nWhen?\n\n## Your answer\nFriday."
+        );
     }
 
     #[tokio::test]

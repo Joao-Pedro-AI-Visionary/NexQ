@@ -3,6 +3,8 @@ use std::sync::atomic::Ordering;
 
 use tauri::{command, AppHandle, Manager, State};
 
+use crate::commands::meeting_chat_commands::chat_history_preload;
+use crate::db::meeting_chat::{self, MeetingChatMessage};
 use crate::db::meetings::{
     self, MeetingActionItem, MeetingBookmark, MeetingSpeaker, MeetingTopicSection,
     MeetingUpdate, TranscriptSegment,
@@ -58,10 +60,16 @@ pub(crate) fn live_session_record(state: &AppState, tier: Tier, finals: &[Seg]) 
     }
 }
 
-/// What a past-meeting Claude session starts with: the meeting's summary (if
-/// any) and its final transcript with segment ids, speaker names and
-/// `[mm:ss]` times (bookmark suggestions cite the ids).
-pub(crate) fn past_session_record(state: &AppState, meeting_id: &str) -> Result<SessionRecord, String> {
+/// What the AI gets about a past meeting: its summary, its final
+/// transcript (speaker names, times relative to the start, segment ids) and
+/// its saved "Ask this meeting" chat.
+pub(crate) struct PastMeetingContext {
+    pub summary: Option<String>,
+    pub transcript: Vec<Seg>,
+    pub chat: Vec<MeetingChatMessage>,
+}
+
+pub(crate) fn past_meeting_context(state: &AppState, meeting_id: &str) -> Result<PastMeetingContext, String> {
     let db = state
         .database
         .as_ref()
@@ -76,20 +84,38 @@ pub(crate) fn past_session_record(state: &AppState, meeting_id: &str) -> Result<
         .into_iter()
         .map(|s| (s.speaker_id, s.display_name))
         .collect();
+    let chat = meeting_chat::list_chat_messages(db.connection(), meeting_id).unwrap_or_else(|e| {
+        log::warn!("Failed to load the chat of meeting {meeting_id}: {e}");
+        Vec::new()
+    });
     drop(db);
 
     let start_ms = chrono::DateTime::parse_from_rfc3339(&meeting.start_time)
         .map(|t| t.timestamp_millis())
         .unwrap_or(0);
-    let transcript = past_transcript(&meeting.transcript, &names, start_ms);
+    Ok(PastMeetingContext {
+        transcript: past_transcript(&meeting.transcript, &names, start_ms),
+        summary: meeting.summary,
+        chat,
+    })
+}
+
+/// What a past-meeting Claude session starts with: the meeting's summary (if
+/// any), its final transcript with segment ids, speaker names and `[mm:ss]`
+/// times (bookmark suggestions cite the ids), then the questions already
+/// asked about it with their answers, so follow-ups work.
+pub(crate) fn past_session_record(state: &AppState, meeting_id: &str) -> Result<SessionRecord, String> {
+    let context = past_meeting_context(state, meeting_id)?;
+    let mut preload = build_preload_messages(
+        &context.transcript,
+        context.summary.as_deref(),
+        PRELOAD_MESSAGE_CHARS,
+        true,
+    );
+    preload.extend(chat_history_preload(&context.chat));
     Ok(SessionRecord {
         system_prompt: routing::past_system_prompt(&custom_instructions(state)),
-        preload: build_preload_messages(
-            &transcript,
-            meeting.summary.as_deref(),
-            PRELOAD_MESSAGE_CHARS,
-            true,
-        ),
+        preload,
         ..SessionRecord::default()
     })
 }

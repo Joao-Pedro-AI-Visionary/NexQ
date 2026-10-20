@@ -1,4 +1,5 @@
 pub mod context;
+pub mod meeting_chat;
 pub mod meetings;
 pub mod migrations;
 pub mod rag;

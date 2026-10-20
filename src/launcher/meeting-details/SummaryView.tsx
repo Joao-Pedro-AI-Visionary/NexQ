@@ -8,7 +8,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 
-function stripThinkTags(text: string): string {
+export function stripThinkTags(text: string): string {
   return text
     .replace(/<think>[\s\S]*?<\/think>/gi, "")
     .replace(/<think>[\s\S]*/gi, "")
@@ -25,7 +25,7 @@ function cleanMarkdown(text: string): string {
 }
 
 /** Custom ReactMarkdown component overrides for styled rendering */
-const mdComponents: Components = {
+export const mdComponents: Components = {
   h1: ({ children }) => (
     <h1 className="text-lg font-bold text-foreground mt-6 mb-3 pb-2 border-b border-primary/20">
       {children}

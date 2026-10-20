@@ -33,6 +33,7 @@ use commands::context_commands;
 use commands::credential_commands;
 // == MODULE COMMANDS: meetings ==
 use commands::meeting_commands;
+use commands::meeting_chat_commands;
 // == MODULE COMMANDS: settings ==
 use commands::settings_commands;
 // == MODULE COMMANDS: models ==
@@ -605,6 +606,8 @@ pub fn run() {
             meeting_commands::update_meeting_mode,
             meeting_commands::start_past_meeting_session,
             meeting_commands::close_past_meeting_session,
+            meeting_chat_commands::ask_meeting,
+            meeting_chat_commands::list_meeting_chat,
             // == COMMANDS: settings ==
             settings_commands::get_config,
             settings_commands::set_config,

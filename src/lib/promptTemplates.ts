@@ -61,6 +61,12 @@ const DEFAULT_PROMPTS: Record<IntelligenceMode, string> = {
     '- "segment_id": string or null - The transcript segment ID closest to this moment, if identifiable\n' +
     '- "note": string - A brief description of why this moment is important (max 100 chars)\n\n' +
     "Limit to the 10 most important moments.",
+  MeetingAsk:
+    "The user is asking about a meeting that has already ended. Answer from its transcript " +
+    "and summary, and from the earlier questions and answers about it. Be direct and specific; " +
+    "mention who said what and roughly when (mm:ss) when it helps. If the meeting does not " +
+    "answer the question, say so plainly. Never mention segment ids. " +
+    "IMPORTANT: Respond in the same language as the user's question.",
 };
 
 export function getSystemPromptForMode(mode: IntelligenceMode): string {

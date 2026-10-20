@@ -13,6 +13,7 @@ pub fn get_system_prompt(mode: &str) -> &'static str {
         "MeetingSummary" => MEETING_SUMMARY_PROMPT,
         "ActionItemsExtraction" => ACTION_ITEMS_EXTRACTION_PROMPT,
         "BookmarkSuggestions" => BOOKMARK_SUGGESTIONS_PROMPT,
+        "MeetingAsk" => MEETING_ASK_PROMPT,
         _ => ASSIST_PROMPT,
     }
 }
@@ -129,3 +130,10 @@ The user has a specific question about the meeting or uploaded documents. Answer
 and helpfully based on all available context — transcript, documents, and meeting history. \
 If the answer isn't clear from the context, say so. Be precise and cite specific parts of \
 the discussion or documents when possible.";
+
+pub const MEETING_ASK_PROMPT: &str = "\
+The user is asking about a meeting that has already ended. Answer from its transcript \
+and summary, and from the earlier questions and answers about it. Be direct and specific; \
+mention who said what and roughly when (mm:ss) when it helps. If the meeting does not \
+answer the question, say so plainly. Never mention segment ids. \
+IMPORTANT: Respond in the same language as the user's question.";

@@ -183,6 +183,20 @@ export interface AIInteraction {
   timestamp: string;
 }
 
+/** Mirrors Rust `MeetingChatMessage`: one saved "Ask this meeting" message. */
+export interface MeetingChatMessage {
+  id: string;
+  meeting_id: string;
+  role: "user" | "assistant";
+  content: string;
+  /** The model that answered (assistant rows). */
+  model: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  /** Unix milliseconds. */
+  created_at: number;
+}
+
 export type IntelligenceMode =
   | "Assist"
   | "WhatToSay"
@@ -192,7 +206,8 @@ export type IntelligenceMode =
   | "AskQuestion"
   | "MeetingSummary"
   | "ActionItemsExtraction"
-  | "BookmarkSuggestions";
+  | "BookmarkSuggestions"
+  | "MeetingAsk";
 
 export interface StreamSource {
   title: string;

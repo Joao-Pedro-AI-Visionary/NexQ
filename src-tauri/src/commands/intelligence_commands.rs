@@ -6,7 +6,7 @@ use crate::intelligence::action_config::{AllActionConfigs, InstructionPresets};
 use crate::intelligence::IntelligenceEngine;
 use crate::llm::cli_agent::context::Seg;
 use crate::llm::cli_agent::manager::{OnDelta, SessionKey, SessionScope};
-use crate::llm::cli_agent::protocol::AgentErrorKind;
+use crate::llm::cli_agent::protocol::{AgentErrorKind, TurnResult};
 use crate::llm::cli_agent::routing::{
     self, choose_route, AgentFallbackPayload, AskFailure, ClaudeHealth, Route,
 };
@@ -20,7 +20,7 @@ use crate::state::AppState;
 
 /// Compose instruction presets + custom text into a single string.
 /// Mirrors the frontend's `composeInstructions()` in aiActionsStore.ts.
-fn compose_instructions(presets: &InstructionPresets, custom: &str) -> String {
+pub(crate) fn compose_instructions(presets: &InstructionPresets, custom: &str) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(tone) = &presets.tone {
         parts.push(format!("{} tone.", tone));
@@ -252,7 +252,7 @@ fn request_scope(state: &AppState, past_meeting_id: Option<&str>) -> SessionScop
 }
 
 /// Where this request goes (see `choose_route`).
-fn request_route(state: &AppState, mode: &str, scope: &SessionScope) -> Route {
+pub(crate) fn request_route(state: &AppState, mode: &str, scope: &SessionScope) -> Route {
     let active = state
         .llm
         .as_ref()
@@ -326,28 +326,36 @@ async fn resolve_fallback(
     Ok(out)
 }
 
-/// Everything the Claude session path needs from `generate_assist`.
-struct SessionAssist<'a> {
-    key: SessionKey,
-    mode: &'a str,
-    custom_question: Option<&'a str>,
-    detected_question: Option<String>,
-    transcript_segments: Option<&'a str>,
-    task_instructions: String,
-    include_rag: bool,
-    include_instructions: bool,
-    include_question: bool,
-    rag_top_k: usize,
-    temperature: f64,
-    params: GenerationParams,
-    cancel: Arc<CancelToken>,
+/// Everything the Claude session path needs from a request.
+pub(crate) struct SessionAssist<'a> {
+    pub key: SessionKey,
+    pub mode: &'a str,
+    pub custom_question: Option<&'a str>,
+    pub detected_question: Option<String>,
+    pub transcript_segments: Option<&'a str>,
+    pub task_instructions: String,
+    pub include_rag: bool,
+    pub include_instructions: bool,
+    pub include_question: bool,
+    pub rag_top_k: usize,
+    pub temperature: f64,
+    pub params: GenerationParams,
+    pub cancel: Arc<CancelToken>,
+}
+
+/// A request a Claude session answered: what was sent, which model
+/// answered, and the turn's result (text and tokens).
+pub(crate) struct SessionAnswer {
+    pub prompt: String,
+    pub model: String,
+    pub turn: TurnResult,
 }
 
 /// How the Claude session path ended.
-enum SessionOutcome {
-    /// Answered, stopped, closed, or failed with an error that is not an
-    /// outage (already reported to the UI).
-    Done(Result<(), String>),
+pub(crate) enum SessionOutcome {
+    /// Answered (`Some`), or stopped, closed, or failed with an error that
+    /// is not an outage (already reported to the UI).
+    Done(Result<Option<SessionAnswer>, String>),
     /// The session's context was full: answer this request statelessly.
     Stateless,
     /// Claude is unavailable (after one restart where it applies).
@@ -357,7 +365,7 @@ enum SessionOutcome {
 /// Answer one request on the meeting's warm Claude session: only the
 /// transcript the session has not seen goes out, with the action's own
 /// prompt and presets as `## Task instructions`.
-async fn session_assist(state: &AppState, app: &AppHandle, req: SessionAssist<'_>) -> SessionOutcome {
+pub(crate) async fn session_assist(state: &AppState, app: &AppHandle, req: SessionAssist<'_>) -> SessionOutcome {
     let start = std::time::Instant::now();
     let SessionAssist { key, mode, params, cancel, .. } = &req;
 
@@ -422,7 +430,12 @@ async fn session_assist(state: &AppState, app: &AppHandle, req: SessionAssist<'_
             req.detected_question.as_deref(),
         )
     };
+    // What was sent and to which model, for the caller (saved chat, replay).
+    let sent: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
     let on_sent = |prompt: &str, model: &str, new_count: usize| {
+        if let Ok(mut slot) = sent.lock() {
+            *slot = Some((prompt.to_string(), model.to_string()));
+        }
         let _ = app.emit(
             "llm_stream_start",
             StreamStartPayload {
@@ -472,14 +485,15 @@ async fn session_assist(state: &AppState, app: &AppHandle, req: SessionAssist<'_
 
     match result {
         // A stopped stream already got its end from `cancel_generation`.
-        _ if cancel.is_cancelled() => SessionOutcome::Done(Ok(())),
+        _ if cancel.is_cancelled() => SessionOutcome::Done(Ok(None)),
         Ok(turn) => {
             state.claude_health.record_success();
             let total = turn.input_tokens + turn.cache_read_tokens + turn.output_tokens;
             emit_end(app, params, total, start.elapsed().as_millis() as u64);
-            SessionOutcome::Done(Ok(()))
+            let (prompt, model) = sent.lock().ok().and_then(|mut s| s.take()).unwrap_or_default();
+            SessionOutcome::Done(Ok(Some(SessionAnswer { prompt, model, turn })))
         }
-        Err(AskFailure::Cancelled) => SessionOutcome::Done(Ok(())),
+        Err(AskFailure::Cancelled) => SessionOutcome::Done(Ok(None)),
         // The meeting ended / its view was left mid-request: just end the
         // stream (no outage, no fallback).
         Err(AskFailure::Closed) => {
@@ -492,7 +506,7 @@ async fn session_assist(state: &AppState, app: &AppHandle, req: SessionAssist<'_
                     cancelled: true,
                 },
             );
-            SessionOutcome::Done(Ok(()))
+            SessionOutcome::Done(Ok(None))
         }
         // Part of the answer is already on screen: report, don't repeat it.
         Err(AskFailure::AfterOutput(e)) | Err(AskFailure::Error(e)) => {
@@ -505,6 +519,91 @@ async fn session_assist(state: &AppState, app: &AppHandle, req: SessionAssist<'_
             SessionOutcome::Stateless
         }
         Err(AskFailure::Unavailable(kind, e)) => SessionOutcome::Unavailable(kind, e.to_string()),
+    }
+}
+
+/// Claude turned out unavailable for a session request: mark it so and
+/// return the fallback route (the same decision as for a request arriving
+/// while Claude is down), or report the outage when no fallback is set.
+pub(crate) fn route_after_outage(
+    state: &AppState,
+    app: &AppHandle,
+    mode: &str,
+    scope: &SessionScope,
+    kind: AgentErrorKind,
+    reason: &str,
+    params: &GenerationParams,
+) -> Result<Route, String> {
+    log::warn!("Claude unavailable ({reason}); falling back");
+    state.claude_health.mark_unavailable(kind);
+    match request_route(state, mode, scope) {
+        fallback @ Route::Fallback(_) => Ok(fallback),
+        _ => {
+            let message = format!("Claude unavailable ({}): {}", routing::reason_label(kind), reason);
+            emit_error(app, params, &message);
+            Err(message)
+        }
+    }
+}
+
+/// The provider for today's full-prompt path, with its model, display name
+/// and type: the fallback provider on [`Route::Fallback`] (announcing the
+/// outage once with `agent_fallback`), else the active provider.
+pub(crate) async fn stateless_provider(
+    state: &AppState,
+    app: &AppHandle,
+    route: &Route,
+    params: &GenerationParams,
+) -> Result<(Arc<tokio::sync::Mutex<Box<dyn LLMProvider>>>, String, String, Option<ProviderType>), String> {
+    match route {
+        Route::Fallback(config) => match resolve_fallback(state, config.clone()).await {
+            Ok((provider, model, name)) => {
+                if state.claude_health.take_fallback_notice() {
+                    let reason = match state.claude_health.get() {
+                        ClaudeHealth::Unavailable(kind) => routing::reason_label(kind),
+                        ClaudeHealth::Healthy => "unavailable",
+                    };
+                    let _ = app.emit(
+                        routing::FALLBACK_EVENT,
+                        AgentFallbackPayload {
+                            reason: reason.to_string(),
+                            provider: name.clone(),
+                        },
+                    );
+                }
+                let provider_type = ProviderType::from_str(&config.provider_type).ok();
+                Ok((provider, model, name, provider_type))
+            }
+            Err(message) => {
+                emit_error(app, params, &message);
+                Err(message)
+            }
+        },
+        _ => {
+            let llm = state
+                .llm
+                .as_ref()
+                .ok_or_else(|| "LLM router not initialized".to_string())?;
+            let router = llm
+                .lock()
+                .map_err(|e| format!("Failed to lock LLM router: {}", e))?;
+
+            let provider = router
+                .get_provider()
+                .map_err(|e| format!("No active LLM provider: {}", e))?;
+
+            let model_name = router.active_model().to_string();
+            if model_name.is_empty() {
+                return Err("No active model selected".to_string());
+            }
+
+            let ptype = router
+                .active_provider_type()
+                .map(|pt| pt.display_name().to_string())
+                .unwrap_or_else(|| "Unknown".to_string());
+
+            Ok((provider, model_name, ptype, router.active_provider_type().cloned()))
+        }
     }
 }
 
@@ -650,27 +749,16 @@ pub async fn generate_assist(
             SessionOutcome::Done(result) => {
                 // Release the engine only now that the stream has fully stopped.
                 drop(generation_guard);
-                return result;
+                return result.map(|_| ());
             }
             SessionOutcome::Stateless => route = Route::Stateless,
             SessionOutcome::Unavailable(kind, reason) => {
-                log::warn!("Claude unavailable ({reason}); falling back");
-                state.claude_health.mark_unavailable(kind);
-                // Same decision as for a request arriving while Claude is down.
-                match request_route(&state, &mode, &scope) {
-                    fallback @ Route::Fallback(_) => route = fallback,
-                    _ => {
-                        let params = GenerationParams {
-                            request_id: Some(request_id.clone()),
-                            cancel: Some(cancel_token.clone()),
-                            ..GenerationParams::default()
-                        };
-                        let message = format!("Claude unavailable ({}): {}", routing::reason_label(kind), reason);
-                        emit_error(&app_handle, &params, &message);
-                        drop(generation_guard);
-                        return Err(message);
-                    }
-                }
+                let params = GenerationParams {
+                    request_id: Some(request_id.clone()),
+                    cancel: Some(cancel_token.clone()),
+                    ..GenerationParams::default()
+                };
+                route = route_after_outage(&state, &app_handle, &mode, &scope, kind, &reason, &params)?;
             }
         }
     }
@@ -740,62 +828,13 @@ pub async fn generate_assist(
 
     // Get the LLM provider and model info: the fallback provider when Claude
     // is unavailable, else the active one.
-    let (provider_arc, model, provider_name, provider_type) = match &route {
-        Route::Fallback(config) => {
-            match resolve_fallback(&state, config.clone()).await {
-                Ok((provider, model, name)) => {
-                    if state.claude_health.take_fallback_notice() {
-                        let reason = match state.claude_health.get() {
-                            ClaudeHealth::Unavailable(kind) => routing::reason_label(kind),
-                            ClaudeHealth::Healthy => "unavailable",
-                        };
-                        let _ = app_handle.emit(
-                            routing::FALLBACK_EVENT,
-                            AgentFallbackPayload {
-                                reason: reason.to_string(),
-                                provider: name.clone(),
-                            },
-                        );
-                    }
-                    let provider_type = ProviderType::from_str(&config.provider_type).ok();
-                    (provider, model, name, provider_type)
-                }
-                Err(message) => {
-                    let params = GenerationParams {
-                        request_id: Some(request_id.clone()),
-                        cancel: Some(cancel_token.clone()),
-                        ..GenerationParams::default()
-                    };
-                    emit_error(&app_handle, &params, &message);
-                    return Err(message);
-                }
-            }
-        }
-        _ => {
-            let llm = state
-                .llm
-                .as_ref()
-                .ok_or_else(|| "LLM router not initialized".to_string())?;
-            let router = llm
-                .lock()
-                .map_err(|e| format!("Failed to lock LLM router: {}", e))?;
-
-            let provider = router
-                .get_provider()
-                .map_err(|e| format!("No active LLM provider: {}", e))?;
-
-            let model_name = router.active_model().to_string();
-            if model_name.is_empty() {
-                return Err("No active model selected".to_string());
-            }
-
-            let ptype = router
-                .active_provider_type()
-                .map(|pt| pt.display_name().to_string())
-                .unwrap_or_else(|| "Unknown".to_string());
-
-            (provider, model_name, ptype, router.active_provider_type().cloned())
-        }
+    let (provider_arc, model, provider_name, provider_type) = {
+        let params = GenerationParams {
+            request_id: Some(request_id.clone()),
+            cancel: Some(cancel_token.clone()),
+            ..GenerationParams::default()
+        };
+        stateless_provider(&state, &app_handle, &route, &params).await?
     };
 
     // Check for active Gemini context cache — only applies when Gemini is the provider

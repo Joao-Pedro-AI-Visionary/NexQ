@@ -1,8 +1,8 @@
 import type { Meeting } from "../../lib/types";
-import { FileText, Sparkles, MessageSquare, Users, ListTodo, Bookmark, Loader2 } from "lucide-react";
+import { FileText, Sparkles, MessageSquare, MessageCircleQuestion, Users, ListTodo, Bookmark, Loader2 } from "lucide-react";
 import { ExportDropdown } from "./ExportDropdown";
 
-export type MeetingTab = "transcript" | "summary" | "ai" | "speakers" | "actions" | "bookmarks";
+export type MeetingTab = "transcript" | "summary" | "ask" | "ai" | "speakers" | "actions" | "bookmarks";
 
 interface MeetingTabBarProps {
   activeTab: MeetingTab;
@@ -14,9 +14,13 @@ interface MeetingTabBarProps {
   isSummaryGenerating?: boolean;
   isBookmarksSuggesting?: boolean;
   isActionsExtracting?: boolean;
+  /** Show the "Ask" tab (finished meetings only). */
+  showAsk?: boolean;
+  /** AI Log entries: AI interactions plus answered Ask questions. */
+  aiLogCount?: number;
 }
 
-export function MeetingTabBar({ activeTab, setActiveTab, meeting, onGenerateSummary, onSuggestBookmarks, onExtractActions, isSummaryGenerating, isBookmarksSuggesting, isActionsExtracting }: MeetingTabBarProps) {
+export function MeetingTabBar({ activeTab, setActiveTab, meeting, onGenerateSummary, onSuggestBookmarks, onExtractActions, isSummaryGenerating, isBookmarksSuggesting, isActionsExtracting, showAsk, aiLogCount }: MeetingTabBarProps) {
   const actionCount = meeting.action_items?.length ?? 0;
   const bookmarkCount = meeting.bookmarks?.length ?? 0;
   const speakerCount = meeting.speakers?.length ?? 0;
@@ -38,12 +42,20 @@ export function MeetingTabBar({ activeTab, setActiveTab, meeting, onGenerateSumm
           label="Summary"
           indicator={!!meeting.summary}
         />
+        {showAsk && (
+          <TabButton
+            active={activeTab === "ask"}
+            onClick={() => setActiveTab("ask")}
+            icon={<MessageCircleQuestion className="h-3.5 w-3.5" />}
+            label="Ask"
+          />
+        )}
         <TabButton
           active={activeTab === "ai"}
           onClick={() => setActiveTab("ai")}
           icon={<MessageSquare className="h-3.5 w-3.5" />}
           label="AI Log"
-          count={meeting.ai_interactions.length}
+          count={aiLogCount ?? meeting.ai_interactions.length}
         />
         <TabButton
           active={activeTab === "speakers"}
