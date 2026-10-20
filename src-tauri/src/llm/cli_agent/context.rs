@@ -179,6 +179,23 @@ fn format_line(seg: &Seg) -> String {
     )
 }
 
+/// Transcript lines, one per segment: `[mm:ss] Speaker: text`, or
+/// `[mm:ss] [id] Speaker: text` with `with_ids` (segments without an id
+/// keep the short form).
+pub fn transcript_lines(segments: &[Seg], with_ids: bool) -> String {
+    segments
+        .iter()
+        .map(|seg| {
+            if with_ids && !seg.id.is_empty() {
+                format_line_with_id(seg)
+            } else {
+                format_line(seg)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// `[mm:ss] [id] Speaker: text` on one line.
 fn format_line_with_id(seg: &Seg) -> String {
     let line = format_line(seg);
@@ -334,6 +351,13 @@ mod tests {
             msgs[1],
             "## Meeting transcript\n[01:05] You: Hello there\n[62:05] Them: Hi again"
         );
+    }
+
+    #[test]
+    fn transcript_lines_with_and_without_ids() {
+        let segs = [seg("Hi", "You", 1_000), Seg { id: String::new(), ..seg("Yo", "Them", 2_000) }];
+        assert_eq!(transcript_lines(&segs, false), "[00:01] You: Hi\n[00:02] Them: Yo");
+        assert_eq!(transcript_lines(&segs, true), "[00:01] [You-1000] You: Hi\n[00:02] Them: Yo");
     }
 
     #[test]

@@ -42,7 +42,7 @@ pub(crate) fn live_session_record(state: &AppState, tier: Tier, finals: &[Seg]) 
     let (mut preload, rag_mode) = routing::document_preload(&documents);
     let mut sent_ids = std::collections::HashSet::new();
     if tier == Tier::Deep {
-        preload.extend(build_preload_messages(finals, None, PRELOAD_MESSAGE_CHARS, false));
+        preload.extend(build_preload_messages(finals, None, PRELOAD_MESSAGE_CHARS, true));
         sent_ids = finals.iter().map(|s| s.id.clone()).collect();
     }
     SessionRecord {
@@ -52,9 +52,9 @@ pub(crate) fn live_session_record(state: &AppState, tier: Tier, finals: &[Seg]) 
             &custom_instructions(state),
         ),
         preload,
-        replay: Vec::new(),
         sent_ids,
         rag_mode,
+        ..SessionRecord::default()
     }
 }
 
@@ -134,41 +134,70 @@ fn past_transcript(transcript: &serde_json::Value, names: &HashMap<String, Strin
         .collect()
 }
 
-/// In the background: build `key`'s record with `build` (documents / DB
-/// reads stay off the command's path), record it unless a request already
-/// did, and start the session. A definite outage found at start (not
-/// installed / not logged in) marks Claude unavailable so requests go
-/// straight to the fallback.
+/// In the background: build `key`'s record with `build` on a blocking
+/// thread (documents, token count, DB reads stay off the command's path),
+/// record it unless a request already did, and start the session. Work for
+/// a scope closed meanwhile (meeting ended / view left) is discarded, and a
+/// session that finished starting after the close is closed again. A
+/// definite outage found at start (not installed / not logged in) marks
+/// Claude unavailable so requests go straight to the fallback.
 fn start_session_in_background(
     app: &AppHandle,
     key: SessionKey,
     build: impl FnOnce(&AppState) -> Result<SessionRecord, String> + Send + 'static,
 ) {
+    let epoch = app.state::<AppState>().meeting_sessions.epoch(&key.scope);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
+        let label = routing::session_key_label(&key);
+        let built = {
+            let app = app.clone();
+            tokio::task::spawn_blocking(move || build(&app.state::<AppState>())).await
+        };
         let state = app.state::<AppState>();
-        match build(&state) {
-            Ok(record) => {
-                state.meeting_sessions.insert_if_absent(key.clone(), record);
-            }
-            Err(e) => {
-                log::warn!("Claude session {} not prepared: {e}", routing::session_key_label(&key));
+        let record = match built {
+            Ok(Ok(record)) => record,
+            Ok(Err(e)) => {
+                log::warn!("Claude session {label} not prepared: {e}");
                 return;
             }
+            Err(e) => {
+                log::warn!("Claude session {label} not prepared: {e}");
+                return;
+            }
+        };
+        if !state.meeting_sessions.insert_if_current(key.clone(), record, epoch) {
+            return; // closed while the record was built
         }
         let Some(record) = state.meeting_sessions.get(&key) else {
             return;
         };
+        if record.stateless_only {
+            return;
+        }
         let init = SessionInit {
             system_prompt: record.system_prompt,
             preload: record.preload,
         };
-        if let Err(e) = state.agent_sessions.ensure(&key, init).await {
-            log::warn!("Claude session {} did not start: {e}", routing::session_key_label(&key));
-            if let Some(kind @ (AgentErrorKind::NotInstalled | AgentErrorKind::NotLoggedIn)) =
-                routing::unavailable_kind(&e)
-            {
-                state.claude_health.mark_unavailable(kind);
+        match state.agent_sessions.ensure(&key, init).await {
+            Ok(_) => {
+                // Closed (and not reopened) while it was starting: close it
+                // now; live sessions are never reaped.
+                let closed = state.meeting_sessions.epoch(&key.scope) != epoch
+                    && !state.meeting_sessions.contains(&key);
+                if closed {
+                    if let Some(handle) = state.agent_sessions.retire_if_idle(&key) {
+                        handle.close().await;
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!("Claude session {label} did not start: {e}");
+                if let Some(kind @ (AgentErrorKind::NotInstalled | AgentErrorKind::NotLoggedIn)) =
+                    routing::unavailable_kind(&e)
+                {
+                    state.claude_health.mark_unavailable(kind);
+                }
             }
         }
     });

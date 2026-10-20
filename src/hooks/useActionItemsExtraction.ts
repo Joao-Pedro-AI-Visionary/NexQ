@@ -7,6 +7,8 @@ import {
 } from "../lib/events";
 import { generateAssist, saveMeetingActionItems } from "../lib/ipc";
 import { useMeetingStore, pastMeetingIdFor } from "../stores/meetingStore";
+import { useConfigStore } from "../stores/configStore";
+import { assistSegments } from "../lib/assistSegments";
 import { showToast } from "../stores/toastStore";
 import type { Meeting, ActionItem } from "../lib/types";
 
@@ -207,18 +209,10 @@ export function useActionItemsExtraction(
         ? `Speaker list:\n${speakerList}\n\nExtract all action items. Return ONLY a JSON array.`
         : "Extract all action items. Return ONLY a JSON array.";
 
-      // Merge consecutive same-speaker segments to reduce prompt size
+      // Merge consecutive same-speaker segments to reduce prompt size, except
+      // for a Claude session, which needs every segment under its own id.
       const finals = meeting.transcript.filter((s) => s.is_final);
-      const merged: { id: string; text: string; speaker: string; timestamp_ms: number }[] = [];
-      for (const seg of finals) {
-        const last = merged.length > 0 ? merged[merged.length - 1] : null;
-        if (last && last.speaker === seg.speaker) {
-          last.text += " " + seg.text;
-        } else {
-          merged.push({ id: seg.id, text: seg.text, speaker: seg.speaker, timestamp_ms: seg.timestamp_ms });
-        }
-      }
-      const segments = merged;
+      const segments = assistSegments(finals, useConfigStore.getState().llmProvider !== "claude_cli");
 
       await generateAssist("ActionItemsExtraction", customQuestion, {
         requestId,

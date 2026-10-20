@@ -126,6 +126,14 @@ pub fn classify_error(text: &str) -> AgentErrorKind {
     let t = text.to_lowercase();
     if t.contains("not logged in") || t.contains("/login") || t.contains("please log in") {
         AgentErrorKind::NotLoggedIn
+    } else if t.contains("rate limit")
+        || t.contains("usage limit")
+        || (t.contains("limit reached") && !t.contains("context"))
+        || t.contains("too many requests")
+        || t.contains("per minute")
+    {
+        // Before the context patterns: "too many tokens per minute" is a rate limit.
+        AgentErrorKind::RateLimited
     } else if t.contains("prompt is too long")
         || t.contains("input is too long")
         || t.contains("context length")
@@ -135,12 +143,6 @@ pub fn classify_error(text: &str) -> AgentErrorKind {
         || t.contains("too many tokens")
     {
         AgentErrorKind::ContextOverflow
-    } else if t.contains("rate limit")
-        || t.contains("usage limit")
-        || t.contains("limit reached")
-        || t.contains("too many requests")
-    {
-        AgentErrorKind::RateLimited
     } else if t.contains("not installed")
         || t.contains("program not found")
         || t.contains("cannot find the file")
@@ -266,8 +268,16 @@ mod tests {
             "input length and `max_tokens` exceed context limit: 190000 + 32000 > 200000",
             "This model's maximum context length is 200000 tokens",
             "Context window exceeded",
+            "Context limit reached",
         ] {
             assert_eq!(classify_error(text), AgentErrorKind::ContextOverflow, "{text}");
+        }
+        for text in [
+            "Too many tokens per minute",
+            "rate limit exceeded: too many tokens",
+            "429 Too Many Requests",
+        ] {
+            assert_eq!(classify_error(text), AgentErrorKind::RateLimited, "{text}");
         }
     }
 }

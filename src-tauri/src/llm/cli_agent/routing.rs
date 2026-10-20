@@ -13,7 +13,9 @@
 //!   it once on a crash, timeout, logout or rate limit, and say how a failed
 //!   request should be handled ([`AskFailure`]).
 
-use super::context::{build_delta_prompt, build_document_preload, pack_messages, DeltaCursor, Seg};
+use super::context::{
+    build_delta_prompt, build_document_preload, pack_messages, transcript_lines, DeltaCursor, Seg,
+};
 use super::detect::{claude_auth_status, find_claude_binary};
 use super::manager::{
     tier_for, AgentSessionManager, ClaudeCliConfig, OnDelta, SessionInit, SessionKey,
@@ -216,6 +218,9 @@ pub struct SessionRecord {
     pub sent_ids: HashSet<String>,
     /// Context documents were over the cap: requests run RAG retrieval.
     pub rag_mode: bool,
+    /// The preload alone overflows the context: requests skip the session
+    /// and go down the stateless path.
+    pub stateless_only: bool,
 }
 
 impl SessionRecord {
@@ -231,9 +236,13 @@ impl SessionRecord {
     }
 }
 
-/// [`SessionRecord`]s of the open meeting sessions.
+/// [`SessionRecord`]s of the open meeting sessions, plus a per-scope epoch
+/// bumped on every close so background work started before a close can tell
+/// it is stale.
 #[derive(Default)]
 pub struct MeetingSessions {
+    /// Lock order: `epochs`, then `records`.
+    epochs: Mutex<HashMap<SessionScope, u64>>,
     records: Mutex<HashMap<SessionKey, SessionRecord>>,
 }
 
@@ -248,6 +257,32 @@ impl MeetingSessions {
         true
     }
 
+    /// How many times `scope` was closed.
+    pub fn epoch(&self, scope: &SessionScope) -> u64 {
+        self.epochs.lock().unwrap().get(scope).copied().unwrap_or(0)
+    }
+
+    /// For background starts: if `scope` was not closed since `epoch`, record
+    /// `key`'s session (unless already recorded) and return true; else
+    /// discard `record` and return false.
+    pub fn insert_if_current(&self, key: SessionKey, record: SessionRecord, epoch: u64) -> bool {
+        let epochs = self.epochs.lock().unwrap();
+        if epochs.get(&key.scope).copied().unwrap_or(0) != epoch {
+            return false;
+        }
+        self.records.lock().unwrap().entry(key).or_insert(record);
+        true
+    }
+
+    fn is_stateless_only(&self, key: &SessionKey) -> bool {
+        self.records
+            .lock()
+            .unwrap()
+            .get(key)
+            .map(|r| r.stateless_only)
+            .unwrap_or(false)
+    }
+
     pub fn contains(&self, key: &SessionKey) -> bool {
         self.records.lock().unwrap().contains_key(key)
     }
@@ -258,6 +293,8 @@ impl MeetingSessions {
 
     /// Forget every tier of `scope` (meeting ended / meeting view left).
     pub fn remove_scope(&self, scope: &SessionScope) {
+        let mut epochs = self.epochs.lock().unwrap();
+        *epochs.entry(scope.clone()).or_insert(0) += 1;
         self.records.lock().unwrap().retain(|key, _| key.scope != *scope);
     }
 
@@ -282,6 +319,8 @@ impl MeetingSessions {
     }
 
     /// Keep only the most recent deltas that fit in `budget` characters.
+    /// When that drops nothing (the preload itself is too big), mark the
+    /// record stateless-only.
     fn truncate_replay(&self, key: &SessionKey, budget: usize) {
         if let Some(record) = self.records.lock().unwrap().get_mut(key) {
             let mut used = 0usize;
@@ -296,6 +335,9 @@ impl MeetingSessions {
                 .count();
             let drop = record.replay.len() - keep;
             record.replay.drain(..drop);
+            if drop == 0 {
+                record.stateless_only = true;
+            }
         }
     }
 }
@@ -312,7 +354,8 @@ pub enum AskFailure {
     /// sent elsewhere (that would repeat the text); reported as an error.
     AfterOutput(AgentError),
     /// The session's context is full. It was reset to its preload plus the
-    /// most recent deltas; this request goes down the stateless path.
+    /// most recent deltas (or, when the preload alone is too big, marked
+    /// stateless-only); this request goes down the stateless path.
     ContextFull(AgentError),
     /// Claude is unavailable (after one restart where it applies).
     Unavailable(AgentErrorKind, AgentError),
@@ -405,6 +448,12 @@ pub async fn ask_meeting_session(
         let Some(init) = sessions.restart_init(key) else {
             return Err(AskFailure::Closed);
         };
+        if sessions.is_stateless_only(key) {
+            return Err(AskFailure::ContextFull(AgentError::Cli(
+                AgentErrorKind::ContextOverflow,
+                "this meeting is too long for a Claude session".into(),
+            )));
+        }
         let attempt = async {
             let handle = manager.ensure(key, init).await?;
             if cancel.is_cancelled() {
@@ -446,23 +495,31 @@ pub async fn ask_meeting_session(
             result
         };
         let err = match attempt.await {
-            Ok(turn) => return Ok(turn),
+            Ok(turn) => {
+                // Closed while this turn ran: don't leave the session behind.
+                if !sessions.contains(key) {
+                    retire(manager, key);
+                }
+                return Ok(turn);
+            }
             Err(e) => e,
         };
         if !sessions.contains(key) {
+            retire(manager, key);
             return Err(AskFailure::Closed);
         }
         if err.is_cancel() || cancel.is_cancelled() {
             return Err(AskFailure::Cancelled);
+        }
+        // Before the overflow case: text already on screen is never re-answered.
+        if streamed.load(Ordering::SeqCst) {
+            return Err(AskFailure::AfterOutput(err));
         }
         if matches!(err, AgentError::Cli(AgentErrorKind::ContextOverflow, _)) {
             log::warn!("Claude session {key:?} is full ({err}); resetting it to a short replay");
             sessions.truncate_replay(key, REPLAY_TAIL_CHARS);
             retire(manager, key);
             return Err(AskFailure::ContextFull(err));
-        }
-        if streamed.load(Ordering::SeqCst) {
-            return Err(AskFailure::AfterOutput(err));
         }
         if !restarted && is_restartable(&err) {
             log::warn!("Claude session {key:?} failed ({err}); restarting it once");
@@ -511,12 +568,13 @@ const LIVE_SESSION_RULES: &str = "\
 ## How this session works
 You are connected to a live meeting through NexQ. Context documents and the \
 transcript arrive as messages. Each request carries only the transcript lines \
-that are new since the previous request ([mm:ss] Speaker: text), then \
-\"## Task instructions\" and, when present, the question. Treat every \
-transcript line you have received as one continuous meeting. Follow the task \
-instructions of the current message only; they replace those of earlier \
-messages. Answer directly, without preamble, and never repeat the transcript \
-back. Respond in the language used in the meeting.";
+that are new since the previous request (\"[mm:ss] [SEGMENT_ID] Speaker: \
+text\"), then \"## Task instructions\" and, when present, the question. Treat \
+every transcript line you have received as one continuous meeting. Follow the \
+task instructions of the current message only; they replace those of earlier \
+messages. When asked for segment ids, use the [SEGMENT_ID] of the lines; \
+otherwise never mention them. Answer directly, without preamble, and never \
+repeat the transcript back. Respond in the language used in the meeting.";
 
 const PAST_SESSION_PROMPT: &str = "\
 You are NexQ's assistant for a meeting that has already ended. Its summary \
@@ -550,7 +608,13 @@ pub fn compose_delta(
     question: Option<&str>,
     detected_question: Option<&str>,
 ) -> String {
-    let mut parts = vec![build_delta_prompt(new_segments, "", None, None)];
+    let mut parts = Vec::new();
+    if !new_segments.is_empty() {
+        parts.push(format!(
+            "## New transcript since last request\n{}",
+            transcript_lines(new_segments, true)
+        ));
+    }
     for (header, body) in extra_sections {
         if !body.trim().is_empty() {
             parts.push(format!("{header}\n{}", body.trim()));
@@ -593,10 +657,14 @@ pub fn relative_ms(timestamp_ms: i64, start_ms: i64) -> u64 {
     }
 }
 
-/// A stable id for a segment that has none (older callers): its time,
-/// speaker and text.
+/// A stable, short id for a segment that has none (older callers), derived
+/// from its time, speaker and text.
 pub fn fallback_segment_id(timestamp_ms: i64, speaker: &str, text: &str) -> String {
-    format!("{timestamp_ms}|{speaker}|{text}")
+    use std::hash::{Hash, Hasher};
+    // `DefaultHasher::new()` uses fixed keys: the same segment always hashes the same.
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (timestamp_ms, speaker, text).hash(&mut hasher);
+    format!("seg-{:016x}", hasher.finish())
 }
 
 /// Final segments from `generate_assist`'s `transcript_segments` JSON, with
@@ -860,7 +928,7 @@ mod tests {
         );
         assert_eq!(
             p,
-            "## New transcript since last request\n[01:01] Them: We ship Friday\n\n\
+            "## New transcript since last request\n[01:01] [s1] Them: We ship Friday\n\n\
              ## Relevant document excerpts\nchunk 1\n\n\
              ## Task instructions\nSuggest a reply.\n\n\
              ## Detected question\nWhen?"
@@ -1082,7 +1150,7 @@ mod tests {
 
         let prompts = script.prompts.lock().unwrap().clone();
         assert_eq!(prompts.len(), 3);
-        assert!(prompts[0].contains("Them: a\n[00:00] Them: b"));
+        assert!(prompts[0].contains("[a] Them: a\n[00:00] [b] Them: b"), "{}", prompts[0]);
         assert!(prompts[1].contains("Them: c") && !prompts[1].contains("Them: a"));
         assert!(!prompts[2].contains("## New transcript"), "nothing new: {}", prompts[2]);
         assert_eq!(script.spawns.load(Ordering::SeqCst), 1);
@@ -1102,7 +1170,7 @@ mod tests {
         ask(&manager, &sessions, &key, &finals).await.unwrap();
         let p = last_prompt(&script);
         assert!(p.contains("Them: question"), "{p}");
-        assert!(!p.contains("you1") && !p.contains("you2"), "nothing resent: {p}");
+        assert!(!p.contains("Them: you1") && !p.contains("Them: you2"), "nothing resent: {p}");
         // A shorter, different copy of the same meeting resends nothing.
         ask(&manager, &sessions, &key, &[seg("you1", 5_000)]).await.unwrap();
         assert!(!last_prompt(&script).contains("## New transcript"));
@@ -1217,6 +1285,52 @@ mod tests {
         assert_eq!(script.spawns.load(Ordering::SeqCst), 2);
         assert_eq!(script.appended.lock().unwrap()[1], vec!["docs".to_string(), recent_delta]);
         assert!(last_prompt(&script).contains("Them: new"));
+    }
+
+    #[tokio::test]
+    async fn routing_overflow_after_output_is_not_re_answered() {
+        let (manager, sessions, script, key) = setup(&[]);
+        script.steps.lock().unwrap().push(Step::StreamThenFail(AgentError::Cli(
+            AgentErrorKind::ContextOverflow,
+            "Prompt is too long".into(),
+        )));
+        let failure = ask(&manager, &sessions, &key, &[seg("a", 0)]).await.unwrap_err();
+        assert!(matches!(failure, AskFailure::AfterOutput(_)), "{failure:?}");
+    }
+
+    #[tokio::test]
+    async fn routing_preload_only_overflow_goes_stateless_without_spawning() {
+        let (manager, sessions, script, key) = setup(&["a huge preload"]);
+        script.fail_next(AgentError::Cli(AgentErrorKind::ContextOverflow, "Prompt is too long".into()));
+        let failure = ask(&manager, &sessions, &key, &[seg("a", 0)]).await.unwrap_err();
+        assert!(matches!(failure, AskFailure::ContextFull(_)), "{failure:?}");
+        assert!(sessions.get(&key).unwrap().stateless_only, "nothing to truncate: stateless only");
+        // Later requests skip the session entirely.
+        let failure = ask(&manager, &sessions, &key, &[seg("a", 0)]).await.unwrap_err();
+        assert!(matches!(failure, AskFailure::ContextFull(_)));
+        assert_eq!(script.spawns.load(Ordering::SeqCst), 1, "no respawn per request");
+        assert_eq!(script.prompts.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn routing_epoch_discards_background_work_after_close() {
+        let sessions = MeetingSessions::default();
+        let key = SessionKey { scope: live(), tier: Tier::Fast };
+        let epoch = sessions.epoch(&key.scope);
+        sessions.remove_scope(&key.scope); // meeting ended while the record was built
+        assert!(!sessions.insert_if_current(key.clone(), SessionRecord::default(), epoch));
+        assert!(!sessions.contains(&key));
+        let fresh = sessions.epoch(&key.scope);
+        assert!(sessions.insert_if_current(key.clone(), SessionRecord::default(), fresh));
+        assert!(sessions.contains(&key));
+    }
+
+    #[test]
+    fn routing_fallback_segment_id_is_short_and_stable() {
+        let a = fallback_segment_id(1, "Them", "hello");
+        assert_eq!(a, fallback_segment_id(1, "Them", "hello"));
+        assert_ne!(a, fallback_segment_id(2, "Them", "hello"));
+        assert!(a.starts_with("seg-") && a.len() == 20, "{a}");
     }
 
     #[tokio::test]

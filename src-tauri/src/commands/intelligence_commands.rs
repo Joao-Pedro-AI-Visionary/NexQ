@@ -408,25 +408,15 @@ async fn session_assist(state: &AppState, app: &AppHandle, req: SessionAssist<'_
             Err(e) => log::warn!("RAG retrieval for the Claude session failed: {e}"),
         }
     }
-    // Bookmark suggestions answer with segment ids. A past-meeting session
-    // has them in its preload; a live session (the meeting view of the
-    // running meeting) gets them with this one request.
-    let id_transcript = match (&key.scope, *mode, req.transcript_segments) {
-        (SessionScope::Live(_), "BookmarkSuggestions", Some(json)) => {
-            build_transcript_from_segments(json, 0, true)
-        }
-        _ => String::new(),
-    };
+    // Bookmark suggestions cite segment ids: the session already holds every
+    // line tagged with its id (preload and deltas), so nothing extra is sent.
 
     let session_key = routing::session_key_label(key);
     let rag_context = rag.context_text.clone();
     let compose = |new: &[Seg]| {
         routing::compose_delta(
             new,
-            &[
-                ("## Relevant document excerpts", rag_context.as_str()),
-                ("## Transcript lines with segment ids", id_transcript.as_str()),
-            ],
+            &[("## Relevant document excerpts", rag_context.as_str())],
             &req.task_instructions,
             req.custom_question,
             req.detected_question.as_deref(),

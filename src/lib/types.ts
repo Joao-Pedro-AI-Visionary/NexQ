@@ -603,9 +603,12 @@ export interface StreamSourcesEvent {
   request_id: string | null;
 }
 
-/** Transcript segment sent with generate_assist (`id` only for BookmarkSuggestions). */
+/** Transcript segment sent with generate_assist. */
 export interface AssistTranscriptSegment {
-  /** Stable segment id: a Claude session sends each segment once, by id. */
+  /**
+   * Stable segment id. A Claude session sends each segment once by id, and
+   * bookmark suggestions cite it. Missing only for legacy callers.
+   */
   id?: string;
   text: string;
   speaker: string;

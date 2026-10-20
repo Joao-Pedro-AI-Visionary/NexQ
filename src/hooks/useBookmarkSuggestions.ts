@@ -8,6 +8,8 @@ import {
 import { addMeetingBookmark, generateAssist } from "../lib/ipc";
 import type { Meeting, MeetingBookmark } from "../lib/types";
 import { pastMeetingIdFor } from "../stores/meetingStore";
+import { useConfigStore } from "../stores/configStore";
+import { assistSegments } from "../lib/assistSegments";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -276,19 +278,11 @@ export function useBookmarkSuggestions(
       cleanups.push(unToken);
 
       // Merge consecutive same-speaker segments to reduce prompt size
-      // (463 raw segments → ~100 merged blocks for a typical 1hr meeting)
+      // (463 raw segments → ~100 merged blocks for a typical 1hr meeting),
+      // except for a Claude session, which needs every segment under its own id.
+      // All finals are kept for timestamp lookup either way.
       const finals = meeting.transcript.filter((s) => s.is_final);
-      const merged: { id: string; text: string; speaker: string; timestamp_ms: number }[] = [];
-      for (const seg of finals) {
-        const last = merged.length > 0 ? merged[merged.length - 1] : null;
-        if (last && last.speaker === seg.speaker) {
-          last.text += " " + seg.text;
-        } else {
-          merged.push({ id: seg.id, text: seg.text, speaker: seg.speaker, timestamp_ms: seg.timestamp_ms });
-        }
-      }
-      // Send merged segments to LLM (compact), but keep all finals for timestamp lookup
-      const segments = merged;
+      const segments = assistSegments(finals, useConfigStore.getState().llmProvider !== "claude_cli");
       const allSegments = finals.map((s) => ({ id: s.id, timestamp_ms: s.timestamp_ms }));
 
       const unEnd = await onStreamEnd(async (event) => {
