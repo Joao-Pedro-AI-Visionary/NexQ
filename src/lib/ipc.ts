@@ -734,6 +734,11 @@ export async function getPendingUpdate(): Promise<UpdateInfo | null> {
   return invoke<UpdateInfo | null>("get_pending_update");
 }
 
+/** True while a quit is deferred (waiting for the last recording to save). */
+export async function isQuitPending(): Promise<boolean> {
+  return invoke<boolean>("is_quit_pending");
+}
+
 // == IPC: Claude CLI (subscription) ==
 
 /** Detect `claude.exe`, its version and login state (no model call). */

@@ -5,8 +5,28 @@ import {
 } from "@tauri-apps/plugin-global-shortcut";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useAIActionsStore } from "../stores/aiActionsStore";
-import { generateAssist } from "../lib/ipc";
-import { showLauncherWindow, showOverlayWindow } from "../lib/windows";
+import { generateAssist, isQuitPending } from "../lib/ipc";
+import { meetingShortcutAction, showLauncherWindow, showOverlayWindow } from "../lib/windows";
+import { endMeetingFromThisWindow } from "./useUpdater";
+import { showToast } from "../stores/toastStore";
+
+/** Ctrl+M: end the running meeting (in every window that holds it) or start one. */
+async function toggleMeetingFromShortcut(): Promise<void> {
+  const store = useMeetingStore.getState();
+  const quitPending = store.activeMeeting ? false : await isQuitPending().catch(() => false);
+  switch (meetingShortcutAction(!!store.activeMeeting, quitPending)) {
+    case "end":
+      if (!(await endMeetingFromThisWindow())) {
+        showToast("Couldn't finish saving the meeting", "error");
+      }
+      break;
+    case "start":
+      await store.startMeetingFlow();
+      break;
+    case "ignore":
+      break;
+  }
+}
 
 export function useGlobalShortcut() {
   // Global shortcuts (work even when window is not focused)
@@ -21,12 +41,7 @@ export function useGlobalShortcut() {
           key: "CmdOrCtrl+M",
           handler: (event) => {
             if (event.state === "Pressed") {
-              const store = useMeetingStore.getState();
-              if (store.activeMeeting) {
-                store.endMeetingFlow().catch(() => {});
-              } else {
-                store.startMeetingFlow().catch(() => {});
-              }
+              toggleMeetingFromShortcut().catch(() => {});
             }
           },
         },

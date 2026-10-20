@@ -691,6 +691,7 @@ pub fn run() {
             updater_commands::download_update,
             updater_commands::install_update_now,
             updater_commands::get_pending_update,
+            updater_commands::is_quit_pending,
             // == COMMANDS: claude cli ==
             claude_cli_commands::claude_cli_status,
             claude_cli_commands::set_claude_cli_config,

@@ -266,6 +266,13 @@ pub fn quit_pending() -> bool {
     QUIT_WAITED_FOR_RECORDING.load(Ordering::SeqCst)
 }
 
+/// Whether a quit is deferred (waiting for the last recording to save), so
+/// the frontend doesn't start a meeting meanwhile (e.g. Ctrl+M).
+#[command]
+pub fn is_quit_pending() -> bool {
+    quit_pending()
+}
+
 /// What to do with a downloaded update when the app is asked to exit.
 #[derive(Debug, PartialEq, Eq)]
 pub enum QuitAction {

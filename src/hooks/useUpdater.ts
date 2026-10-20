@@ -14,6 +14,7 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useUpdaterStore } from "../stores/updaterStore";
 import { useMeetingStore } from "../stores/meetingStore";
 import { showToast } from "../stores/toastStore";
+import { meetingEndRoute } from "../lib/windows";
 import {
   checkForUpdate,
   downloadUpdate,
@@ -177,6 +178,29 @@ export async function endMeetingInAllWindows(
     clearTimeout(timer);
     unlisten?.();
   }
+}
+
+/**
+ * End the running meeting from this window. When the overlay took the
+ * meeting and this is another window, it ends through every window so the
+ * overlay saves the data only it holds; resolves once both are done (false
+ * on timeout). Otherwise this window ends it by itself.
+ */
+export async function endMeetingFromThisWindow(): Promise<boolean> {
+  const state = useMeetingStore.getState();
+  const meeting = state.activeMeeting;
+  if (!meeting) return true;
+  let label = "";
+  try {
+    label = getCurrentWebviewWindow().label;
+  } catch {
+    /* not running in Tauri */
+  }
+  if (meetingEndRoute(label, state.overlayMeetingId === meeting.id) === "all_windows") {
+    return endMeetingInAllWindows();
+  }
+  await state.endMeetingFlow();
+  return true;
 }
 
 /**

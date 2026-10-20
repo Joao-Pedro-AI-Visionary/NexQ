@@ -15,6 +15,7 @@ import { TestSearchDialog } from "../context/TestSearchDialog";
 import { NEXQ_VERSION, NEXQ_DEVELOPER } from "../lib/version";
 import { ServiceStatusBar } from "../components/ServiceStatusBar";
 import { showOverlayWindow } from "../lib/windows";
+import { endMeetingFromThisWindow } from "../hooks/useUpdater";
 import type { MeetingSummary, AudioMode, AIScenario } from "../lib/types";
 import {
   Settings,
@@ -67,7 +68,6 @@ export function LauncherView() {
   const recentMeetings = useMeetingStore((s) => s.recentMeetings);
   const loadRecentMeetings = useMeetingStore((s) => s.loadRecentMeetings);
   const startMeetingFlow = useMeetingStore((s) => s.startMeetingFlow);
-  const endMeetingFlow = useMeetingStore((s) => s.endMeetingFlow);
   const activeMeeting = useMeetingStore((s) => s.activeMeeting);
 
   const resources = useContextStore((s) => s.resources);
@@ -148,7 +148,10 @@ export function LauncherView() {
     const setup = pendingMeetingSetup.current;
     pendingMeetingSetup.current = null;
     try {
-      await endMeetingFlow();
+      // The overlay saves its own data: wait until every window has ended it.
+      if (!(await endMeetingFromThisWindow())) {
+        throw new Error("Couldn't finish saving the meeting — new meeting not started");
+      }
       await startMeetingFlow(undefined, setup?.audioMode, setup?.scenario);
       showToast("New meeting started", "success");
     } catch (err) {
@@ -157,7 +160,7 @@ export function LauncherView() {
     } finally {
       setIsStarting(false);
     }
-  }, [endMeetingFlow, startMeetingFlow]);
+  }, [startMeetingFlow]);
 
   const handleSearch = useCallback(async (query: string) => {
     setSearchQuery(query);

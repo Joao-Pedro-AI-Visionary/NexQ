@@ -49,6 +49,25 @@ export function shouldPersistOverlayData(windowLabel: string, overlayActive: boo
 }
 
 /**
+ * How a window ends the running meeting: by itself, or through every window
+ * (the tray's Stop path) when it is not the overlay and the overlay took the
+ * meeting — the overlay holds data only it saves (see
+ * shouldPersistOverlayData), so it must run its own endMeetingFlow.
+ */
+export function meetingEndRoute(windowLabel: string, overlayActive: boolean): "here" | "all_windows" {
+  return windowLabel !== "overlay" && overlayActive ? "all_windows" : "here";
+}
+
+/**
+ * What the meeting shortcut (Ctrl+M) does: end the running meeting, start
+ * one, or nothing while a deferred quit is pending (NexQ is about to exit).
+ */
+export function meetingShortcutAction(hasMeeting: boolean, quitPending: boolean): "end" | "start" | "ignore" {
+  if (hasMeeting) return "end";
+  return quitPending ? "ignore" : "start";
+}
+
+/**
  * Whether the user can see a window right now (shown and not minimized).
  * An unknown window or a failed query counts as not shown.
  */
