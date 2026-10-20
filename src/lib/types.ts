@@ -298,7 +298,12 @@ export interface ClaudeAuthStatus {
   auth_method: string;
   subscription_type: string | null;
   email: string | null;
+  /** How the login is billed: only a claude.ai login with a plan uses the subscription. */
+  login: ClaudeLogin;
 }
+
+/** Mirrors Rust `ClaudeLogin`. */
+export type ClaudeLogin = "logged_out" | "subscription" | "api_billed";
 
 /** Mirrors Rust `ClaudeCliStatus` (`claude_cli_status` command). */
 export interface ClaudeCliStatus {
@@ -308,6 +313,8 @@ export interface ClaudeCliStatus {
   version: string | null;
   /** null when not installed or the `auth status` probe failed. */
   auth: ClaudeAuthStatus | null;
+  /** Not installed, but an npm install (`claude.cmd`) was found: NexQ needs the native installer. */
+  npm_only: boolean;
 }
 
 /** Mirrors Rust `ClaudeCliConfig` (`set_claude_cli_config` command). */

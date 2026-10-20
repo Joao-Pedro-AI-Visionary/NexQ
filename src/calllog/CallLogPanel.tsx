@@ -7,7 +7,7 @@ import { showToast } from "../stores/toastStore";
 import { CallLogEntry } from "./CallLogEntry";
 import { useMeetingAgentUsage } from "../hooks/useMeetingAgentUsage";
 import { useAgentStore } from "../stores/agentStore";
-import { formatTokenUsage, formatCostEstimate } from "../lib/agentUsage";
+import { formatTokenUsage, formatCostEstimate, isApiBilled } from "../lib/agentUsage";
 import { PromptViewer } from "./PromptViewer";
 import type { LogFilterKind } from "../lib/types";
 import {
@@ -48,6 +48,7 @@ export function CallLogPanel() {
   const targetLang = useTranslationStore((s) => s.targetLang);
   const batchProgress = useTranslationStore((s) => s.batchProgress);
   const { sessions: claudeSessions, usage: claudeUsage } = useMeetingAgentUsage();
+  const claudeApiBilled = useAgentStore((s) => isApiBilled(s.status));
   // Session updates only arrive once the store has subscribed in this window
   useEffect(() => {
     useAgentStore.getState().init();
@@ -242,7 +243,7 @@ export function CallLogPanel() {
               <div className="mt-2 text-meta text-muted-foreground" data-testid="claude-usage">
                 <span className="font-medium text-foreground/80">Claude</span>{" "}
                 {formatTokenUsage(claudeUsage)}
-                <span className="block text-muted-foreground/70">{formatCostEstimate(claudeUsage)}</span>
+                <span className="block text-muted-foreground/70">{formatCostEstimate(claudeUsage, claudeApiBilled)}</span>
               </div>
             )}
 

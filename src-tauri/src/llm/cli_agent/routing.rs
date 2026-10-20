@@ -16,7 +16,7 @@
 use super::context::{
     build_delta_prompt, build_document_preload, pack_messages, transcript_lines, DeltaCursor, Seg,
 };
-use super::detect::{claude_auth_status, find_claude_binary};
+use super::detect::{claude_auth_status, find_claude_binary, ClaudeLogin, API_BILLED_NOTE};
 use super::manager::{
     tier_for, AgentSessionManager, ClaudeCliConfig, OnDelta, SessionInit, SessionKey,
     SessionScope, Tier,
@@ -754,7 +754,8 @@ pub fn segments_from_json(json: &str, start_ms: i64) -> Vec<Seg> {
         .collect()
 }
 
-/// No-cost check that Claude is installed and logged in.
+/// No-cost check that Claude is installed and logged in (to a subscription
+/// or, flagged in the UI, an API account).
 pub async fn probe_claude() -> Result<(), AgentErrorKind> {
     let bin = tokio::task::spawn_blocking(find_claude_binary)
         .await
@@ -764,10 +765,15 @@ pub async fn probe_claude() -> Result<(), AgentErrorKind> {
     let auth = claude_auth_status(&bin)
         .await
         .map_err(|_| AgentErrorKind::Other)?;
-    if auth.logged_in {
-        Ok(())
-    } else {
-        Err(AgentErrorKind::NotLoggedIn)
+    match auth.login {
+        ClaudeLogin::Subscription => Ok(()),
+        ClaudeLogin::LoggedOut => Err(AgentErrorKind::NotLoggedIn),
+        // Not blocked (the user may want it); Settings and the footer chip
+        // flag it, so it never passes for the subscription.
+        ClaudeLogin::ApiBilled => {
+            log::warn!("{API_BILLED_NOTE}");
+            Ok(())
+        }
     }
 }
 

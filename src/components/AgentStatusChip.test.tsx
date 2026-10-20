@@ -51,7 +51,8 @@ beforeEach(() => {
     installed: true,
     binary_path: "claude",
     version: "2.1.0",
-    auth: { logged_in: true, auth_method: "oauth", subscription_type: "max", email: "a@b.c" },
+    auth: { logged_in: true, auth_method: "claude.ai", subscription_type: "max", email: "a@b.c", login: "subscription" },
+    npm_only: false,
   });
   useMeetingStore.setState({ activeMeeting: { id: "m1" } as Meeting });
 });
@@ -114,6 +115,51 @@ describe("AgentStatusChip", () => {
     await act(async () => {});
     expect(screen.getByTestId("agent-status-dot")).toHaveAttribute("data-state", "ready");
     expect(screen.getByText("Ready")).toBeInTheDocument();
+  });
+
+  it("is amber with the API note outside a meeting when the login bills an API account", async () => {
+    useMeetingStore.setState({ activeMeeting: null });
+    ipc.claudeCliStatus.mockResolvedValue({
+      installed: true,
+      binary_path: "claude",
+      version: "2.1.0",
+      auth: { logged_in: true, auth_method: "api_key", subscription_type: null, email: null, login: "api_billed" },
+      npm_only: false,
+    });
+    render(<AgentStatusChip />);
+    await act(async () => {});
+    expect(screen.getByTestId("agent-status-dot")).toHaveAttribute("data-state", "attention");
+    expect(screen.getByText("API account")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-status-chip").title).toContain(
+      "This Claude login bills an API account, not your subscription.",
+    );
+  });
+
+  it("never shows a ready session green on an API-billed login", async () => {
+    ipc.claudeCliStatus.mockResolvedValue({
+      installed: true,
+      binary_path: "claude",
+      version: "2.1.0",
+      auth: { logged_in: true, auth_method: "claude.ai", subscription_type: null, email: null, login: "api_billed" },
+      npm_only: false,
+    });
+    render(<AgentStatusChip />);
+    await act(async () => {});
+    await act(async () => setSessions(session()));
+    expect(screen.getByTestId("agent-status-dot")).toHaveAttribute("data-state", "attention");
+    const tip = screen.getByTestId("agent-status-chip").title;
+    expect(tip).toContain("This Claude login bills an API account, not your subscription.");
+    expect(tip).toContain("billed to your API account");
+    expect(tip).not.toContain("included in your subscription");
+  });
+
+  it("names an npm-only install outside a meeting", async () => {
+    useMeetingStore.setState({ activeMeeting: null });
+    ipc.claudeCliStatus.mockResolvedValue({ installed: false, binary_path: null, version: null, auth: null, npm_only: true });
+    render(<AgentStatusChip />);
+    await act(async () => {});
+    expect(screen.getByTestId("agent-status-dot")).toHaveAttribute("data-state", "attention");
+    expect(screen.getByTestId("agent-status-chip").title).toContain("NexQ needs the native installer");
   });
 
   it("ignores sessions of other meetings and scopes", async () => {

@@ -46,7 +46,7 @@ The footer tooltip and AI Log header show the tokens used in the current meeting
 
 - NexQ never reads your `~/.claude` folder, your credentials, or any tokens. Sign-in happens only in Claude's own tool.
 - NexQ runs the unmodified `claude` program with all tools disabled, in an empty private folder. Claude cannot read your files, run commands, or browse on NexQ's behalf.
-- Claude API environment variables (such as `ANTHROPIC_API_KEY`) are removed from the process, so the session always uses your subscription login.
+- Claude API environment variables (such as `ANTHROPIC_API_KEY`) are removed from the process, so NexQ never passes an API key to Claude. The session uses whatever account you logged in with: if that login bills an API account rather than a Pro or Max plan, Settings and the footer show "This Claude login bills an API account, not your subscription." (amber, never "Connected"). It still works, at API prices; log in with your Claude account to use your subscription instead.
 - Transcript and context text you send is processed by Anthropic under your Claude account's terms, like any Claude conversation. Choose a local provider (Ollama, local Whisper) if audio and text must stay on your machine.
 
 ## Troubleshooting
@@ -54,6 +54,8 @@ The footer tooltip and AI Log header show the tokens used in the current meeting
 | Problem | Fix |
 |---------|-----|
 | "Claude not found" | Install Claude Code ([setup guide](https://code.claude.com/docs/en/setup)), then click **Check connection**. |
+| "Found an npm install of Claude Code" | NexQ needs the native installer (`claude.exe`), not the npm package. Install it from the [setup guide](https://code.claude.com/docs/en/setup). |
+| "Bills an API account" | Your Claude login is an API (Console) login. Run `claude`, then `/login` with your Claude account. |
 | "Not logged in" | Click **Open terminal to log in**, sign in, then check again. |
 | Slow first answer | The first answer in a session is slower while it warms up; later answers are faster. |
 | Rate or usage limit | Wait for your limit to reset, or use the fallback provider. |

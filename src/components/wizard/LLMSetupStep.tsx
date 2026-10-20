@@ -10,6 +10,7 @@ import {
   testLLMConnection,
   openClaudeLoginTerminal,
 } from "../../lib/ipc";
+import { API_BILLED_NOTE, isApiBilled } from "../../lib/agentUsage";
 import type { LLMProviderType, ModelInfo } from "../../lib/types";
 import {
   Server,
@@ -304,6 +305,7 @@ export function LLMSetupStep({
             <p className="text-xs text-muted-foreground">
               Uses your own Claude login on this PC. NexQ never sees your credentials.
             </p>
+            {isApiBilled(claudeStatus) && <p className="text-xs font-medium text-warning">{API_BILLED_NOTE}</p>}
             {claudeLoggedIn ? (
               <div className="flex flex-wrap items-center gap-3">
                 <button

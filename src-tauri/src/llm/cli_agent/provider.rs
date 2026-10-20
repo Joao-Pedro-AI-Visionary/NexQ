@@ -16,7 +16,7 @@
 //! `AppHandle` every `stream_completion` call already receives, so
 //! `create_provider` needs no access to `AppState`.
 
-use super::detect::{claude_status, find_claude_binary};
+use super::detect::{claude_status, find_claude_binary, ClaudeLogin, API_BILLED_NOTE};
 use super::manager::{AgentSessionManager, OnDelta, SessionInit, SessionKey, SessionScope, Tier};
 use super::protocol::{AgentErrorKind, TurnResult};
 use super::session::AgentError;
@@ -180,7 +180,9 @@ impl LLMProvider for ClaudeCliProvider {
             .collect())
     }
 
-    /// `Ok(true)` when `claude.exe` is installed and logged in.
+    /// `Ok(true)` when `claude.exe` is installed and logged in to a Claude
+    /// subscription. A login that bills an API account still works for
+    /// requests, but is reported as an error here, never as connected.
     async fn test_connection(&self) -> Result<bool, LLMError> {
         let bin = tokio::task::spawn_blocking(find_claude_binary)
             .await
@@ -190,12 +192,14 @@ impl LLMProvider for ClaudeCliProvider {
         let (_version, auth) = claude_status(&bin)
             .await
             .map_err(LLMError::ConnectionFailed)?;
-        if !auth.logged_in {
-            return Err(LLMError::AuthError(
+        match auth.login {
+            ClaudeLogin::Subscription => Ok(true),
+            ClaudeLogin::LoggedOut => Err(LLMError::AuthError(
                 "Claude CLI is not logged in. Run `claude` in a terminal to log in.".to_string(),
-            ));
+            )),
+            // Usable, but never reported as connected to the subscription.
+            ClaudeLogin::ApiBilled => Err(LLMError::AuthError(API_BILLED_NOTE.to_string())),
         }
-        Ok(true)
     }
 
     async fn stream_completion(

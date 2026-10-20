@@ -15,6 +15,17 @@ pub fn find_claude_binary() -> Option<PathBuf> {
             return Some(p);
         }
     }
+    first_line_ending(&where_claude()?, ".exe")
+}
+
+/// An npm install of Claude Code (`claude.cmd` on PATH). NexQ can't use it:
+/// it spawns `claude.exe` directly, never through a shell.
+pub fn find_npm_claude() -> Option<PathBuf> {
+    first_line_ending(&where_claude()?, ".cmd")
+}
+
+/// `where.exe claude` output (no console window).
+fn where_claude() -> Option<String> {
     let mut cmd = std::process::Command::new("where.exe");
     cmd.arg("claude");
     #[cfg(windows)]
@@ -23,15 +34,42 @@ pub fn find_claude_binary() -> Option<PathBuf> {
         cmd.creation_flags(0x0800_0000);
     }
     let out = cmd.output().ok()?;
-    first_exe_line(&String::from_utf8_lossy(&out.stdout))
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-fn first_exe_line(stdout: &str) -> Option<PathBuf> {
+/// First `where.exe` line ending in `ext` (case-insensitive).
+fn first_line_ending(stdout: &str, ext: &str) -> Option<PathBuf> {
     stdout
         .lines()
         .map(str::trim)
-        .find(|l| l.to_lowercase().ends_with(".exe"))
+        .find(|l| l.to_lowercase().ends_with(ext))
         .map(PathBuf::from)
+}
+
+/// How a Claude login is billed. Only a claude.ai login with a plan uses
+/// the subscription; any other login (Console / API key) bills an API
+/// account.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaudeLogin {
+    #[default]
+    LoggedOut,
+    Subscription,
+    ApiBilled,
+}
+
+/// Shown wherever an API-billed login would otherwise read as connected.
+pub const API_BILLED_NOTE: &str = "This Claude login bills an API account, not your subscription.";
+
+/// Classify a `claude auth status` result (see [`ClaudeLogin`]).
+pub fn classify_login(logged_in: bool, auth_method: &str, subscription_type: Option<&str>) -> ClaudeLogin {
+    if !logged_in {
+        ClaudeLogin::LoggedOut
+    } else if auth_method == "claude.ai" && subscription_type.is_some() {
+        ClaudeLogin::Subscription
+    } else {
+        ClaudeLogin::ApiBilled
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -40,6 +78,9 @@ pub struct ClaudeAuthStatus {
     pub auth_method: String,
     pub subscription_type: Option<String>,
     pub email: Option<String>,
+    /// How this login is billed (derived from the fields above).
+    #[serde(default)]
+    pub login: ClaudeLogin,
 }
 
 #[derive(Deserialize)]
@@ -59,11 +100,14 @@ struct RawAuth {
 pub fn parse_auth_status(json: &str) -> Result<ClaudeAuthStatus, String> {
     let raw: RawAuth =
         serde_json::from_str(json.trim()).map_err(|e| format!("invalid auth status JSON: {e}"))?;
+    let auth_method = raw.auth_method.unwrap_or_default();
+    let login = classify_login(raw.logged_in, &auth_method, raw.subscription_type.as_deref());
     Ok(ClaudeAuthStatus {
         logged_in: raw.logged_in,
-        auth_method: raw.auth_method.unwrap_or_default(),
+        auth_method,
         subscription_type: raw.subscription_type,
         email: raw.email,
+        login,
     })
 }
 
@@ -122,6 +166,18 @@ mod tests {
         assert_eq!(s.auth_method, "claude.ai");
         assert_eq!(s.subscription_type.as_deref(), Some("max"));
         assert_eq!(s.email.as_deref(), Some("a@b"));
+        assert_eq!(s.login, ClaudeLogin::Subscription);
+    }
+
+    #[test]
+    fn only_a_claude_ai_login_with_a_plan_uses_the_subscription() {
+        assert_eq!(classify_login(true, "claude.ai", Some("pro")), ClaudeLogin::Subscription);
+        assert_eq!(classify_login(true, "claude.ai", None), ClaudeLogin::ApiBilled);
+        assert_eq!(classify_login(true, "api_key", None), ClaudeLogin::ApiBilled);
+        assert_eq!(classify_login(true, "console", Some("max")), ClaudeLogin::ApiBilled);
+        assert_eq!(classify_login(false, "claude.ai", Some("max")), ClaudeLogin::LoggedOut);
+        let s = parse_auth_status(r#"{"loggedIn":true,"authMethod":"api_key"}"#).unwrap();
+        assert_eq!(s.login, ClaudeLogin::ApiBilled);
     }
 
     #[test]
@@ -129,13 +185,21 @@ mod tests {
         let s = parse_auth_status(r#"{"loggedIn":false}"#).unwrap();
         assert!(!s.logged_in);
         assert_eq!(s.subscription_type, None);
+        assert_eq!(s.login, ClaudeLogin::LoggedOut);
         assert!(parse_auth_status("nope").is_err());
     }
 
     #[test]
     fn where_output_picks_exe_line() {
         let out = "C:\\npm\\claude\r\nC:\\npm\\claude.cmd\r\nC:\\bin\\claude.exe\r\n";
-        assert_eq!(first_exe_line(out), Some(PathBuf::from("C:\\bin\\claude.exe")));
-        assert_eq!(first_exe_line("C:\\npm\\claude.cmd\r\n"), None);
+        assert_eq!(first_line_ending(out, ".exe"), Some(PathBuf::from("C:\\bin\\claude.exe")));
+        assert_eq!(first_line_ending("C:\\npm\\claude.cmd\r\n", ".exe"), None);
+    }
+
+    #[test]
+    fn where_output_finds_an_npm_install() {
+        let out = "C:\\npm\\claude\r\nC:\\npm\\CLAUDE.CMD\r\n";
+        assert_eq!(first_line_ending(out, ".cmd"), Some(PathBuf::from("C:\\npm\\CLAUDE.CMD")));
+        assert_eq!(first_line_ending("", ".cmd"), None);
     }
 }

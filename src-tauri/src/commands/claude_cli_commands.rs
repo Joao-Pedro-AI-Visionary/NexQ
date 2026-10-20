@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use tauri::{command, State};
 
 use crate::llm::cli_agent::detect::{
-    claude_auth_status, claude_version, find_claude_binary, ClaudeAuthStatus,
+    claude_auth_status, claude_version, find_claude_binary, find_npm_claude, ClaudeAuthStatus,
 };
 use crate::llm::cli_agent::manager::{AgentSessionStatus, ClaudeCliConfig};
 use crate::llm::ProviderType;
@@ -24,6 +24,9 @@ pub struct ClaudeCliStatus {
     pub version: Option<String>,
     /// `None` when not installed or the `auth status` probe failed.
     pub auth: Option<ClaudeAuthStatus>,
+    /// Not installed, but an npm install (`claude.cmd`) was found: NexQ
+    /// needs the native installer's `claude.exe`.
+    pub npm_only: bool,
 }
 
 async fn resolve_binary() -> Option<PathBuf> {
@@ -38,11 +41,17 @@ async fn resolve_binary() -> Option<PathBuf> {
 #[command]
 pub async fn claude_cli_status() -> Result<ClaudeCliStatus, String> {
     let Some(bin) = resolve_binary().await else {
+        let npm_only = tokio::task::spawn_blocking(find_npm_claude)
+            .await
+            .ok()
+            .flatten()
+            .is_some();
         return Ok(ClaudeCliStatus {
             installed: false,
             binary_path: None,
             version: None,
             auth: None,
+            npm_only,
         });
     };
     let (version, auth) = tokio::join!(claude_version(&bin), claude_auth_status(&bin));
@@ -57,6 +66,7 @@ pub async fn claude_cli_status() -> Result<ClaudeCliStatus, String> {
         binary_path: Some(bin.to_string_lossy().into_owned()),
         version,
         auth,
+        npm_only: false,
     })
 }
 
@@ -167,6 +177,7 @@ pub async fn open_claude_login_terminal() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::cli_agent::detect::ClaudeLogin;
 
     #[test]
     fn claude_cli_config_validation() {
@@ -226,11 +237,15 @@ mod tests {
                 auth_method: "claude.ai".into(),
                 subscription_type: Some("max".into()),
                 email: None,
+                login: ClaudeLogin::Subscription,
             }),
+            npm_only: false,
         };
         let json = serde_json::to_value(&status).unwrap();
         assert_eq!(json["binary_path"], "c");
         assert_eq!(json["auth"]["logged_in"], true);
         assert_eq!(json["auth"]["subscription_type"], "max");
+        assert_eq!(json["auth"]["login"], "subscription");
+        assert_eq!(json["npm_only"], false);
     }
 }

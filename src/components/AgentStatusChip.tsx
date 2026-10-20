@@ -7,7 +7,14 @@ import { Brain, ChevronUp } from "lucide-react";
 import { useAgentStore } from "../stores/agentStore";
 import { useConfigStore } from "../stores/configStore";
 import { useMeetingAgentUsage } from "../hooks/useMeetingAgentUsage";
-import { formatCostEstimate, formatTokenUsage, isRateLimited } from "../lib/agentUsage";
+import {
+  API_BILLED_NOTE,
+  NPM_ONLY_NOTE,
+  formatCostEstimate,
+  formatTokenUsage,
+  isApiBilled,
+  isRateLimited,
+} from "../lib/agentUsage";
 import { claudeTierLabel } from "../settings/ClaudeCliSettings";
 import type { AgentSessionStatus, ClaudeCliConfig, ClaudeCliStatus, SessionUsage } from "../lib/types";
 
@@ -43,15 +50,16 @@ function providerState(
   statusError: string | undefined,
 ): { state: AgentChipState; label: string } {
   if (!status) return { state: "idle", label: statusError ? "" : "Checking…" };
-  if (!status.installed) return { state: "attention", label: "Not installed" };
+  if (!status.installed) return { state: "attention", label: status.npm_only ? "Needs native install" : "Not installed" };
   if (!status.auth) return { state: "idle", label: "" };
-  return status.auth.logged_in
-    ? { state: "ready", label: "Ready" }
-    : { state: "attention", label: "Not logged in" };
+  if (!status.auth.logged_in) return { state: "attention", label: "Not logged in" };
+  // Usable, but never green: it doesn't use the subscription.
+  if (isApiBilled(status)) return { state: "attention", label: "API account" };
+  return { state: "ready", label: "Ready" };
 }
 
 function providerNote(status: ClaudeCliStatus | undefined): string {
-  if (status && !status.installed) return "Claude Code is not installed on this PC";
+  if (status && !status.installed) return status.npm_only ? NPM_ONLY_NOTE : "Claude Code is not installed on this PC";
   if (status?.auth && !status.auth.logged_in) return "Not logged in — sign in from Settings";
   return "";
 }
@@ -61,6 +69,7 @@ function buildTooltip(
   usage: SessionUsage,
   cfg: ClaudeCliConfig,
   note: string,
+  apiBilled: boolean,
 ): string {
   const tiers = sessions.length
     ? sessions
@@ -74,11 +83,12 @@ function buildTooltip(
         `Fast: ${claudeTierLabel(cfg.fast_model, cfg.fast_effort)}`,
         `Deep: ${claudeTierLabel(cfg.deep_model, cfg.deep_effort)}`,
       ];
-  const lines = ["Claude (subscription)", ...tiers];
+  const lines = [apiBilled ? "Claude (API account)" : "Claude (subscription)", ...tiers];
+  if (apiBilled) lines.push(API_BILLED_NOTE);
   const detail = sessions.find((s) => s.state === "error" && s.detail)?.detail;
   if (detail) lines.push(detail);
   else if (note) lines.push(note);
-  if (sessions.length > 0) lines.push(formatTokenUsage(usage), formatCostEstimate(usage));
+  if (sessions.length > 0) lines.push(formatTokenUsage(usage), formatCostEstimate(usage, apiBilled));
   return lines.join("\n");
 }
 
@@ -105,9 +115,13 @@ export function AgentStatusChip({
 
   // Closed sessions are dropped from the store, so any session here is open.
   const inSession = sessions.length > 0;
-  const { state, label } = inSession ? sessionState(sessions) : providerState(status, statusError);
+  const apiBilled = isApiBilled(status);
+  const chip = inSession ? sessionState(sessions) : providerState(status, statusError);
+  // An API-billed login is never shown green, in a session or not.
+  const state: AgentChipState = apiBilled && chip.state === "ready" ? "attention" : chip.state;
+  const label = chip.label;
   const style = STATE_STYLE[state];
-  const tooltip = buildTooltip(sessions, usage, cfg, inSession ? "" : providerNote(status));
+  const tooltip = buildTooltip(sessions, usage, cfg, inSession ? "" : providerNote(status), apiBilled);
 
   return (
     <div

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-shell";
 import { ExternalLink, Loader2, RefreshCw, Terminal } from "lucide-react";
+import { API_BILLED_NOTE, NPM_ONLY_NOTE } from "../lib/agentUsage";
 import { getApiKey, listModels, openClaudeLoginTerminal } from "../lib/ipc";
 import type { ClaudeCliConfig, ClaudeCliStatus } from "../lib/types";
 import { isSessionRunning, useAgentStore } from "../stores/agentStore";
@@ -45,14 +46,24 @@ export function claudeTierLabel(model: string, effort: string): string {
   return `${claudeModelLabel(model)} · ${e}`;
 }
 
-type ConnectionState = "checking" | "failed" | "connected" | "logged_out" | "not_installed" | "unknown";
+type ConnectionState =
+  | "checking"
+  | "failed"
+  | "connected"
+  | "api_billed"
+  | "logged_out"
+  | "not_installed"
+  | "npm_only"
+  | "unknown";
 
 function connectionState(status: ClaudeCliStatus | undefined, failed: boolean): ConnectionState {
   // No answer yet: still checking, or the check itself failed.
   if (!status) return failed ? "failed" : "checking";
-  if (!status.installed) return "not_installed";
+  if (!status.installed) return status.npm_only ? "npm_only" : "not_installed";
   if (!status.auth) return "unknown";
-  return status.auth.logged_in ? "connected" : "logged_out";
+  if (!status.auth.logged_in) return "logged_out";
+  // Only a subscription login counts as connected; any other login bills an API account.
+  return status.auth.login === "subscription" ? "connected" : "api_billed";
 }
 
 // Color carries the state: green ok, amber needs the user, neutral absent.
@@ -60,9 +71,11 @@ const DOT_CLASS: Record<ConnectionState, string> = {
   checking: "bg-muted-foreground/40 animate-pulse",
   failed: "bg-warning",
   connected: "bg-success",
+  api_billed: "bg-warning",
   logged_out: "bg-warning",
   unknown: "bg-warning",
   not_installed: "bg-muted-foreground/40",
+  npm_only: "bg-warning",
 };
 
 function planLabel(plan: string | null): string | null {
@@ -75,9 +88,11 @@ const ROW_LABEL: Record<ConnectionState, string> = {
   checking: "Checking…",
   failed: "Couldn't check",
   connected: "Connected",
+  api_billed: "API account",
   logged_out: "Not logged in",
   unknown: "Login state unknown",
   not_installed: "Not installed",
+  npm_only: "Needs native install",
 };
 
 /** Full state line of the details panel. */
@@ -89,6 +104,8 @@ function statusLine(state: ConnectionState, status: ClaudeCliStatus | undefined)
       return "Couldn't check for Claude Code";
     case "not_installed":
       return "Not installed";
+    case "npm_only":
+      return NPM_ONLY_NOTE;
     case "unknown":
       return "Installed — login state unavailable";
     case "logged_out":
@@ -98,6 +115,8 @@ function statusLine(state: ConnectionState, status: ClaudeCliStatus | undefined)
       const plan = planLabel(auth?.subscription_type ?? null);
       return [auth?.email ?? "Logged in", plan].filter(Boolean).join(" · ");
     }
+    case "api_billed":
+      return [status?.auth?.email ?? "Logged in", "API account"].join(" · ");
   }
 }
 
@@ -262,10 +281,16 @@ function ClaudeDetails({
           </button>
         </div>
 
-        {state === "not_installed" && (
-          <div className="mt-3 rounded-lg border border-border/30 bg-accent/20 px-4 py-3">
+        {(state === "not_installed" || state === "npm_only") && (
+          <div
+            className={`mt-3 rounded-lg border px-4 py-3 ${
+              state === "npm_only" ? "border-warning/20 bg-warning/5" : "border-border/30 bg-accent/20"
+            }`}
+          >
             <p className="text-xs text-muted-foreground">
-              Claude Code isn't installed on this PC. Install it, log in once, then check the connection.
+              {state === "npm_only"
+                ? "NexQ runs Claude Code's native app, not the npm package. Install it with the native installer, log in once, then check the connection."
+                : "Claude Code isn't installed on this PC. Install it, log in once, then check the connection."}
             </p>
             <a
               href={CLAUDE_INSTALL_URL}
@@ -285,12 +310,22 @@ function ClaudeDetails({
           </div>
         )}
 
-        {(state === "logged_out" || state === "unknown") && (
+        {(state === "logged_out" || state === "unknown" || state === "api_billed") && (
           <div className="mt-3 rounded-lg border border-warning/20 bg-warning/5 px-4 py-3">
-            <p className="text-xs text-muted-foreground">
-              Log in once in a terminal: Claude opens there and walks you through it. Your login stays
-              between you and Claude.
-            </p>
+            {state === "api_billed" ? (
+              <>
+                <p className="text-xs font-medium text-warning">{API_BILLED_NOTE}</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  It still works, at API prices. To use your subscription, log in with your Claude account
+                  in a terminal (run /login there).
+                </p>
+              </>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Log in once in a terminal: Claude opens there and walks you through it. Your login stays
+                between you and Claude.
+              </p>
+            )}
             <div className="mt-2.5 flex items-center gap-3">
               <button type="button" onClick={handleOpenLogin} className={BUTTON_CLASS}>
                 <Terminal className="h-3.5 w-3.5" />

@@ -1,7 +1,18 @@
 // Pure helpers for Claude session status and usage, shared by the footer chip,
 // the AI Log header and the fallback toast.
 
-import type { AgentSessionStatus, SessionUsage } from "./types";
+import type { AgentSessionStatus, ClaudeCliStatus, SessionUsage } from "./types";
+
+/** Shown wherever a login that bills an API account would read as connected. */
+export const API_BILLED_NOTE = "This Claude login bills an API account, not your subscription.";
+
+/** Shown when only an npm install of Claude Code (`claude.cmd`) was found. */
+export const NPM_ONLY_NOTE = "Found an npm install of Claude Code — NexQ needs the native installer";
+
+/** The Claude login bills an API account (usable, but not the subscription). */
+export function isApiBilled(status: ClaudeCliStatus | undefined | null): boolean {
+  return status?.auth?.login === "api_billed";
+}
 
 const NUMBER = new Intl.NumberFormat("en-US");
 
@@ -20,8 +31,8 @@ export function formatTokenUsage(u: SessionUsage): string {
 }
 
 /** The cost line shown wherever usage appears. */
-export function formatCostEstimate(u: SessionUsage): string {
-  return `≈ ${formatCost(u.cost_usd)} estimate — included in your subscription`;
+export function formatCostEstimate(u: SessionUsage, apiBilled = false): string {
+  return `≈ ${formatCost(u.cost_usd)} estimate — ${apiBilled ? "billed to your API account" : "included in your subscription"}`;
 }
 
 /** Live-scope sessions of one meeting (fast and/or deep). */

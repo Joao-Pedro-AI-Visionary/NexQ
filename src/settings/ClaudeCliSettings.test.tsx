@@ -50,16 +50,28 @@ import { ClaudeCliSettings } from "./ClaudeCliSettings";
 import { resetAgentStoreForTests } from "../stores/agentStore";
 import { DEFAULT_CLAUDE_CLI_CONFIG, useConfigStore } from "../stores/configStore";
 
-const NOT_INSTALLED: ClaudeCliStatus = { installed: false, binary_path: null, version: null, auth: null };
+const NOT_INSTALLED: ClaudeCliStatus = { installed: false, binary_path: null, version: null, auth: null, npm_only: false };
+const NPM_ONLY: ClaudeCliStatus = { ...NOT_INSTALLED, npm_only: true };
 const LOGGED_OUT: ClaudeCliStatus = {
   installed: true,
   binary_path: "C:\\Users\\me\\.local\\bin\\claude.exe",
   version: "2.1.288",
-  auth: { logged_in: false, auth_method: "none", subscription_type: null, email: null },
+  auth: { logged_in: false, auth_method: "none", subscription_type: null, email: null, login: "logged_out" },
+  npm_only: false,
 };
 const LOGGED_IN: ClaudeCliStatus = {
   ...LOGGED_OUT,
-  auth: { logged_in: true, auth_method: "claude.ai", subscription_type: "max", email: "me@example.com" },
+  auth: {
+    logged_in: true,
+    auth_method: "claude.ai",
+    subscription_type: "max",
+    email: "me@example.com",
+    login: "subscription",
+  },
+};
+const API_BILLED: ClaudeCliStatus = {
+  ...LOGGED_OUT,
+  auth: { logged_in: true, auth_method: "api_key", subscription_type: null, email: "me@example.com", login: "api_billed" },
 };
 
 function renderSettings() {
@@ -94,6 +106,32 @@ describe("ClaudeCliSettings", () => {
     renderSettings();
     const link = await screen.findByRole("link", { name: /install claude code/i });
     expect(link).toHaveAttribute("href", "https://code.claude.com/docs/en/setup");
+  });
+
+  it("names an npm-only install and links to the native installer", async () => {
+    ipc.claudeCliStatus.mockResolvedValue(NPM_ONLY);
+    renderSettings();
+    expect(
+      await screen.findByText("Found an npm install of Claude Code — NexQ needs the native installer"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("claude-status-dot")).toHaveAttribute("data-state", "npm_only");
+    expect(screen.getByRole("link", { name: /install claude code/i })).toHaveAttribute(
+      "href",
+      "https://code.claude.com/docs/en/setup",
+    );
+  });
+
+  it("never shows an API-billed login as connected", async () => {
+    ipc.claudeCliStatus.mockResolvedValue(API_BILLED);
+    renderSettings();
+    expect(
+      await screen.findByText("This Claude login bills an API account, not your subscription."),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("claude-status-dot")).toHaveAttribute("data-state", "api_billed");
+    expect(screen.queryByText("Connected")).not.toBeInTheDocument();
+    expect(screen.getByText("me@example.com · API account")).toBeInTheDocument();
+    // Still offers switching to the subscription login.
+    expect(screen.getByRole("button", { name: /open terminal to log in/i })).toBeInTheDocument();
   });
 
   it("offers the login terminal when installed but logged out", async () => {
