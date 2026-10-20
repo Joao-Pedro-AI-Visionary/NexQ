@@ -235,7 +235,7 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
             currentModel={llmModel}
             onApply={async (provider, model) => {
               try {
-                const key = await getApiKey(provider).catch(() => null);
+                const key = provider === "claude_cli" ? null : await getApiKey(provider).catch(() => null);
                 const config = JSON.stringify({
                   provider_type: provider,
                   ...(key && { api_key: key }),
@@ -243,7 +243,7 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
                 await setLLMProvider(config);
                 setConfigProvider(provider as LLMProviderType);
                 await setActiveModel(provider, model);
-                setConfigModel(model);
+                setConfigModel(model, provider);
               } catch (e) {
                 console.warn("[ServiceStatusBar] Failed to switch LLM:", e);
               }

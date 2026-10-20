@@ -66,8 +66,12 @@ function isFallbackCandidate(provider: string): boolean {
 /** Push the Claude CLI config to the backend, which holds it in memory only. */
 function pushClaudeCliConfig(config: ClaudeCliConfig): void {
   import("../lib/ipc").then(({ setClaudeCliConfig }) =>
-    setClaudeCliConfig(config)
-      .catch((e) => console.warn("[configStore] Failed to push Claude CLI config:", e))
+    setClaudeCliConfig(config).catch((e) => {
+      console.warn("[configStore] Failed to push Claude CLI config:", e);
+      import("./toastStore").then(({ showToast }) =>
+        showToast(`Claude settings not applied: ${e instanceof Error ? e.message : String(e)}`, "error")
+      );
+    })
   );
 }
 
@@ -228,7 +232,13 @@ interface ConfigState {
   setSTTProvider: (provider: STTProviderType) => void;
   setSTTLanguage: (language: string) => void;
   setLLMProvider: (provider: LLMProviderType) => void;
-  setLLMModel: (model: string) => void;
+  /**
+   * Set the active model. `provider` names the model's provider (defaults to
+   * the active one); the model is remembered for that provider.
+   */
+  setLLMModel: (model: string, provider?: string) => void;
+  /** Remember `model` as the last one used with `provider` (no activation). */
+  rememberModel: (provider: string, model: string) => void;
   /** Replace the Claude CLI config (persisted + pushed to the backend). */
   setClaudeCliConfig: (config: ClaudeCliConfig) => void;
   /** The user's fallback choice: pins it so it no longer follows the active provider. */
@@ -395,15 +405,23 @@ export const useConfigStore = create<ConfigState>((set) => ({
     persistValue("llmProvider", provider);
     followFallback(provider);
   },
-  setLLMModel: (model) => {
+  setLLMModel: (model, provider) => {
     set({ llmModel: model });
     persistValue("llmModel", model);
-    const { llmProvider, lastModelByProvider } = useConfigStore.getState();
-    if (model && isFallbackCandidate(llmProvider) && lastModelByProvider[llmProvider] !== model) {
-      const next = { ...lastModelByProvider, [llmProvider]: model };
+    useConfigStore.getState().rememberModel(provider ?? useConfigStore.getState().llmProvider, model);
+  },
+  rememberModel: (provider, model) => {
+    if (!model || provider === "claude_cli") return;
+    const { lastModelByProvider } = useConfigStore.getState();
+    if (lastModelByProvider[provider] !== model) {
+      const next = { ...lastModelByProvider, [provider]: model };
       set({ lastModelByProvider: next });
       persistValue("lastModelByProvider", next);
-      followFallback(llmProvider);
+    }
+    // An unpinned fallback on this provider tracks its latest model.
+    const { claudeCliFallbackPinned, claudeCliConfig: cfg } = useConfigStore.getState();
+    if (!claudeCliFallbackPinned && cfg.fallback_provider === provider && cfg.fallback_model !== model) {
+      useConfigStore.getState().setClaudeCliConfig({ ...cfg, fallback_model: model });
     }
   },
   setClaudeCliConfig: (config) => {
@@ -793,7 +811,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
 
       // Last model per provider; seeded from the saved active provider on upgrade.
       const lastModelByProvider: Record<string, string> = { ...(storedLastModels ?? {}) };
-      if (llmProvider && llmModel && isFallbackCandidate(llmProvider) && !lastModelByProvider[llmProvider]) {
+      if (llmProvider && llmModel && llmProvider !== "claude_cli" && !lastModelByProvider[llmProvider]) {
         lastModelByProvider[llmProvider] = llmModel;
       }
       // Claude CLI config: saved values over the defaults (tolerates fields

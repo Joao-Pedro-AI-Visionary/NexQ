@@ -15,7 +15,12 @@ const VISIBLE_BATCH = 50;
 
 export function OpenRouterModelCatalog({ models }: OpenRouterModelCatalogProps) {
   const llmModel = useConfigStore((s) => s.llmModel);
+  const llmProvider = useConfigStore((s) => s.llmProvider);
   const setConfigModel = useConfigStore((s) => s.setLLMModel);
+  const rememberModel = useConfigStore((s) => s.rememberModel);
+  const browsedModel = useConfigStore((s) => s.lastModelByProvider.openrouter);
+  // Active: the active model. Browsed: the model picked for OpenRouter.
+  const selectedId = llmProvider === "openrouter" ? llmModel : browsedModel ?? "";
   const favorites = useConfigStore((s) => s.openrouterFavorites);
   const recentlyUsed = useConfigStore((s) => s.openrouterRecentlyUsed);
   const toggleFavorite = useConfigStore((s) => s.toggleOpenRouterFavorite);
@@ -40,18 +45,23 @@ export function OpenRouterModelCatalog({ models }: OpenRouterModelCatalogProps) 
   const [filterWebSearch, setFilterWebSearch] = useState(false);
   const [visibleCount, setVisibleCount] = useState(VISIBLE_BATCH);
 
-  // Model selection handler
+  // Model selection handler. While OpenRouter is only browsed, the choice is
+  // remembered for it and applied by "Set as Active Provider".
   const handleSelect = useCallback(
     async (id: string) => {
-      setConfigModel(id);
       addRecentlyUsed(id);
+      if (llmProvider !== "openrouter") {
+        rememberModel("openrouter", id);
+        return;
+      }
+      setConfigModel(id, "openrouter");
       try {
         await ipcSetActiveModel("openrouter", id);
       } catch (err) {
         console.error("[OpenRouterCatalog] Failed to set active model:", err);
       }
     },
-    [setConfigModel, addRecentlyUsed]
+    [llmProvider, setConfigModel, rememberModel, addRecentlyUsed]
   );
 
   // Filter + sort pipeline (uses debounced search)
@@ -148,7 +158,7 @@ export function OpenRouterModelCatalog({ models }: OpenRouterModelCatalogProps) 
       <FavoritesSection
         favoriteIds={filteredFavoriteIds}
         models={filtered}
-        selectedModelId={llmModel}
+        selectedModelId={selectedId}
         onSelect={handleSelect}
         onToggleFavorite={toggleFavorite}
       />
@@ -181,7 +191,7 @@ export function OpenRouterModelCatalog({ models }: OpenRouterModelCatalogProps) 
               <ModelCard
                 key={m.id}
                 model={m}
-                isSelected={llmModel === m.id}
+                isSelected={selectedId === m.id}
                 isFavorite={favorites.includes(m.id)}
                 onSelect={handleSelect}
                 onToggleFavorite={toggleFavorite}

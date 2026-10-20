@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentSessionStatus, ClaudeCliStatus } from "../lib/types";
 
 // ── Tauri stubs ─────────────────────────────────────────────────────────────
@@ -83,6 +83,10 @@ describe("ClaudeCliSettings", () => {
     ipc.listModels.mockReset().mockResolvedValue([]);
     ipc.getApiKey.mockReset().mockResolvedValue(null);
     ipc.setActiveModel.mockReset().mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("links to the Claude Code install guide when the CLI is missing", async () => {
@@ -173,6 +177,9 @@ describe("ClaudeCliSettings", () => {
     expect(screen.queryByText(/applies to the next session/i)).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Fast effort"), { target: { value: "high" } });
     expect(screen.getByText(/applies to the next session/i)).toBeInTheDocument();
+    // Once the session ends the hint goes away.
+    await act(async () => emit("agent_session_status", { ...running, state: "closed" }));
+    expect(screen.queryByText(/applies to the next session/i)).not.toBeInTheDocument();
   });
 
   it("lists Gemini CLI and Codex CLI as disabled, coming soon", async () => {

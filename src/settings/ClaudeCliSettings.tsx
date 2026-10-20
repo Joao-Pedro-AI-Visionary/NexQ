@@ -273,7 +273,9 @@ function ClaudeDetails({
               rel="noreferrer"
               onClick={(e) => {
                 e.preventDefault();
-                open(CLAUDE_INSTALL_URL).catch(() => {});
+                open(CLAUDE_INSTALL_URL).catch((err) =>
+                  showToast(`Couldn't open the browser: ${err instanceof Error ? err.message : String(err)}`, "error")
+                );
               }}
               className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
             >
@@ -313,6 +315,11 @@ function ModelSettings() {
   const setConfig = useConfigStore((s) => s.setClaudeCliConfig);
   const sessionRunning = useAgentStore((s) => Object.values(s.sessions).some(isSessionRunning));
   const [changed, setChanged] = useState(false);
+
+  // The hint is about sessions running now; once they end it no longer applies.
+  useEffect(() => {
+    if (!sessionRunning) setChanged(false);
+  }, [sessionRunning]);
 
   const update = (patch: Partial<ClaudeCliConfig>) => {
     setConfig({ ...config, ...patch });
@@ -384,7 +391,10 @@ function FallbackSettings() {
   // The fallback provider's models, for the model picker.
   useEffect(() => {
     setModels([]);
-    if (!provider) return;
+    if (!provider) {
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     (async () => {

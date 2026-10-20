@@ -280,7 +280,7 @@ export function LLMSettings() {
     // Only the active provider's model is applied now; for a browsed provider
     // the selection is applied by "Set as Active Provider".
     if (selectedProvider !== llmProvider) return;
-    setConfigModel(modelId);
+    setConfigModel(modelId, selectedProvider);
     try { await setActiveModel(selectedProvider, modelId); } catch {}
   };
 
@@ -552,7 +552,11 @@ export function LLMSettings() {
                 : selectedModel || lastModelByProvider[selectedProvider] || "";
               if (model) {
                 await setActiveModel(selectedProvider, model).catch(() => {});
-                setConfigModel(model);
+                setConfigModel(model, selectedProvider);
+              } else if (llmProvider === "claude_cli") {
+                // Claude's Fast model must not carry over to the new provider.
+                await setActiveModel(selectedProvider, "").catch(() => {});
+                setConfigModel("", selectedProvider);
               }
             } catch {}
           }}

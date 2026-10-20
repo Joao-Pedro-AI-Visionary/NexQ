@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useConfigStore } from "../../stores/configStore";
 import { useAgentStore } from "../../stores/agentStore";
+import { showToast } from "../../stores/toastStore";
 import {
   listModels,
   setLLMProvider,
@@ -130,7 +131,7 @@ export function LLMSetupStep({
       await setLLMProvider(JSON.stringify({ provider_type: "claude_cli" }));
       await setActiveModel("claude_cli", model);
       setConfigProvider("claude_cli");
-      setConfigModel(model);
+      setConfigModel(model, "claude_cli");
     } catch (err) {
       setConnectionStatus("error");
       setConnectionMessage(err instanceof Error ? err.message : "Couldn't switch to Claude");
@@ -196,8 +197,8 @@ export function LLMSetupStep({
 
   async function handleModelSelect(modelId: string) {
     setSelectedModel(modelId);
-    setConfigModel(modelId);
     setConfigProvider(selectedProvider);
+    setConfigModel(modelId, selectedProvider);
     try {
       // Choosing a model is the explicit confirm: activate the provider now.
       await setLLMProvider(buildProviderConfig());
@@ -328,7 +329,11 @@ export function LLMSetupStep({
             ) : (
               <div className="flex flex-wrap items-center gap-3">
                 <button
-                  onClick={() => openClaudeLoginTerminal().catch(() => {})}
+                  onClick={() =>
+                    openClaudeLoginTerminal().catch((e) =>
+                      showToast(`Couldn't open a terminal: ${e instanceof Error ? e.message : String(e)}`, "error")
+                    )
+                  }
                   className="inline-flex items-center gap-2 rounded-xl border border-border/40 bg-background px-4 py-2 text-xs font-semibold text-foreground transition-colors hover:bg-accent"
                 >
                   <Terminal className="h-3.5 w-3.5" />

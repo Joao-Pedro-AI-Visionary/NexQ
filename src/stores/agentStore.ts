@@ -68,10 +68,15 @@ export const useAgentStore = create<AgentState>((set) => ({
 
   init: () => {
     if (initialized) return;
+    // Set now so concurrent calls don't subscribe twice; cleared on failure so
+    // a later call retries.
     initialized = true;
     onAgentSessionStatus((status) => {
       set((s) => ({ sessions: applySession(s.sessions, status) }));
-    }).catch((e) => console.warn("[agentStore] Failed to listen for session status:", e));
+    }).catch((e) => {
+      initialized = false;
+      console.warn("[agentStore] Failed to listen for session status:", e);
+    });
     getAgentSessions()
       .then((all) =>
         set((s) => {

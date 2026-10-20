@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // In-memory plugin-store and a recording `invoke`.
 const saved = vi.hoisted(() => new Map<string, unknown>());
@@ -32,6 +32,10 @@ describe("configStore: Claude CLI config", () => {
     invoke.mockClear();
     // loadConfig narrates its migrations.
     vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("starts with the defaults and the last active provider as fallback, and pushes it on load", async () => {
@@ -109,5 +113,38 @@ describe("configStore: Claude CLI config", () => {
     await vi.waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("set_active_model", { provider: "claude_cli", modelId: "sonnet" }),
     );
+  });
+
+  it("remembers a model under its own provider even when set before the provider", async () => {
+    const store = await freshStore();
+    const s = () => store.getState();
+    store.setState({ llmProvider: "ollama", lastModelByProvider: { ollama: "llama3.2" } });
+
+    // First-run wizard order: model, then provider.
+    s().setLLMModel("gpt-4o", "openai");
+    s().setLLMProvider("openai");
+
+    expect(s().lastModelByProvider).toEqual({ ollama: "llama3.2", openai: "gpt-4o" });
+    expect(s().claudeCliConfig).toMatchObject({ fallback_provider: "openai", fallback_model: "gpt-4o" });
+  });
+
+  it("remembering a browsed model touches neither the active model nor other providers", async () => {
+    const store = await freshStore();
+    const s = () => store.getState();
+    store.setState({
+      llmProvider: "ollama",
+      llmModel: "llama3.2",
+      lastModelByProvider: { ollama: "llama3.2" },
+      claudeCliConfig: { ...s().claudeCliConfig, fallback_provider: "ollama", fallback_model: "llama3.2" },
+    });
+
+    s().rememberModel("openrouter", "openai/gpt-4o-mini");
+
+    expect(s().llmModel).toBe("llama3.2");
+    expect(s().lastModelByProvider).toEqual({ ollama: "llama3.2", openrouter: "openai/gpt-4o-mini" });
+    expect(s().claudeCliConfig).toMatchObject({ fallback_provider: "ollama", fallback_model: "llama3.2" });
+    // Claude never gets a remembered model.
+    s().rememberModel("claude_cli", "haiku");
+    expect(s().lastModelByProvider.claude_cli).toBeUndefined();
   });
 });
