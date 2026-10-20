@@ -21,7 +21,8 @@ vi.mock("../lib/ipc", async (importOriginal) => ({
   getAgentSessions: () => ipc.getAgentSessions(),
 }));
 
-import { AgentStatusChip, scopeUsage } from "./AgentStatusChip";
+import { AgentStatusChip } from "./AgentStatusChip";
+import { isRateLimited, scopeUsage } from "../lib/agentUsage";
 import { agentSessionKey, resetAgentStoreForTests, useAgentStore } from "../stores/agentStore";
 import { useMeetingStore } from "../stores/meetingStore";
 
@@ -33,6 +34,7 @@ function session(over: Partial<AgentSessionStatus> = {}): AgentSessionStatus {
     state: "ready",
     model: "haiku",
     detail: null,
+    error_kind: null,
     usage: { input_tokens: 12345, output_tokens: 678, cost_usd: 0.1234 },
     ...over,
   };
@@ -81,10 +83,20 @@ describe("AgentStatusChip", () => {
     expect(screen.getByTestId("agent-status-chip").title).toContain("process crashed");
   });
 
-  it("turns amber, not red, on a usage limit", async () => {
+  it("turns amber, not red, when the backend classifies a rate limit", async () => {
     render(<AgentStatusChip />);
-    await act(async () => setSessions(session({ state: "error", detail: "5-hour usage limit reached" })));
+    await act(async () =>
+      setSessions(session({ state: "error", detail: "5-hour limit reached ∙ resets 3pm", error_kind: "rate_limited" })),
+    );
     expect(screen.getByTestId("agent-status-dot")).toHaveAttribute("data-state", "limited");
+  });
+
+  it("trusts error_kind over the text", async () => {
+    render(<AgentStatusChip />);
+    await act(async () =>
+      setSessions(session({ state: "error", detail: "rate limit in the logs, but the process died", error_kind: "crashed" })),
+    );
+    expect(screen.getByTestId("agent-status-dot")).toHaveAttribute("data-state", "error");
   });
 
   it("lists model, effort and thousands-separated tokens in the tooltip", async () => {
@@ -105,10 +117,63 @@ describe("AgentStatusChip", () => {
   });
 
   it("ignores sessions of other meetings and scopes", async () => {
-    useMeetingStore.setState({ activeMeeting: null });
     render(<AgentStatusChip />);
-    await act(async () => setSessions(session({ meeting_id: "other", state: "busy" })));
-    expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
+    await act(async () =>
+      setSessions(
+        session({ meeting_id: "other", state: "busy" }),
+        session({ scope: "past", state: "error", detail: "boom", error_kind: "crashed" }),
+        session({ scope: "utility", meeting_id: null, state: "busy" }),
+        session({ tier: "deep" }),
+      ),
+    );
+    expect(screen.getByTestId("agent-status-dot")).toHaveAttribute("data-state", "ready");
+    expect(screen.getByText("Session ready")).toBeInTheDocument();
+  });
+
+  it("lets an error outrank busy across tiers, and a fault outrank a limit", async () => {
+    render(<AgentStatusChip />);
+    await act(async () =>
+      setSessions(
+        session({ tier: "fast", state: "busy" }),
+        session({ tier: "deep", state: "error", detail: "x", error_kind: "other" }),
+      ),
+    );
+    expect(screen.getByTestId("agent-status-dot")).toHaveAttribute("data-state", "error");
+
+    await act(async () =>
+      setSessions(
+        session({ tier: "fast", state: "error", detail: "limit", error_kind: "rate_limited" }),
+        session({ tier: "deep", state: "error", detail: "x", error_kind: "crashed" }),
+      ),
+    );
+    expect(screen.getByTestId("agent-status-dot")).toHaveAttribute("data-state", "error");
+
+    await act(async () =>
+      setSessions(session({ tier: "fast", state: "busy" }), session({ tier: "deep", state: "starting" })),
+    );
+    expect(screen.getByTestId("agent-status-dot")).toHaveAttribute("data-state", "busy");
+  });
+});
+
+describe("isRateLimited", () => {
+  it("uses error_kind when present", () => {
+    expect(isRateLimited({ error_kind: "rate_limited", detail: "anything" })).toBe(true);
+    expect(isRateLimited({ error_kind: "other", detail: "usage limit reached" })).toBe(false);
+  });
+
+  it.each([
+    "You hit the Rate Limit",
+    "5-hour usage limit reached",
+    "5-hour limit reached ∙ resets 3pm",
+    "429 Too Many Requests",
+    "too many tokens per minute",
+  ])("falls back to the text matcher without error_kind: %s", (detail) => {
+    expect(isRateLimited({ error_kind: null, detail })).toBe(true);
+  });
+
+  it("does not mistake a context-window limit for a rate limit", () => {
+    expect(isRateLimited({ error_kind: null, detail: "context limit reached" })).toBe(false);
+    expect(isRateLimited({ error_kind: null, detail: "process crashed" })).toBe(false);
   });
 });
 

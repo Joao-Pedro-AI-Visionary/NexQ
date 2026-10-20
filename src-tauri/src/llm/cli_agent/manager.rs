@@ -17,7 +17,7 @@
 use super::command::SessionConfig;
 use super::context::DeltaCursor;
 use super::detect::find_claude_binary;
-use super::protocol::TurnResult;
+use super::protocol::{AgentErrorKind, TurnResult};
 use super::session::{AgentError, ClaudeSession};
 use crate::llm::provider::CancelToken;
 use async_trait::async_trait;
@@ -157,6 +157,10 @@ pub struct AgentSessionStatus {
     pub model: String,
     /// Readable reason for `error`.
     pub detail: Option<String>,
+    /// Snake_case [`AgentErrorKind`] of `detail` (`"rate_limited"`,
+    /// `"not_logged_in"`, ...); set exactly when `detail` is.
+    #[serde(default)]
+    pub error_kind: Option<String>,
     /// Cumulative usage of the whole scope (all tiers).
     pub usage: SessionUsage,
 }
@@ -289,7 +293,7 @@ impl SessionState {
 struct Entry {
     handle: Arc<dyn SessionHandle>,
     state: SessionState,
-    detail: Option<String>,
+    error: Option<TurnError>,
     last_used: Instant,
     in_flight: usize,
     /// Turns finished on this session (any outcome).
@@ -369,14 +373,14 @@ impl AgentSessionManager {
         let handle = match self.spawner.spawn(cfg).await {
             Ok(handle) => handle,
             Err(e) => {
-                self.emit(key, SessionState::Error, &model, Some(e.to_string()));
+                self.emit(key, SessionState::Error, &model, Some(TurnError::of(&e)));
                 return Err(e);
             }
         };
         for message in &init.preload {
             if let Err(e) = handle.append_context(message).await {
                 handle.close().await;
-                self.emit(key, SessionState::Error, &model, Some(e.to_string()));
+                self.emit(key, SessionState::Error, &model, Some(TurnError::of(&e)));
                 return Err(e);
             }
         }
@@ -396,7 +400,7 @@ impl AgentSessionManager {
             Entry {
                 handle: handle.clone(),
                 state: SessionState::Ready,
-                detail: None,
+                error: None,
                 last_used: Instant::now(),
                 in_flight: 0,
                 turns: 0,
@@ -423,7 +427,7 @@ impl AgentSessionManager {
             entry.in_flight += 1;
             entry.last_used = Instant::now();
             entry.state = SessionState::Busy;
-            entry.detail = None;
+            entry.error = None;
             entry.handle.clone()
         };
         self.emit(key, SessionState::Busy, &handle.model(), None);
@@ -447,7 +451,7 @@ impl AgentSessionManager {
         turn.outcome = match &result {
             Ok(_) => TurnOutcome::Succeeded,
             Err(e) if e.is_cancel() => TurnOutcome::Cancelled,
-            Err(e) => TurnOutcome::Failed(e.to_string()),
+            Err(e) => TurnOutcome::Failed(TurnError::of(e)),
         };
         drop(turn);
         result
@@ -473,26 +477,26 @@ impl AgentSessionManager {
                         // A success proves the session healthy again.
                         TurnOutcome::Succeeded if idle => {
                             entry.state = SessionState::Ready;
-                            entry.detail = None;
+                            entry.error = None;
                         }
                         TurnOutcome::Cancelled | TurnOutcome::Abandoned
                             if idle && entry.state == SessionState::Busy =>
                         {
                             entry.state = SessionState::Ready;
                         }
-                        TurnOutcome::Failed(reason) => {
+                        TurnOutcome::Failed(error) => {
                             entry.state = SessionState::Error;
-                            entry.detail = Some(reason.clone());
+                            entry.error = Some(error.clone());
                         }
                         _ => {}
                     }
-                    Some((entry.state, entry.detail.clone()))
+                    Some((entry.state, entry.error.clone()))
                 }
                 _ => None,
             }
         };
-        if let Some((state, detail)) = transition {
-            self.emit(key, state, &handle.model(), detail);
+        if let Some((state, error)) = transition {
+            self.emit(key, state, &handle.model(), error);
         }
     }
 
@@ -610,16 +614,16 @@ impl AgentSessionManager {
 
     /// Current status of every open session.
     pub fn snapshot(&self) -> Vec<AgentSessionStatus> {
-        let mut rows: Vec<(SessionKey, SessionState, String, Option<String>)> = self
+        let mut rows: Vec<(SessionKey, SessionState, String, Option<TurnError>)> = self
             .entries
             .lock()
             .unwrap()
             .iter()
-            .map(|(key, e)| (key.clone(), e.state, e.handle.model(), e.detail.clone()))
+            .map(|(key, e)| (key.clone(), e.state, e.handle.model(), e.error.clone()))
             .collect();
         rows.sort_by(|a, b| a.0.cmp(&b.0));
         rows.into_iter()
-            .map(|(key, state, model, detail)| self.status(&key, state, &model, detail))
+            .map(|(key, state, model, error)| self.status(&key, state, &model, error))
             .collect()
     }
 
@@ -651,7 +655,7 @@ impl AgentSessionManager {
         key: &SessionKey,
         state: SessionState,
         model: &str,
-        detail: Option<String>,
+        error: Option<TurnError>,
     ) -> AgentSessionStatus {
         AgentSessionStatus {
             scope: key.scope.label().to_string(),
@@ -659,13 +663,27 @@ impl AgentSessionManager {
             tier: key.tier.label().to_string(),
             state: state.label().to_string(),
             model: model.to_string(),
-            detail,
+            detail: error.as_ref().map(|e| e.text.clone()),
+            error_kind: error.map(|e| e.kind.as_str().to_string()),
             usage: self.usage(&key.scope),
         }
     }
 
-    fn emit(&self, key: &SessionKey, state: SessionState, model: &str, detail: Option<String>) {
-        self.sink.emit(&self.status(key, state, model, detail));
+    fn emit(&self, key: &SessionKey, state: SessionState, model: &str, error: Option<TurnError>) {
+        self.sink.emit(&self.status(key, state, model, error));
+    }
+}
+
+/// Why a session is in `error`: readable text plus its classified kind.
+#[derive(Debug, Clone, PartialEq)]
+struct TurnError {
+    text: String,
+    kind: AgentErrorKind,
+}
+
+impl TurnError {
+    fn of(e: &AgentError) -> Self {
+        Self { text: e.to_string(), kind: e.kind() }
     }
 }
 
@@ -675,7 +693,7 @@ enum TurnOutcome {
     Abandoned,
     Succeeded,
     Cancelled,
-    Failed(String),
+    Failed(TurnError),
 }
 
 /// Settles a turn's in-flight slot and state when dropped, so a caller that
@@ -756,6 +774,12 @@ mod tests {
         ) -> Result<TurnResult, AgentError> {
             if let Some(msg) = prompt.strip_prefix("fail:") {
                 return Err(AgentError::Crashed(msg.to_string()));
+            }
+            if let Some(msg) = prompt.strip_prefix("cli:") {
+                return Err(AgentError::Cli(
+                    crate::llm::cli_agent::protocol::classify_error(msg),
+                    msg.to_string(),
+                ));
             }
             if prompt == "block" {
                 // A turn that never finishes (until the caller drops it).
@@ -894,6 +918,7 @@ mod tests {
             state: "ready".into(),
             model: "haiku".into(),
             detail: None,
+            error_kind: None,
             usage: SessionUsage {
                 input_tokens: 1,
                 output_tokens: 2,
@@ -905,6 +930,7 @@ mod tests {
         assert_eq!(v["usage"]["input_tokens"], 1);
         assert_eq!(v["usage"]["output_tokens"], 2);
         assert_eq!(v["usage"]["cost_usd"], 0.5);
+        assert!(v["error_kind"].is_null());
     }
 
     #[tokio::test]
@@ -1020,6 +1046,29 @@ mod tests {
         assert_eq!(snap.len(), 1);
         assert_eq!(snap[0].state, "error");
         assert!(snap[0].detail.as_deref().unwrap().contains("boom"));
+        assert_eq!(snap[0].error_kind.as_deref(), Some("crashed"));
+    }
+
+    #[tokio::test]
+    async fn failed_turn_reports_its_error_kind_and_success_clears_it() {
+        let (mgr, _spawner, sink) = setup();
+        let k = key(SessionScope::Live("m1".into()), Tier::Fast);
+        mgr.ensure(&k, init(&[])).await.unwrap();
+        for (prompt, kind) in [
+            ("cli:5-hour limit reached ∙ resets 3pm", "rate_limited"),
+            ("cli:Please run /login", "not_logged_in"),
+            ("cli:prompt is too long", "context_overflow"),
+            ("cli:something odd", "other"),
+        ] {
+            let _ = mgr.ask(&k, prompt, no_delta(), Arc::new(CancelToken::new())).await;
+            let last = sink.0.lock().unwrap().last().cloned().unwrap();
+            assert_eq!(last.state, "error");
+            assert_eq!(last.error_kind.as_deref(), Some(kind), "{prompt}");
+            assert!(last.detail.is_some());
+        }
+        mgr.ask(&k, "fine", no_delta(), Arc::new(CancelToken::new())).await.unwrap();
+        let last = sink.0.lock().unwrap().last().cloned().unwrap();
+        assert_eq!((last.state.as_str(), last.detail, last.error_kind), ("ready", None, None));
     }
 
     #[tokio::test]

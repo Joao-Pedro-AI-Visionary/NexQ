@@ -121,6 +121,20 @@ pub enum AgentErrorKind {
     Other,
 }
 
+impl AgentErrorKind {
+    /// Stable snake_case name, mirrored by the frontend (`error_kind`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AgentErrorKind::NotInstalled => "not_installed",
+            AgentErrorKind::NotLoggedIn => "not_logged_in",
+            AgentErrorKind::RateLimited => "rate_limited",
+            AgentErrorKind::ContextOverflow => "context_overflow",
+            AgentErrorKind::Crashed => "crashed",
+            AgentErrorKind::Other => "other",
+        }
+    }
+}
+
 /// Map error text (a failed result, stderr, or spawn error) to a coarse kind.
 pub fn classify_error(text: &str) -> AgentErrorKind {
     let t = text.to_lowercase();
@@ -252,6 +266,16 @@ mod tests {
     #[test]
     fn classify_not_logged_in() {
         assert_eq!(classify_error("Not logged in · Please run /login"), AgentErrorKind::NotLoggedIn);
+    }
+
+    #[test]
+    fn error_kind_names_are_snake_case() {
+        assert_eq!(AgentErrorKind::RateLimited.as_str(), "rate_limited");
+        assert_eq!(AgentErrorKind::NotLoggedIn.as_str(), "not_logged_in");
+        assert_eq!(AgentErrorKind::NotInstalled.as_str(), "not_installed");
+        assert_eq!(AgentErrorKind::ContextOverflow.as_str(), "context_overflow");
+        assert_eq!(AgentErrorKind::Crashed.as_str(), "crashed");
+        assert_eq!(AgentErrorKind::Other.as_str(), "other");
     }
 
     #[test]

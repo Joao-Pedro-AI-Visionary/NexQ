@@ -5,7 +5,9 @@ import { useTranslationStore } from "../stores/translationStore";
 import { exportTranslatedTranscript } from "../lib/ipc";
 import { showToast } from "../stores/toastStore";
 import { CallLogEntry } from "./CallLogEntry";
-import { useMeetingAgentUsage, formatTokenUsage, formatCostEstimate } from "../components/AgentStatusChip";
+import { useMeetingAgentUsage } from "../hooks/useMeetingAgentUsage";
+import { useAgentStore } from "../stores/agentStore";
+import { formatTokenUsage, formatCostEstimate } from "../lib/agentUsage";
 import { PromptViewer } from "./PromptViewer";
 import type { LogFilterKind } from "../lib/types";
 import {
@@ -46,6 +48,10 @@ export function CallLogPanel() {
   const targetLang = useTranslationStore((s) => s.targetLang);
   const batchProgress = useTranslationStore((s) => s.batchProgress);
   const { sessions: claudeSessions, usage: claudeUsage } = useMeetingAgentUsage();
+  // Session updates only arrive once the store has subscribed in this window
+  useEffect(() => {
+    useAgentStore.getState().init();
+  }, []);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const exportMenuRef = useRef<HTMLDivElement>(null);
 

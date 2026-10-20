@@ -539,6 +539,17 @@ pub(crate) fn route_after_outage(
     match request_route(state, mode, scope) {
         fallback @ Route::Fallback(_) => Ok(fallback),
         _ => {
+            // No fallback to switch to: a usage limit is still announced once
+            // per outage (empty `provider` = nothing took over).
+            if kind == AgentErrorKind::RateLimited && state.claude_health.take_fallback_notice() {
+                let _ = app.emit(
+                    routing::FALLBACK_EVENT,
+                    AgentFallbackPayload {
+                        reason: routing::reason_label(kind).to_string(),
+                        provider: String::new(),
+                    },
+                );
+            }
             let message = format!("Claude unavailable ({}): {}", routing::reason_label(kind), reason);
             emit_error(app, params, &message);
             Err(message)

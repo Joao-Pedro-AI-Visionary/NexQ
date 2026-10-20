@@ -47,3 +47,18 @@ export function shouldPersistOverlayData(windowLabel: string, overlayActive: boo
   if (windowLabel === "overlay") return true;
   return !overlayActive;
 }
+
+/**
+ * Whether the user can see a window right now (shown and not minimized).
+ * An unknown window or a failed query counts as not shown.
+ */
+export async function isWindowShown(label: string): Promise<boolean> {
+  try {
+    const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+    const win = await WebviewWindow.getByLabel(label);
+    if (!win) return false;
+    return (await win.isVisible()) && !(await win.isMinimized());
+  } catch {
+    return false;
+  }
+}

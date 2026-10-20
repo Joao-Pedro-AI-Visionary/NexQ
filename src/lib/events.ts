@@ -334,3 +334,12 @@ export function onAgentFallback(
 }
 
 // Tray events are handled via raw listen() calls in App.tsx
+
+/** Window -> window: this window showed the pending `agent_fallback` notice. */
+export function emitAgentFallbackShown(): Promise<void> {
+  return emit("nexq:agent_fallback_shown");
+}
+
+export function onAgentFallbackShown(handler: () => void): Promise<UnlistenFn> {
+  return listen("nexq:agent_fallback_shown", () => handler());
+}

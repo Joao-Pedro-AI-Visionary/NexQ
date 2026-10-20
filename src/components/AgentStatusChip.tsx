@@ -2,74 +2,14 @@
 // session's state during a meeting, and a tooltip with model, effort and the
 // meeting's cumulative usage. Rendered by ServiceStatusBar in both windows.
 
-import { useEffect, useMemo } from "react";
+import { useEffect } from "react";
 import { Brain, ChevronUp } from "lucide-react";
 import { useAgentStore } from "../stores/agentStore";
 import { useConfigStore } from "../stores/configStore";
-import { useMeetingStore } from "../stores/meetingStore";
+import { useMeetingAgentUsage } from "../hooks/useMeetingAgentUsage";
+import { formatCostEstimate, formatTokenUsage, isRateLimited } from "../lib/agentUsage";
 import { claudeTierLabel } from "../settings/ClaudeCliSettings";
 import type { AgentSessionStatus, ClaudeCliConfig, ClaudeCliStatus, SessionUsage } from "../lib/types";
-
-const NUMBER = new Intl.NumberFormat("en-US");
-
-export function formatTokens(n: number): string {
-  return NUMBER.format(Math.round(n));
-}
-
-export function formatCost(usd: number): string {
-  if (usd > 0 && usd < 0.005) return "<$0.01";
-  return `$${usd.toFixed(2)}`;
-}
-
-/** "12,345 in / 6,789 out tokens" */
-export function formatTokenUsage(u: SessionUsage): string {
-  return `${formatTokens(u.input_tokens)} in / ${formatTokens(u.output_tokens)} out tokens`;
-}
-
-/** The cost line shown wherever usage appears. */
-export function formatCostEstimate(u: SessionUsage): string {
-  return `≈ ${formatCost(u.cost_usd)} estimate — included in your subscription`;
-}
-
-/** Live-scope sessions of one meeting (fast and/or deep). */
-export function liveSessionsOf(
-  sessions: Record<string, AgentSessionStatus>,
-  meetingId: string | null,
-): AgentSessionStatus[] {
-  if (!meetingId) return [];
-  return Object.values(sessions).filter((s) => s.scope === "live" && s.meeting_id === meetingId);
-}
-
-/**
- * Cumulative usage of a meeting. Every session carries the usage of its whole
- * scope (both tiers), snapshotted when that session last changed, so tiers are
- * not summed: the larger snapshot per field is the latest one.
- */
-export function scopeUsage(list: AgentSessionStatus[]): SessionUsage {
-  return list.reduce<SessionUsage>(
-    (acc, s) => ({
-      input_tokens: Math.max(acc.input_tokens, s.usage.input_tokens),
-      output_tokens: Math.max(acc.output_tokens, s.usage.output_tokens),
-      cost_usd: Math.max(acc.cost_usd, s.usage.cost_usd),
-    }),
-    { input_tokens: 0, output_tokens: 0, cost_usd: 0 },
-  );
-}
-
-/** Live sessions of the active meeting, and their cumulative usage. */
-export function useMeetingAgentUsage(): { sessions: AgentSessionStatus[]; usage: SessionUsage } {
-  const meetingId = useMeetingStore((s) => s.activeMeeting?.id ?? null);
-  const all = useAgentStore((s) => s.sessions);
-  return useMemo(() => {
-    const sessions = liveSessionsOf(all, meetingId);
-    return { sessions, usage: scopeUsage(sessions) };
-  }, [all, meetingId]);
-}
-
-/** True for CLI errors / fallback reasons that mean "usage limit hit". */
-export function isRateLimitText(text: string | null | undefined): boolean {
-  return !!text && /rate limit|usage limit/i.test(text);
-}
 
 export type AgentChipState = "idle" | "starting" | "ready" | "busy" | "error" | "limited" | "attention";
 
@@ -86,9 +26,10 @@ const STATE_STYLE: Record<AgentChipState, { dot: string; pill: string; pulse: bo
 };
 
 function sessionState(sessions: AgentSessionStatus[]): { state: AgentChipState; label: string } {
-  const errored = sessions.find((s) => s.state === "error");
-  if (errored) {
-    return isRateLimitText(errored.detail)
+  const errors = sessions.filter((s) => s.state === "error");
+  if (errors.length > 0) {
+    // A real fault outranks a limit on the other tier.
+    return errors.every(isRateLimited)
       ? { state: "limited", label: "Usage limit" }
       : { state: "error", label: "Session error" };
   }

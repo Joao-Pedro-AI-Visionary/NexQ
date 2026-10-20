@@ -327,7 +327,8 @@ export interface ClaudeCliConfig {
 export interface AgentFallbackEvent {
   /** Short reason, e.g. "not logged in", "usage limit reached". */
   reason: string;
-  /** Display name of the provider now answering, e.g. "Ollama". */
+  /** Display name of the provider now answering, e.g. "Ollama"; empty when a
+   *  usage limit was hit and no fallback provider is configured. */
   provider: string;
 }
 
@@ -347,6 +348,11 @@ export interface AgentSessionStatus {
   model: string;
   /** Readable reason for `error`. */
   detail: string | null;
+  /**
+   * Classified cause of `detail`: "rate_limited" | "not_logged_in" |
+   * "not_installed" | "context_overflow" | "crashed" | "other". Set with `detail`.
+   */
+  error_kind: string | null;
   /** Cumulative usage of the whole scope (all tiers). */
   usage: SessionUsage;
 }

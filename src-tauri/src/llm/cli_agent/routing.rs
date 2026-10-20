@@ -49,7 +49,8 @@ pub const RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(15 * 60);
 pub const FALLBACK_EVENT: &str = "agent_fallback";
 
 /// Payload of `agent_fallback`: Claude is unavailable and requests now go to
-/// `provider` (the fallback provider's display name).
+/// `provider` (the fallback provider's display name; empty when a usage limit
+/// was hit and no fallback provider is configured).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentFallbackPayload {
     pub reason: String,

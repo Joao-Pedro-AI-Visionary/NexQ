@@ -169,6 +169,7 @@ describe("ClaudeCliSettings", () => {
       state: "ready",
       model: "haiku",
       detail: null,
+      error_kind: null,
       usage: { input_tokens: 0, output_tokens: 0, cost_usd: 0 },
     };
     renderSettings();
