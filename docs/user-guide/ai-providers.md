@@ -33,7 +33,7 @@ NexQ supports 10 STT providers. Each channel ("You" and "Them") can use a differ
 
 ![LLM Providers settings panel](../../website/public/screenshots/Setting/Setting-LLM%20Providers.png)
 
-NexQ supports 8 LLM providers. The LLM powers all AI features: Assist, What to Say, Shorten, Follow-Up, Recap, Ask Question, Meeting Summary, and Action Items.
+NexQ supports 9 LLM providers. The LLM powers all AI features: Assist, What to Say, Shorten, Follow-Up, Recap, Ask Question, Meeting Summary, and Action Items.
 
 | Provider | Type | Cost | Speed | Best For |
 |----------|------|------|-------|----------|
@@ -44,6 +44,7 @@ NexQ supports 8 LLM providers. The LLM powers all AI features: Assist, What to S
 | Google Gemini | Cloud | Free tier | Fast | Long context, multimodal |
 | LM Studio | Local | Free | Varies by model | Local with GUI model management |
 | OpenRouter | Cloud | Pay per use | Varies | Access to hundreds of models |
+| Claude (subscription, Beta) | Local CLI | Included in your Claude plan | Fast | Using your own Claude Pro/Max login, no API key |
 | Custom | Configurable | Varies | Varies | Self-hosted or custom endpoints |
 
 ### Choosing an LLM Provider
@@ -53,6 +54,8 @@ NexQ supports 8 LLM providers. The LLM powers all AI features: Assist, What to S
 **Use OpenAI (GPT-4o)** if you want the best quality suggestions. GPT-4o provides the most accurate and contextually aware responses.
 
 **Use Groq** if you want the fastest responses at no cost. Groq's free tier with Llama models provides fast inference with good quality.
+
+**Use Claude (subscription, Beta)** if you already pay for Claude Pro or Max and want to use it without an API key. See the [Claude subscription guide](claude-subscription.md).
 
 **Use Anthropic (Claude)** if you prefer nuanced, well-reasoned responses, especially for complex or sensitive topics.
 

@@ -31,14 +31,16 @@
 
 🆓 **Free & Open Source** — no subscriptions, no limits, ever
 
-⚡ **10 STT + 8 LLM providers** — from local Whisper & Ollama to cloud Deepgram & OpenAI
+⚡ **10 STT + 9 LLM providers** — from local Whisper & Ollama to cloud Deepgram & OpenAI, or your own Claude subscription
 
 ## Features
 
 - **Dual-party transcription** — captures mic ("You") and system audio ("Them") simultaneously
-- **Real-time AI copilot** — get streaming answers, follow-up suggestions, and meeting recaps from 8 LLM providers
+- **Real-time AI copilot** — get streaming answers, follow-up suggestions, and meeting recaps from 9 LLM providers, including Claude via your own subscription (Beta)
 - **Local RAG pipeline** — index your own documents (PDF, DOCX, TXT, MD) for context-aware AI responses
 - **Gemini Context Cache** — upload documents to Gemini once, skip local embedding entirely for ~3-5s faster queries
+- **Claude subscription (Beta)** — use your own Claude Pro/Max login through the local `claude` CLI, no API key
+- **Automatic updates** — silent background download, one-click restart (never mid-meeting)
 - **10 STT providers** — Web Speech API, Deepgram, Groq, Whisper, ONNX Runtime, and more
 - **Always-on-top overlay** — compact, transparent floating window visible only to you
 - **Bookmarks & action items** — pin key moments and auto-extract tasks
@@ -88,7 +90,7 @@ Cache expires after your chosen TTL (30 min – 24 hours). Delete it early from 
 | **Open Source** | Yes | No | No | No |
 | **No Bot Joins** | Yes | No | Yes | Yes |
 | **STT Providers** | **10** | 1 | 1 | 1 |
-| **LLM Providers** | **8** | 1 | 1 | 1 |
+| **LLM Providers** | **9** | 1 | 1 | 1 |
 | **Local LLM** | Yes | No | No | No |
 | **RAG / Doc Context** | Yes | No | No | No |
 
