@@ -27,8 +27,8 @@ Haiku is the quickest and lightest on your usage limits. Sonnet reasons more car
 
 NexQ keeps a Claude session open and sends it only what is new, so answers stay fast and you do not pay to re-send the whole meeting every time.
 
-- **Live meeting.** When you start a meeting, NexQ starts a Fast session in the background. It holds your scenario prompt, custom instructions, and your context documents (up to roughly 100,000 tokens; beyond that, NexQ falls back to normal document search for each question). Each time you use an AI action, NexQ sends only the transcript since your previous request plus the question. The footer shows "Claude session ready" when it is warmed up. Recap uses a separate Deep session, started the first time you use it. Sessions close when the meeting ends.
-- **Past meeting.** Opening a past meeting starts a Deep session preloaded with the transcript (speakers and timestamps) and the summary if there is one. Context documents are not included. The session closes when you leave the meeting or after 15 minutes of inactivity. Reopening restarts it in about a second.
+- **Live meeting.** When you start a meeting, NexQ starts a Fast session in the background. It holds your scenario prompt, custom instructions, and your context documents (up to roughly 100,000 tokens; beyond that, NexQ falls back to normal document search for each question). Each time you use an AI action, NexQ sends only the transcript since your previous request plus the question. The footer shows "Session ready" when it is warmed up. Recap uses a separate Deep session, started the first time you use it. Sessions close when the meeting ends.
+- **Past meeting.** Opening a past meeting starts a Deep session preloaded with the transcript (speakers and timestamps) and the summary if there is one. Context documents are not included. The session closes when you leave the meeting or after 15 minutes of inactivity. Reopening restarts it quickly.
 - **Ask this meeting.** In a past meeting, the **Ask** tab lets you chat with the meeting. Questions and answers are saved with the meeting, restored when you reopen it, and listed in the AI Log, so follow-up questions keep their context.
 - **Other uses.** Things that are not tied to a meeting (such as LLM translation and testing your knowledge base) use their own small Fast session, so they never mix into a meeting.
 
@@ -36,11 +36,11 @@ Some per-action options do not apply in Claude mode (transcript window, temperat
 
 ## If Claude is unavailable
 
-If Claude cannot answer (not installed, logged out, rate limited, or it keeps crashing), NexQ switches to your **fallback provider** and shows a toast such as "Claude unavailable (not logged in) — using Groq". Pick the fallback provider in the same settings group; by default it is the last API or Ollama provider you used, or none. During a meeting NexQ checks Claude again every minute and switches back when it is healthy.
+If Claude cannot answer (not installed, logged out, rate limited, or it keeps crashing), NexQ switches to your **fallback provider** and shows a toast such as "Claude unavailable (not logged in) — using Groq". Pick the fallback provider in the same settings group; by default it is the last API or Ollama provider you used, or none. While Claude is unavailable, NexQ checks it again every minute and switches back when it is healthy. After a rate or usage limit it waits about 15 minutes before checking again.
 
 ## Usage indicator
 
-The footer tooltip and AI Log header show the tokens used in the current meeting and the cost reported by Claude. Treat this as an **estimate**: it is included in your subscription, and Claude does not expose your real remaining quota, so NexQ cannot show it. If Claude reports a rate or usage limit, NexQ warns you and uses the fallback provider.
+The footer tooltip and AI Log header show the tokens used in the current meeting and the cost reported by Claude. Treat this as an **estimate**: with a subscription login it is included in your plan, and Claude does not expose your real remaining quota, so NexQ cannot show it. If Claude reports a rate or usage limit, NexQ warns you and uses the fallback provider.
 
 ## Privacy
 

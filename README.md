@@ -40,7 +40,7 @@
 - **Local RAG pipeline** — index your own documents (PDF, DOCX, TXT, MD) for context-aware AI responses
 - **Gemini Context Cache** — upload documents to Gemini once, skip local embedding entirely for ~3-5s faster queries
 - **Claude subscription (Beta)** — use your own Claude Pro/Max login through the local `claude` CLI, no API key
-- **Automatic updates** — silent background download, one-click restart (never mid-meeting)
+- **Automatic updates** — silent background download, one-click restart (installs on quit; never ends a meeting without asking)
 - **10 STT providers** — Web Speech API, Deepgram, Groq, Whisper, ONNX Runtime, and more
 - **Always-on-top overlay** — compact, transparent floating window visible only to you
 - **Bookmarks & action items** — pin key moments and auto-extract tasks
@@ -110,7 +110,7 @@ Cache expires after your chosen TTL (30 min – 24 hours). Delete it early from 
 | Styling | Tailwind CSS 3.4, shadcn/ui |
 | Audio | cpal, WASAPI (Windows loopback) |
 | STT | whisper-rs, ONNX Runtime, Deepgram, Groq, Web Speech API |
-| LLM | OpenAI, Anthropic, Groq, Ollama, LM Studio, Gemini |
+| LLM | OpenAI, Anthropic, Groq, Ollama, LM Studio, Gemini, Claude (your subscription via Claude Code) |
 | Database | SQLite (rusqlite) |
 
 ## Development
