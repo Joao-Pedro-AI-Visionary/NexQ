@@ -17,6 +17,7 @@ import type { STTProviderType, LLMProviderType, LocalSTTEngineInfo } from "../li
 import { showToast } from "../stores/toastStore";
 import { useUpdaterStore } from "../stores/updaterStore";
 import { useAgentStore } from "../stores/agentStore";
+import { AgentStatusChip } from "./AgentStatusChip";
 import { claudeTierLabel } from "../settings/ClaudeCliSettings";
 import { restartToUpdate } from "../hooks/useUpdater";
 
@@ -216,19 +217,27 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
     <div className={`flex flex-wrap items-center gap-2.5 ${compact ? "px-3 py-2" : "px-5 py-2.5"}`}>
       {/* LLM — always interactive */}
       <div className="relative">
-        <STTChip
-          icon={<Brain className="h-3.5 w-3.5" />}
-          provider={llmProviderLabel}
-          model={llmModelLabel}
-          active={isStreaming}
-          color="blue"
-          label=""
-          muted={false}
-          interactive={true}
-          pickerOpen={pickerOpen === "llm"}
-          onClick={() => setPickerOpen(pickerOpen === "llm" ? null : "llm")}
-          tooltip={`LLM: ${llmProviderLabel} / ${llmModelLabel}`}
-        />
+        {llmProvider === "claude_cli" ? (
+          <AgentStatusChip
+            compact={compact}
+            pickerOpen={pickerOpen === "llm"}
+            onClick={() => setPickerOpen(pickerOpen === "llm" ? null : "llm")}
+          />
+        ) : (
+          <STTChip
+            icon={<Brain className="h-3.5 w-3.5" />}
+            provider={llmProviderLabel}
+            model={llmModelLabel}
+            active={isStreaming}
+            color="blue"
+            label=""
+            muted={false}
+            interactive={true}
+            pickerOpen={pickerOpen === "llm"}
+            onClick={() => setPickerOpen(pickerOpen === "llm" ? null : "llm")}
+            tooltip={`LLM: ${llmProviderLabel} / ${llmModelLabel}`}
+          />
+        )}
         {pickerOpen === "llm" && (
           <LLMPickerDropdown
             currentProvider={llmProvider}

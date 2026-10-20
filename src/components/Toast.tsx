@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useToastStore } from "../stores/toastStore";
 import type { Toast as ToastData } from "../stores/toastStore";
-import { CheckCircle, XCircle, Info, X } from "lucide-react";
+import { CheckCircle, XCircle, Info, AlertTriangle, X } from "lucide-react";
 
 const iconMap = {
   success: CheckCircle,
   error: XCircle,
   info: Info,
+  warning: AlertTriangle,
 };
 
 /** Left accent border color per type */
@@ -14,6 +15,7 @@ const accentMap = {
   success: "border-l-[hsl(var(--success))]",
   error: "border-l-[hsl(var(--destructive))]",
   info: "border-l-[hsl(var(--info))]",
+  warning: "border-l-[hsl(var(--warning))]",
 };
 
 /** Icon circle background + icon color */
@@ -21,6 +23,7 @@ const iconBgMap = {
   success: "bg-success/20 text-success",
   error: "bg-destructive/20 text-destructive",
   info: "bg-info/20 text-info",
+  warning: "bg-warning/20 text-warning",
 };
 
 /** Entrance animation for the icon */
@@ -28,6 +31,7 @@ const iconAnimMap = {
   success: "toast-icon-pop",
   error: "toast-icon-shake",
   info: "toast-icon-pop",
+  warning: "toast-icon-pop",
 };
 
 /** Progress bar color */
@@ -35,6 +39,7 @@ const progressMap = {
   success: "bg-success/50",
   error: "bg-destructive/50",
   info: "bg-info/50",
+  warning: "bg-warning/50",
 };
 
 function ToastItem({ toast, onDismiss }: { toast: ToastData; onDismiss: () => void }) {

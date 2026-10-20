@@ -14,6 +14,7 @@ import { useGlobalShortcut } from "./hooks/useGlobalShortcut";
 import { useTranslation } from "./hooks/useTranslation";
 import { useTraySync } from "./hooks/useTraySync";
 import { useUpdater } from "./hooks/useUpdater";
+import { useAgentFallbackToast } from "./hooks/useAgentFallbackToast";
 import { useTranslationStore } from "./stores/translationStore";
 import { CallLogPanel } from "./calllog";
 import { SelectionToolbar } from "./components/SelectionToolbar";
@@ -172,6 +173,9 @@ function App() {
     ).then((fn) => { unlisten = fn; });
     return () => { unlisten?.(); };
   }, [windowLabel]);
+
+  // Toast when Claude is unavailable and requests move to the fallback provider
+  useAgentFallbackToast(windowLabel);
 
   const previousView = useMeetingStore((s) => s.previousView);
 

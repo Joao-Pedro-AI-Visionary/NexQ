@@ -5,6 +5,7 @@ import { useTranslationStore } from "../stores/translationStore";
 import { exportTranslatedTranscript } from "../lib/ipc";
 import { showToast } from "../stores/toastStore";
 import { CallLogEntry } from "./CallLogEntry";
+import { useMeetingAgentUsage, formatTokenUsage, formatCostEstimate } from "../components/AgentStatusChip";
 import { PromptViewer } from "./PromptViewer";
 import type { LogFilterKind } from "../lib/types";
 import {
@@ -44,6 +45,7 @@ export function CallLogPanel() {
   const meetingId = useMeetingStore((s) => s.activeMeeting?.id ?? null);
   const targetLang = useTranslationStore((s) => s.targetLang);
   const batchProgress = useTranslationStore((s) => s.batchProgress);
+  const { sessions: claudeSessions, usage: claudeUsage } = useMeetingAgentUsage();
   const [showExportMenu, setShowExportMenu] = useState(false);
   const exportMenuRef = useRef<HTMLDivElement>(null);
 
@@ -228,6 +230,15 @@ export function CallLogPanel() {
                 </button>
               </div>
             </div>
+
+            {/* Claude session usage for this meeting (an estimate, not quota) */}
+            {claudeSessions.length > 0 && (
+              <div className="mt-2 text-meta text-muted-foreground" data-testid="claude-usage">
+                <span className="font-medium text-foreground/80">Claude</span>{" "}
+                {formatTokenUsage(claudeUsage)}
+                <span className="block text-muted-foreground/70">{formatCostEstimate(claudeUsage)}</span>
+              </div>
+            )}
 
             {/* Filter chips */}
             <div className="mt-2 flex flex-wrap gap-1">
