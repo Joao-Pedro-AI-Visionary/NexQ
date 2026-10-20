@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -18,6 +19,21 @@ const SKIPPED_VERSION_KEY: &str = "skipped_version";
 const RECORDING_WAIT_LIMIT: Duration = Duration::from_secs(120);
 /// How long quit (with an update to install) waits for the last recording.
 const QUIT_RECORDING_WAIT_LIMIT: Duration = Duration::from_secs(600);
+
+/// Passed to the installer for an install on quit. The NSIS installer
+/// forwards everything after `/ARGS` to the NexQ it relaunches (`/R`), and
+/// a NexQ started with this argument exits at once (`run`), so quitting
+/// with an update installs it without reopening the app.
+pub const POST_UPDATE_QUIT_ARG: &str = "--nexq-post-update-quit";
+
+/// True when the process was relaunched by an update installed on quit.
+pub fn is_post_update_quit<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    args.into_iter().any(|a| a.as_ref() == OsStr::new(POST_UPDATE_QUIT_ARG))
+}
 
 /// Set once quit has been deferred for a recording, so the second exit
 /// request goes through even if the wait timed out.
@@ -43,7 +59,12 @@ impl UpdateInfo {
 
 /// A downloaded update waiting to be installed (on Restart or on quit).
 pub struct PendingUpdate {
+    /// Installs and reopens NexQ (Restart).
     pub update: Update,
+    /// The same release with [`POST_UPDATE_QUIT_ARG`] for the installer
+    /// (installs on quit without reopening). `None` if it couldn't be
+    /// fetched; quit then installs with `update`.
+    pub quit_update: Option<Update>,
     pub bytes: Vec<u8>,
     pub info: UpdateInfo,
 }
@@ -125,18 +146,44 @@ async fn download_into_pending(app: &AppHandle, state: &AppState) -> Result<Upda
         .map_err(|e| format!("Failed to download update: {}", e))?;
 
     log::info!("Update v{} downloaded ({} bytes)", info.version, bytes.len());
+    let quit_update = quit_variant(app, &info.version).await;
 
     *state
         .pending_update
         .lock()
         .map_err(|e| format!("Failed to lock pending update: {}", e))? = Some(PendingUpdate {
         update,
+        quit_update,
         bytes,
         info: info.clone(),
     });
 
     let _ = app.emit("update_downloaded", &info);
     Ok(info)
+}
+
+/// `version` as an [`Update`] whose installer gets [`POST_UPDATE_QUIT_ARG`]
+/// (installer arguments are fixed when the updater is built).
+async fn quit_variant(app: &AppHandle, version: &str) -> Option<Update> {
+    let checked = match app
+        .updater_builder()
+        .installer_arg(POST_UPDATE_QUIT_ARG)
+        .build()
+    {
+        Ok(updater) => updater.check().await.map_err(|e| e.to_string()),
+        Err(e) => Err(e.to_string()),
+    };
+    match checked {
+        Ok(Some(update)) if update.version == version => Some(update),
+        Ok(_) => {
+            log::warn!("Install-on-quit variant of v{version} not found; quit will reopen NexQ after installing");
+            None
+        }
+        Err(e) => {
+            log::warn!("Install-on-quit variant of v{version} unavailable ({e}); quit will reopen NexQ after installing");
+            None
+        }
+    }
 }
 
 /// The downloaded update waiting to be installed, if any.
@@ -151,7 +198,8 @@ pub async fn get_pending_update(state: State<'_, AppState>) -> Result<Option<Upd
 
 /// Install the downloaded update now. On Windows the NSIS installer is launched
 /// in passive mode (`/P /R`: progress only, relaunches NexQ) and this process
-/// exits, so on success this never returns.
+/// exits, so on success this never returns. (Install on quit passes
+/// [`POST_UPDATE_QUIT_ARG`] so the relaunched NexQ exits at once.)
 ///
 /// Waits (up to 2 min) for post-meeting recording pipelines first, so ending a
 /// meeting right before the restart doesn't lose its recording.
@@ -165,7 +213,7 @@ pub async fn install_update_now(state: State<'_, AppState>) -> Result<(), String
     if !wait_for_recordings(&state, RECORDING_WAIT_LIMIT).await {
         return Err("Still saving the last recording — try again in a moment".to_string());
     }
-    install_pending(&state)
+    install_pending(&state, InstallFor::Restart)
 }
 
 /// Wait until no post-meeting recording pipeline is running. Returns false on timeout.
@@ -180,7 +228,16 @@ async fn wait_for_recordings(state: &AppState, limit: Duration) -> bool {
     true
 }
 
-fn install_pending(state: &AppState) -> Result<(), String> {
+/// Why the downloaded update is installed.
+#[derive(Clone, Copy)]
+enum InstallFor {
+    /// Restart pill: NexQ reopens after installing.
+    Restart,
+    /// Quit: the installer's relaunch exits at once.
+    Quit,
+}
+
+fn install_pending(state: &AppState, why: InstallFor) -> Result<(), String> {
     let pending = state
         .pending_update
         .lock()
@@ -189,11 +246,16 @@ fn install_pending(state: &AppState) -> Result<(), String> {
         .as_ref()
         .ok_or_else(|| "No downloaded update to install".to_string())?;
 
+    let update = match why {
+        InstallFor::Quit => p.quit_update.as_ref().unwrap_or(&p.update),
+        InstallFor::Restart => &p.update,
+    };
+
     log::info!("Installing update v{}...", p.info.version);
     // The plugin's default `on_before_exit` hook runs `cleanup_before_exit`
     // (drops plugin stores, flushing pending saves; clears the tray icon)
     // before the process exits.
-    p.update
+    update
         .install(&p.bytes)
         .map_err(|e| format!("Failed to install update: {}", e))
 }
@@ -266,7 +328,7 @@ pub fn on_exit_requested(app: &AppHandle, api: &ExitRequestApi) {
     match action {
         QuitAction::Exit => {}
         QuitAction::Install => {
-            if let Err(e) = install_pending(&state) {
+            if let Err(e) = install_pending(&state, InstallFor::Quit) {
                 log::error!("Install on quit failed: {}", e);
             }
         }
@@ -306,7 +368,24 @@ fn skipped_version(app: &AppHandle) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{quit_action, QuitAction};
+    use super::{is_post_update_quit, quit_action, QuitAction, POST_UPDATE_QUIT_ARG};
+
+    #[test]
+    fn relaunch_after_install_on_quit_is_recognised() {
+        assert!(is_post_update_quit([r"C:\NexQ\nexq.exe", POST_UPDATE_QUIT_ARG]));
+        assert!(is_post_update_quit(vec![
+            std::ffi::OsString::from("nexq.exe"),
+            std::ffi::OsString::from("--flag"),
+            std::ffi::OsString::from(POST_UPDATE_QUIT_ARG),
+        ]));
+    }
+
+    #[test]
+    fn normal_launch_and_restart_relaunch_are_not_post_update_quit() {
+        assert!(!is_post_update_quit(["nexq.exe"]));
+        assert!(!is_post_update_quit(Vec::<String>::new()));
+        assert!(!is_post_update_quit(["nexq.exe", "--nexq-post-update-quit-later"]));
+    }
 
     #[test]
     fn installs_when_everything_allows_it() {

@@ -158,6 +158,13 @@ fn hide_all(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Relaunched by the installer of an update installed on quit: the user
+    // quit NexQ, so exit before anything (single-instance hand-off, windows,
+    // tray) happens.
+    if updater_commands::is_post_update_quit(std::env::args_os()) {
+        return;
+    }
+
     // Initialize env_logger so all log::info/warn/error macros produce output.
     // Without this, every log statement in the backend is a no-op.
     env_logger::Builder::from_env(
