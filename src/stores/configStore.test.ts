@@ -115,6 +115,19 @@ describe("configStore: Claude CLI config", () => {
     );
   });
 
+  it("a model the backend refuses is reported and not recorded", async () => {
+    const store = await freshStore();
+    store.setState({ llmProvider: "ollama", llmModel: "llama3.2", lastModelByProvider: { openai: "gpt-4o" } });
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "set_active_model") throw new Error("unknown model");
+      return null;
+    });
+    await expect(store.getState().activateLLMProvider("openai")).rejects.toThrow(/unknown model/);
+    expect(store.getState().llmModel).toBe("llama3.2");
+    expect(saved.get("llmModel")).toBeUndefined();
+    invoke.mockImplementation(async () => null);
+  });
+
   it("remembers a model under its own provider even when set before the provider", async () => {
     const store = await freshStore();
     const s = () => store.getState();

@@ -250,7 +250,8 @@ interface ConfigState {
    * footer. `model` defaults to the model last used with the provider; Claude
    * always takes its Fast model. `providerConfig` is the backend config JSON
    * (defaults to the provider type plus its stored API key). Throws when the
-   * backend refuses the provider; nothing changes then.
+   * backend refuses the provider (nothing changes) or the model (the
+   * provider is switched, the model is not recorded).
    */
   activateLLMProvider: (
     provider: LLMProviderType,
@@ -450,9 +451,12 @@ export const useConfigStore = create<ConfigState>((set) => ({
         : options.model || before.lastModelByProvider[provider] || "";
     // Without a model, Claude's Fast model must not carry over to the new provider.
     if (model || before.llmProvider === "claude_cli") {
-      await ipc
-        .setActiveModel(provider, model)
-        .catch((e) => console.warn("[configStore] Failed to set the active model:", e));
+      try {
+        await ipc.setActiveModel(provider, model);
+      } catch (e) {
+        // The backend kept its previous model: don't record one it refused.
+        throw new Error(`model ${model || "(none)"} not applied: ${e instanceof Error ? e.message : String(e)}`);
+      }
       useConfigStore.getState().setLLMModel(model, provider);
     }
   },
