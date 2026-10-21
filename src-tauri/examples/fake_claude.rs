@@ -20,8 +20,10 @@
 //! - `hang`: after the first delta, sleeps forever without exiting or
 //!   printing anything (a wedged CLI).
 //! - `control_request` `initialize` (the model-list probe, launched without
-//!   `--system-prompt-file`): a `control_response` with a small model
-//!   catalog (Haiku without effort support, like the real CLI).
+//!   `--system-prompt-file`): a `system/status` line, then a
+//!   `control_response` with a small model catalog (Haiku without effort
+//!   support, like the real CLI). After that, stdin EOF takes 3 s to exit
+//!   (a CLI slow to shut down).
 //! - stdin EOF: exits 0.
 
 use serde_json::{json, Value};
@@ -92,6 +94,7 @@ fn main() {
     let init = json!({"type":"system","subtype":"init","session_id":"fake-session","model":model,"tools":[],"mcp_servers":[]});
     eprintln!("fake_claude: ready (mode={mode})");
 
+    let mut answered_initialize = false;
     for line in std::io::stdin().lock().lines() {
         let Ok(line) = line else { break };
         if let Some(path) = &record {
@@ -106,7 +109,12 @@ fn main() {
             continue;
         };
         if msg["type"] == "control_request" && msg["request"]["subtype"] == "initialize" {
+            emit(
+                &mut out,
+                &json!({"type":"system","subtype":"status","status":"initializing"}),
+            );
             emit(&mut out, &initialize_response(&msg["request_id"]));
+            answered_initialize = true;
             continue;
         }
         if msg["type"] != "user" {
@@ -176,5 +184,8 @@ fn main() {
             &mut out,
             &json!({"type":"result","subtype":"success","is_error":false,"result":answer,"total_cost_usd":0.0001,"duration_ms":5,"usage":{"input_tokens":10,"output_tokens":chars.len()}}),
         );
+    }
+    if answered_initialize {
+        std::thread::sleep(Duration::from_secs(3));
     }
 }

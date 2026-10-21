@@ -201,8 +201,9 @@ pub async fn probe_models(bin: &Path) -> Result<Vec<ClaudeModelInfo>, String> {
 
 /// Start `bin` with [`probe_args`] (same hygiene as a session: no shell, no
 /// console window, sandbox cwd, API-key env stripped), send the `initialize`
-/// control request and read until its answer. Then stdin is closed and the
-/// process ended (killed if it is still running shortly after).
+/// control request and read until its answer, which is returned right away.
+/// The process is ended in the background: stdin is closed, and it is killed
+/// if it is still running shortly after.
 pub async fn probe_models_with_timeout(
     bin: &Path,
     timeout: Duration,
@@ -253,14 +254,17 @@ pub async fn probe_models_with_timeout(
             ))
         });
 
-    // Closing stdin ends the CLI; kill it if it lingers.
-    drop(stdin);
-    if tokio::time::timeout(Duration::from_secs(2), child.wait())
-        .await
-        .is_err()
-    {
-        let _ = child.kill().await;
-    }
+    // Closing stdin ends the CLI; kill it if it lingers. Not awaited: the
+    // caller has its answer. (`kill_on_drop` covers a runtime shutting down.)
+    tokio::spawn(async move {
+        drop(stdin);
+        if tokio::time::timeout(Duration::from_secs(2), child.wait())
+            .await
+            .is_err()
+        {
+            let _ = child.kill().await;
+        }
+    });
     result
 }
 

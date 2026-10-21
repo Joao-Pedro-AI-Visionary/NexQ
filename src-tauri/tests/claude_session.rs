@@ -335,8 +335,17 @@ async fn spawn_missing_binary_is_not_installed() {
 
 #[tokio::test]
 async fn probe_lists_models_from_the_initialize_answer() {
-    // The fake prints junk lines first; the probe must skip them.
+    // Before the answer the fake prints a blank line, a truncated JSON line
+    // and a `system/status` line; the probe must skip all three. After it,
+    // the fake takes 3 s to exit once stdin closes: the catalog must not
+    // wait for that (the process is cleaned up in the background).
+    let started = Instant::now();
     let models = probe_models(&fake_bin()).await.expect("probe");
+    assert!(
+        started.elapsed() < Duration::from_millis(1500),
+        "probe waited for the process to exit: {:?}",
+        started.elapsed()
+    );
     let values: Vec<&str> = models.iter().map(|m| m.value.as_str()).collect();
     assert_eq!(values, ["opus", "sonnet", "haiku", "claude-opus-4-6"]);
     let haiku = &models[2];
