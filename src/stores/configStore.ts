@@ -1146,6 +1146,15 @@ export const useConfigStore = create<ConfigState>((set) => ({
       // Sync the Claude CLI config to the backend (it starts with the defaults
       // and keeps the config in memory only).
       pushClaudeCliConfig(claudeCliConfig);
+      // ...and the saved model catalog, so effort is clamped even before (or
+      // without) this start's probe. A fresher probe answer always wins.
+      if (Array.isArray(claudeModels) && claudeModels.length > 0) {
+        import("../lib/ipc").then(({ seedClaudeCliModels }) =>
+          seedClaudeCliModels(claudeModels).catch((e) =>
+            console.warn("[configStore] Failed to seed the Claude model list:", e),
+          ),
+        );
+      }
 
       // Sync persisted LLM provider + model to Rust backend on startup.
       // The Rust side starts with Ollama as default; this pushes the user's saved provider.

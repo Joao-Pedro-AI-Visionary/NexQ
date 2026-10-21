@@ -755,6 +755,11 @@ export async function claudeCliModels(refresh = false): Promise<ClaudeModelInfo[
   return invoke<ClaudeModelInfo[]>("claude_cli_models", { refresh });
 }
 
+/** Give the backend the saved model catalog until (or unless) a probe answers. */
+export async function seedClaudeCliModels(models: ClaudeModelInfo[]): Promise<boolean> {
+  return invoke<boolean>("seed_claude_cli_models", { models });
+}
+
 /** Replace the Fast/Deep model settings; applies to sessions started afterwards. */
 export async function setClaudeCliConfig(config: ClaudeCliConfig): Promise<void> {
   return invoke("set_claude_cli_config", { config });

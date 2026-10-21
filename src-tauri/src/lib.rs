@@ -697,6 +697,7 @@ pub fn run() {
             claude_cli_commands::claude_cli_status,
             claude_cli_commands::set_claude_cli_config,
             claude_cli_commands::claude_cli_models,
+            claude_cli_commands::seed_claude_cli_models,
             claude_cli_commands::get_agent_sessions,
             claude_cli_commands::open_claude_login_terminal,
         ])

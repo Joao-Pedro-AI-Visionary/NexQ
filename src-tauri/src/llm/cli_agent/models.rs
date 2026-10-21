@@ -155,6 +155,22 @@ impl ModelCatalog {
         }
     }
 
+    /// Fill an empty catalog (with the list the app saved last time), so
+    /// sessions clamp `--effort` even before or without a fresh probe.
+    /// Never replaces a catalog; returns whether it seeded.
+    pub fn seed(&self, models: Vec<ClaudeModelInfo>) -> bool {
+        if models.is_empty() {
+            return false;
+        }
+        match self.models.write() {
+            Ok(mut m) if m.is_none() => {
+                *m = Some(models);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// The entry for `model`, matched by value, else by resolved id.
     pub fn find(&self, model: &str) -> Option<ClaudeModelInfo> {
         let models = self.models.read().ok()?;
@@ -407,6 +423,20 @@ mod tests {
             "Opus 4.8"
         );
         assert_eq!(catalog.find("gpt-4o"), None);
+    }
+
+    #[test]
+    fn seeding_fills_only_an_empty_catalog() {
+        let catalog = ModelCatalog::default();
+        assert!(catalog.seed(vec![model("haiku", &[])]));
+        assert_eq!(catalog.find("haiku").unwrap().effort_levels.len(), 0);
+        // A probe's answer (or an earlier seed) is never replaced by a seed.
+        assert!(!catalog.seed(vec![model("sonnet", &EFFORTS)]));
+        assert!(catalog.find("sonnet").is_none());
+        assert!(
+            !ModelCatalog::default().seed(Vec::new()),
+            "an empty list seeds nothing"
+        );
     }
 
     #[test]

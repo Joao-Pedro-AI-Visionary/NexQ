@@ -89,6 +89,17 @@ pub async fn claude_cli_models(
     Ok(models)
 }
 
+/// Seed the backend catalog with the list the app saved last time, unless a
+/// probe already filled it: sessions then clamp `--effort` from the first
+/// spawn, even when the startup probe fails. Returns whether it seeded.
+#[command]
+pub async fn seed_claude_cli_models(
+    models: Vec<ClaudeModelInfo>,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    Ok(state.claude_models.seed(models))
+}
+
 /// A model alias or id (`haiku`, `claude-haiku-4-5-20251001`, `opus[1m]`).
 /// Rejecting a leading `-` keeps it from being read as a CLI flag.
 fn valid_model(model: &str) -> bool {

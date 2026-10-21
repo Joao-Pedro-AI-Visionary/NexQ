@@ -77,6 +77,17 @@ describe("configStore: Claude CLI config", () => {
     );
   });
 
+  it("seeds the backend with the saved Claude model catalog on load", async () => {
+    const catalog = [
+      { value: "haiku", resolved_model: "claude-haiku-4-5", display_name: "Haiku 4.5", description: "", supports_effort: false, effort_levels: [] },
+    ];
+    saved.set("claudeModels", catalog);
+    const store = await freshStore();
+    await store.getState().loadConfig();
+    expect(store.getState().claudeModels).toEqual(catalog);
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("seed_claude_cli_models", { models: catalog }));
+  });
+
   it("persists and pushes every change", async () => {
     const store = await freshStore();
     store.getState().setClaudeCliConfig({ ...store.getState().claudeCliConfig, deep_model: "fable" });
