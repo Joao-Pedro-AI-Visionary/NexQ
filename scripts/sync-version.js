@@ -47,4 +47,15 @@ cargoToml = cargoToml.replace(
 writeFileSync(cargoTomlPath, cargoToml);
 console.log(`  Updated src-tauri/Cargo.toml`);
 
+// 4. Update the nexq package in src-tauri/Cargo.lock (else the next cargo
+// build rewrites it and the release commit leaves it stale)
+const cargoLockPath = join(root, "src-tauri", "Cargo.lock");
+const cargoLock = readFileSync(cargoLockPath, "utf8");
+const nexqPackage = /(\[\[package\]\]\r?\nname = "nexq"\r?\nversion = )".*?"/;
+if (!nexqPackage.test(cargoLock)) {
+  throw new Error("src-tauri/Cargo.lock: nexq package entry not found");
+}
+writeFileSync(cargoLockPath, cargoLock.replace(nexqPackage, `$1"${version}"`));
+console.log(`  Updated src-tauri/Cargo.lock`);
+
 console.log(`\nVersion sync complete.`);
