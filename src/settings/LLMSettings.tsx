@@ -1,9 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useConfigStore } from "../stores/configStore";
 import { showToast } from "../stores/toastStore";
 import {
   getLLMProviders,
-  setLLMProvider,
   listModels,
   setActiveModel,
   testLLMConnection,
@@ -123,12 +122,11 @@ const DOT_STYLES: Record<BadgeVariant, string> = {
 export function LLMSettings() {
   const llmProvider = useConfigStore((s) => s.llmProvider);
   const llmModel = useConfigStore((s) => s.llmModel);
-  const setConfigProvider = useConfigStore((s) => s.setLLMProvider);
   const setConfigModel = useConfigStore((s) => s.setLLMModel);
+  const activateLLMProvider = useConfigStore((s) => s.activateLLMProvider);
   const verifiedCloudProviders = useConfigStore((s) => s.verifiedCloudProviders);
   const setVerifiedCloudProviders = useConfigStore((s) => s.setVerifiedCloudProviders);
   const claudeCliConfig = useConfigStore((s) => s.claudeCliConfig);
-  const lastModelByProvider = useConfigStore((s) => s.lastModelByProvider);
   const claudeStatus = useAgentStore((s) => s.status);
 
   const [selectedProvider, setSelectedProvider] = useState<LLMProviderType>(llmProvider);
@@ -142,6 +140,20 @@ export function LLMSettings() {
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState("");
   const [keyStatusMap, setKeyStatusMap] = useState<Record<string, boolean>>({});
+
+  // The active provider changed elsewhere (the footer, in this or the other
+  // window): show that provider, so Settings never offers to "activate" the
+  // one just replaced. A switch made here already has it selected.
+  const selectedRef = useRef(selectedProvider);
+  selectedRef.current = selectedProvider;
+  useEffect(() => {
+    if (llmProvider === selectedRef.current) return;
+    handleProviderChange(llmProvider);
+    setSelectedModel(useConfigStore.getState().llmModel);
+  }, [llmProvider]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (selectedRef.current === useConfigStore.getState().llmProvider) setSelectedModel(llmModel);
+  }, [llmModel]);
 
   // Custom provider fields
   const [customBaseUrl, setCustomBaseUrl] = useState("");
@@ -538,27 +550,18 @@ export function LLMSettings() {
           onClick={async () => {
             try {
               if (apiKey) await storeApiKey(selectedProvider, apiKey).catch(() => {});
-              const configJson = buildProviderConfig();
-              await setLLMProvider(configJson);
-              setConfigProvider(selectedProvider);
+              // Same path as the footer. Without a pick, the model last used
+              // with the provider; Claude takes its Fast model.
+              await activateLLMProvider(selectedProvider, {
+                model: selectedModel,
+                providerConfig: buildProviderConfig(),
+              });
               if (!verifiedCloudProviders.includes(selectedProvider)) {
                 setVerifiedCloudProviders([...verifiedCloudProviders, selectedProvider]);
               }
-              // Claude ignores the model (Fast / Deep come from its settings) but
-              // the backend needs one. Other providers fall back to the model
-              // last used with them.
-              const model = isClaudeCli
-                ? claudeCliConfig.fast_model
-                : selectedModel || lastModelByProvider[selectedProvider] || "";
-              if (model) {
-                await setActiveModel(selectedProvider, model).catch(() => {});
-                setConfigModel(model, selectedProvider);
-              } else if (llmProvider === "claude_cli") {
-                // Claude's Fast model must not carry over to the new provider.
-                await setActiveModel(selectedProvider, "").catch(() => {});
-                setConfigModel("", selectedProvider);
-              }
-            } catch {}
+            } catch (e) {
+              showToast(`Couldn't switch the AI provider: ${e instanceof Error ? e.message : String(e)}`, "error");
+            }
           }}
           className="w-full rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 text-sm font-medium text-primary transition-all duration-150 hover:bg-primary/10 hover:-translate-y-px active:translate-y-px active:scale-[0.99] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:active:scale-100"
         >

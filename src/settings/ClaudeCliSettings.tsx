@@ -212,7 +212,13 @@ export function ClaudeCliSettings({ selected, active, onSelect }: ClaudeCliSetti
       </div>
 
       {selected && (
-        <ClaudeDetails status={status} state={state} checking={checking} refreshStatus={refreshStatus} />
+        <ClaudeDetails
+          status={status}
+          state={state}
+          checking={checking}
+          active={active}
+          refreshStatus={refreshStatus}
+        />
       )}
     </div>
   );
@@ -222,14 +228,31 @@ function ClaudeDetails({
   status,
   state,
   checking,
+  active,
   refreshStatus,
 }: {
   status: ClaudeCliStatus | undefined;
   state: ConnectionState;
   checking: boolean;
+  active: boolean;
   refreshStatus: () => Promise<void>;
 }) {
   const [awaitingLogin, setAwaitingLogin] = useState(false);
+  const [activating, setActivating] = useState(false);
+  // Same rule as "Set as Active": usable unless known to be missing or logged out.
+  const unusable = state === "not_installed" || state === "npm_only" || state === "logged_out";
+
+  // The same store action as the footer, so both always agree.
+  const handleActivate = async () => {
+    setActivating(true);
+    try {
+      await useConfigStore.getState().activateLLMProvider("claude_cli");
+    } catch (e) {
+      showToast(`Couldn't switch to Claude: ${e instanceof Error ? e.message : String(e)}`, "error");
+    } finally {
+      setActivating(false);
+    }
+  };
 
   // After the login terminal opens: re-check on window focus and every few
   // seconds for a while, until the CLI reports a login.
@@ -264,6 +287,23 @@ function ClaudeDetails({
 
   return (
     <div className="mt-4 space-y-4 border-t border-border/20 pt-4">
+      {!active && (
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
+          <p className="text-xs text-muted-foreground">
+            Not in use — answers come from your current provider until you switch.
+          </p>
+          <button
+            type="button"
+            onClick={handleActivate}
+            disabled={unusable || activating}
+            className={`${BUTTON_CLASS} shrink-0 border-primary/30 text-primary`}
+          >
+            {activating && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            Use Claude
+          </button>
+        </div>
+      )}
+
       {/* Connection */}
       <div>
         <div className="flex items-center justify-between gap-3">

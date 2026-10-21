@@ -237,6 +237,18 @@ interface ConfigState {
    * the active one); the model is remembered for that provider.
    */
   setLLMModel: (model: string, provider?: string) => void;
+  /**
+   * Make `provider` the active LLM: backend first, then this store (persisted,
+   * so every window follows). The single path used by Settings and the
+   * footer. `model` defaults to the model last used with the provider; Claude
+   * always takes its Fast model. `providerConfig` is the backend config JSON
+   * (defaults to the provider type plus its stored API key). Throws when the
+   * backend refuses the provider; nothing changes then.
+   */
+  activateLLMProvider: (
+    provider: LLMProviderType,
+    options?: { model?: string; providerConfig?: string },
+  ) => Promise<void>;
   /** Remember `model` as the last one used with `provider` (no activation). */
   rememberModel: (provider: string, model: string) => void;
   /** Replace the Claude CLI config (persisted + pushed to the backend). */
@@ -409,6 +421,30 @@ export const useConfigStore = create<ConfigState>((set) => ({
     set({ llmModel: model });
     persistValue("llmModel", model);
     useConfigStore.getState().rememberModel(provider ?? useConfigStore.getState().llmProvider, model);
+  },
+  activateLLMProvider: async (provider, options = {}) => {
+    const ipc = await import("../lib/ipc");
+    const before = useConfigStore.getState();
+    let providerConfig = options.providerConfig;
+    if (providerConfig == null) {
+      const key = provider === "claude_cli" ? null : await ipc.getApiKey(provider).catch(() => null);
+      providerConfig = JSON.stringify({ provider_type: provider, ...(key && { api_key: key }) });
+    }
+    await ipc.setLLMProvider(providerConfig);
+    before.setLLMProvider(provider);
+    // Claude ignores the model (Fast / Deep come from its settings) but the
+    // backend needs one: its Fast model fills the slot.
+    const model =
+      provider === "claude_cli"
+        ? useConfigStore.getState().claudeCliConfig.fast_model
+        : options.model || before.lastModelByProvider[provider] || "";
+    // Without a model, Claude's Fast model must not carry over to the new provider.
+    if (model || before.llmProvider === "claude_cli") {
+      await ipc
+        .setActiveModel(provider, model)
+        .catch((e) => console.warn("[configStore] Failed to set the active model:", e));
+      useConfigStore.getState().setLLMModel(model, provider);
+    }
   },
   rememberModel: (provider, model) => {
     if (!model || provider === "claude_cli") return;

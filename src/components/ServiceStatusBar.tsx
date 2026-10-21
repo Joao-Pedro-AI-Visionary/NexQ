@@ -12,7 +12,7 @@ import { useStreamStore } from "../stores/streamStore";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useSpeakerStore } from "../stores/speakerStore";
 import { useAudioLevel } from "../hooks/useAudioLevel";
-import { hasApiKey, listLocalSTTEngines, setLLMProvider, setActiveModel, getApiKey } from "../lib/ipc";
+import { hasApiKey, listLocalSTTEngines, getApiKey } from "../lib/ipc";
 import type { STTProviderType, LLMProviderType, LocalSTTEngineInfo } from "../lib/types";
 import { showToast } from "../stores/toastStore";
 import { useUpdaterStore } from "../stores/updaterStore";
@@ -164,8 +164,7 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
 
   // Picker state (LLM or STT)
   const [pickerOpen, setPickerOpen] = useState<"llm" | "you" | "them" | null>(null);
-  const setConfigProvider = useConfigStore((s) => s.setLLMProvider);
-  const setConfigModel = useConfigStore((s) => s.setLLMModel);
+  const activateLLMProvider = useConfigStore((s) => s.activateLLMProvider);
 
   // ── Derive display values ──
   const llmProviderLabel = LLM_LABELS[streamProvider || llmProvider] || (streamProvider || llmProvider);
@@ -244,17 +243,10 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
             currentModel={llmModel}
             onApply={async (provider, model) => {
               try {
-                const key = provider === "claude_cli" ? null : await getApiKey(provider).catch(() => null);
-                const config = JSON.stringify({
-                  provider_type: provider,
-                  ...(key && { api_key: key }),
-                });
-                await setLLMProvider(config);
-                setConfigProvider(provider as LLMProviderType);
-                await setActiveModel(provider, model);
-                setConfigModel(model, provider);
+                await activateLLMProvider(provider as LLMProviderType, { model });
               } catch (e) {
                 console.warn("[ServiceStatusBar] Failed to switch LLM:", e);
+                showToast(`Couldn't switch the AI provider: ${e instanceof Error ? e.message : String(e)}`, "error");
               }
               setPickerOpen(null);
             }}
