@@ -25,6 +25,8 @@ interface AgentState {
   checkedAt?: number;
   /** Why the last model-catalog refresh failed; cleared by the next successful one. */
   modelsError?: string;
+  /** A model-catalog refresh is in flight. */
+  modelsRefreshing: boolean;
   /** Open Claude sessions by `agentSessionKey`. Closed sessions are dropped. */
   sessions: Record<string, AgentSessionStatus>;
   /** Re-detect the CLI and its login. Concurrent calls share one check. */
@@ -61,6 +63,7 @@ function applySession(
 export const useAgentStore = create<AgentState>((set) => ({
   status: undefined,
   checking: false,
+  modelsRefreshing: false,
   sessions: {},
 
   refreshStatus: () => {
@@ -81,6 +84,7 @@ export const useAgentStore = create<AgentState>((set) => ({
 
   refreshModels: () => {
     if (modelsInFlight) return modelsInFlight;
+    set({ modelsRefreshing: true });
     modelsInFlight = claudeCliModels(true)
       .then((models) => {
         if (models.length > 0) useConfigStore.getState().setClaudeModels(models);
@@ -92,6 +96,7 @@ export const useAgentStore = create<AgentState>((set) => ({
       })
       .finally(() => {
         modelsInFlight = null;
+        set({ modelsRefreshing: false });
       });
     return modelsInFlight;
   },
@@ -142,6 +147,7 @@ export function resetAgentStoreForTests(): void {
     statusError: undefined,
     checkedAt: undefined,
     modelsError: undefined,
+    modelsRefreshing: false,
     sessions: {},
   });
 }

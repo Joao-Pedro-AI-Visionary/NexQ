@@ -286,8 +286,11 @@ function ClaudeDetails({
   const checkedAt = useAgentStore((s) => s.checkedAt);
   const statusError = useAgentStore((s) => s.statusError);
   const refreshModels = useAgentStore((s) => s.refreshModels);
+  const modelsRefreshing = useAgentStore((s) => s.modelsRefreshing);
   const now = useNow(15_000);
   const result = checkResult(state, statusError);
+  // A check covers both the connection and the model list.
+  const busy = checking || modelsRefreshing;
 
   // A check also refreshes the model catalog.
   const handleCheck = () => {
@@ -371,7 +374,7 @@ function ClaudeDetails({
             )}
           </div>
           <div className="flex shrink-0 items-center gap-3">
-            {!checking && result && checkedAt !== undefined && (
+            {!busy && result && checkedAt !== undefined && (
               <span
                 role="status"
                 className={`max-w-[16rem] truncate text-meta ${result.className}`}
@@ -381,9 +384,9 @@ function ClaudeDetails({
                 <span className="text-muted-foreground"> · checked {formatCheckedAgo(checkedAt, Math.max(now, checkedAt))}</span>
               </span>
             )}
-            <button type="button" onClick={handleCheck} disabled={checking} className={BUTTON_CLASS}>
-              {checking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-              {checking ? "Checking…" : "Check connection"}
+            <button type="button" onClick={handleCheck} disabled={busy} className={BUTTON_CLASS}>
+              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+              {busy ? "Checking…" : "Check connection"}
             </button>
           </div>
         </div>
@@ -485,10 +488,11 @@ function ModelSettings() {
         {changed && sessionRunning ? (
           <span className="text-meta text-muted-foreground">Applies to the next session</span>
         ) : (
-          catalog === null &&
           modelsError && (
             <span className="text-meta text-muted-foreground" title={modelsError}>
-              Model list unavailable — showing the standard models
+              {catalog === null
+                ? "Model list unavailable — showing the standard models"
+                : "Couldn't refresh model list — showing last known"}
             </span>
           )
         )}

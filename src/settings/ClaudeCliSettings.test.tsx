@@ -341,6 +341,33 @@ describe("ClaudeCliSettings", () => {
     await waitFor(() => expect(useConfigStore.getState().claudeModels).toEqual(CATALOG));
   });
 
+  it("Check connection stays busy until the model list refresh is done too", async () => {
+    renderSettings();
+    await screen.findByText(/me@example\.com/);
+    let resolveModels: (m: ClaudeModelInfo[]) => void = () => {};
+    ipc.claudeCliModels.mockReturnValue(new Promise((r) => (resolveModels = r)));
+    fireEvent.click(screen.getByRole("button", { name: /check connection/i }));
+    // The status probe is done...
+    await waitFor(() => expect(ipc.claudeCliStatus).toHaveBeenCalledTimes(2));
+    await act(async () => {});
+    // ...but the catalog is still loading.
+    expect(screen.getByRole("button", { name: "Checking…" })).toBeDisabled();
+    await act(async () => resolveModels(CATALOG));
+    expect(screen.getByRole("button", { name: /check connection/i })).toBeEnabled();
+  });
+
+  it("says when the model list couldn't be refreshed, even with an older list", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    useConfigStore.setState({ claudeModels: CATALOG });
+    renderSettings();
+    await screen.findByText(/me@example\.com/);
+    ipc.claudeCliModels.mockRejectedValueOnce(new Error("timed out"));
+    fireEvent.click(screen.getByRole("button", { name: /check connection/i }));
+    expect(await screen.findByText("Couldn't refresh model list — showing last known")).toBeInTheDocument();
+    // The older list stays usable.
+    expect(screen.getByLabelText("Deep model")).toHaveValue("sonnet");
+  });
+
   it("Check connection names the specific problem", async () => {
     renderSettings();
     await screen.findByText(/me@example\.com/);
