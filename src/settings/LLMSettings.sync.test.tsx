@@ -108,6 +108,8 @@ describe("Settings ↔ footer sync of the active LLM", () => {
     expect(ipc.setActiveModel).toHaveBeenCalledWith("claude_cli", "haiku");
     expect(within(claudeCard()).getByText("Active")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Use Claude" })).not.toBeInTheDocument();
+    // Same side effects as every other activation path.
+    expect(useConfigStore.getState().verifiedCloudProviders).toContain("claude_cli");
   });
 
   it("the bottom 'Set as Active' button takes the same path", async () => {

@@ -557,9 +557,6 @@ export function LLMSettings() {
                 model: selectedModel,
                 providerConfig: buildProviderConfig(),
               });
-              if (!verifiedCloudProviders.includes(selectedProvider)) {
-                setVerifiedCloudProviders([...verifiedCloudProviders, selectedProvider]);
-              }
             } catch (e) {
               showToast(`Couldn't switch the AI provider: ${e instanceof Error ? e.message : String(e)}`, "error");
             }

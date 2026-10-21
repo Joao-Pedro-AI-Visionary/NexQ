@@ -246,8 +246,8 @@ interface ConfigState {
   setLLMModel: (model: string, provider?: string) => void;
   /**
    * Make `provider` the active LLM: backend first, then this store (persisted,
-   * so every window follows). The single path used by Settings and the
-   * footer. `model` defaults to the model last used with the provider; Claude
+   * so every window follows) and mark it verified. The single activation
+   * path: Settings, the Claude panel, the footer and the first-run wizard. `model` defaults to the model last used with the provider; Claude
    * always takes its Fast model. `providerConfig` is the backend config JSON
    * (defaults to the provider type plus its stored API key). Throws when the
    * backend refuses the provider (nothing changes) or the model (the
@@ -443,6 +443,9 @@ export const useConfigStore = create<ConfigState>((set) => ({
     }
     await ipc.setLLMProvider(providerConfig);
     before.setLLMProvider(provider);
+    // An activated provider counts as verified (the "Ready" badge in Settings).
+    const verified = useConfigStore.getState().verifiedCloudProviders;
+    if (!verified.includes(provider)) useConfigStore.getState().setVerifiedCloudProviders([...verified, provider]);
     // Claude ignores the model (Fast / Deep come from its settings) but the
     // backend needs one: its Fast model fills the slot.
     const model =

@@ -89,6 +89,7 @@ describe("configStore: active LLM across windows", () => {
     expect(invoke).toHaveBeenCalledWith("set_llm_provider", { provider: JSON.stringify({ provider_type: "claude_cli" }) });
     expect(invoke).toHaveBeenCalledWith("set_active_model", { provider: "claude_cli", modelId: "haiku" });
     await vi.waitFor(() => expect(overlay.getState().llmProvider).toBe("claude_cli"));
+    expect(launcher.getState().verifiedCloudProviders).toContain("claude_cli");
 
     // Footer (overlay) → back to Ollama with its last model.
     await overlay.getState().activateLLMProvider("ollama");

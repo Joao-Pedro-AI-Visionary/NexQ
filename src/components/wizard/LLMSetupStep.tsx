@@ -4,8 +4,6 @@ import { useAgentStore } from "../../stores/agentStore";
 import { showToast } from "../../stores/toastStore";
 import {
   listModels,
-  setLLMProvider,
-  setActiveModel,
   storeApiKey,
   testLLMConnection,
   openClaudeLoginTerminal,
@@ -78,8 +76,7 @@ export function LLMSetupStep({
 }: LLMSetupStepProps) {
   const llmProvider = useConfigStore((s) => s.llmProvider);
   const llmModel = useConfigStore((s) => s.llmModel);
-  const setConfigProvider = useConfigStore((s) => s.setLLMProvider);
-  const setConfigModel = useConfigStore((s) => s.setLLMModel);
+  const activateLLMProvider = useConfigStore((s) => s.activateLLMProvider);
 
   const hasLocalLLM = ollamaRunning || lmStudioRunning;
 
@@ -87,7 +84,6 @@ export function LLMSetupStep({
   const claudeStatus = useAgentStore((s) => s.status);
   const claudeChecking = useAgentStore((s) => s.checking);
   const refreshClaudeStatus = useAgentStore((s) => s.refreshStatus);
-  const claudeCliConfig = useConfigStore((s) => s.claudeCliConfig);
   useEffect(() => {
     refreshClaudeStatus();
   }, [refreshClaudeStatus]);
@@ -127,12 +123,8 @@ export function LLMSetupStep({
   // Claude has no model to pick (Fast / Deep come from its settings); the
   // backend still needs one, so the Fast model fills the slot.
   async function handleUseClaude() {
-    const model = claudeCliConfig.fast_model;
     try {
-      await setLLMProvider(JSON.stringify({ provider_type: "claude_cli" }));
-      await setActiveModel("claude_cli", model);
-      setConfigProvider("claude_cli");
-      setConfigModel(model, "claude_cli");
+      await activateLLMProvider("claude_cli");
     } catch (err) {
       setConnectionStatus("error");
       setConnectionMessage(err instanceof Error ? err.message : "Couldn't switch to Claude");
@@ -198,14 +190,12 @@ export function LLMSetupStep({
 
   async function handleModelSelect(modelId: string) {
     setSelectedModel(modelId);
-    setConfigProvider(selectedProvider);
-    setConfigModel(modelId, selectedProvider);
     try {
       // Choosing a model is the explicit confirm: activate the provider now.
-      await setLLMProvider(buildProviderConfig());
-      await setActiveModel(selectedProvider, modelId);
-    } catch {
-      // Non-critical
+      await activateLLMProvider(selectedProvider, { model: modelId, providerConfig: buildProviderConfig() });
+    } catch (err) {
+      setConnectionStatus("error");
+      setConnectionMessage(err instanceof Error ? err.message : "Couldn't switch provider");
     }
   }
 
