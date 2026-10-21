@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionConfig {
     pub model: String,
-    pub effort: String,
+    /// `None` for a model that takes no effort: `--effort` is left out.
+    pub effort: Option<String>,
     pub system_prompt: String,
 }
 
@@ -25,7 +26,7 @@ pub const STRIPPED_ENV: [&str; 7] = [
 /// Exact launch args (never `--bare`). The system prompt travels via file.
 pub fn build_args(cfg: &SessionConfig, system_prompt_file: &Path) -> Vec<String> {
     let s = |x: &str| x.to_string();
-    vec![
+    let mut args = vec![
         s("-p"),
         s("--input-format"),
         s("stream-json"),
@@ -43,11 +44,15 @@ pub fn build_args(cfg: &SessionConfig, system_prompt_file: &Path) -> Vec<String>
         s("--no-session-persistence"),
         s("--model"),
         cfg.model.clone(),
-        s("--effort"),
-        cfg.effort.clone(),
+    ];
+    if let Some(effort) = &cfg.effort {
+        args.extend([s("--effort"), effort.clone()]);
+    }
+    args.extend([
         s("--system-prompt-file"),
         system_prompt_file.to_string_lossy().into_owned(),
-    ]
+    ]);
+    args
 }
 
 /// `%LOCALAPPDATA%\NexQ\agent-sandbox`: the empty cwd the agent runs in.
@@ -79,7 +84,7 @@ mod tests {
     use super::*;
 
     fn cfg() -> SessionConfig {
-        SessionConfig { model: "haiku".into(), effort: "low".into(), system_prompt: "sp".into() }
+        SessionConfig { model: "haiku".into(), effort: Some("low".into()), system_prompt: "sp".into() }
     }
 
     #[test]
@@ -105,6 +110,15 @@ mod tests {
         assert!(!args.iter().any(|a| a == "--bare"));
         let pos = |f: &str| args.iter().position(|a| a == f).unwrap();
         assert!(pos("--model") < pos("--effort") && pos("--effort") < pos("--system-prompt-file"));
+    }
+
+    #[test]
+    fn build_args_omits_effort_when_unsupported() {
+        let no_effort = SessionConfig { effort: None, ..cfg() };
+        let args = build_args(&no_effort, Path::new("C:\\t\\sp.txt"));
+        assert!(!args.iter().any(|a| a == "--effort"), "{args:?}");
+        assert!(args.windows(2).any(|w| w[0] == "--model" && w[1] == "haiku"));
+        assert!(args.iter().any(|a| a == "--system-prompt-file"));
     }
 
     #[test]

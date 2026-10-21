@@ -19,6 +19,9 @@
 //! - `crash_mid_turn`: exits with code 1 right after the first delta.
 //! - `hang`: after the first delta, sleeps forever without exiting or
 //!   printing anything (a wedged CLI).
+//! - `control_request` `initialize` (the model-list probe, launched without
+//!   `--system-prompt-file`): a `control_response` with a small model
+//!   catalog (Haiku without effort support, like the real CLI).
 //! - stdin EOF: exits 0.
 
 use serde_json::{json, Value};
@@ -30,6 +33,27 @@ fn emit(out: &mut impl Write, v: &Value) {
     out.flush().unwrap();
 }
 
+/// The real CLI's answer shape (`response.response.models`), trimmed.
+fn initialize_response(request_id: &Value) -> Value {
+    let all = ["low", "medium", "high", "xhigh", "max"];
+    json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": request_id,
+            "response": {
+                "models": [
+                    {"value":"opus","resolvedModel":"claude-opus-5-5","displayName":"Opus 5.5","description":"Best for everyday, complex tasks","supportsEffort":true,"supportedEffortLevels":all},
+                    {"value":"sonnet","resolvedModel":"claude-sonnet-5-5","displayName":"Sonnet 5.5","description":"Efficient for routine tasks","supportsEffort":true,"supportedEffortLevels":all},
+                    {"value":"haiku","resolvedModel":"claude-haiku-4-5-20251001","displayName":"Haiku 4.5","description":"Fastest for quick answers"},
+                    {"value":"claude-opus-4-6","resolvedModel":"claude-opus-4-6","displayName":"Opus 4.6","description":"Best for everyday, complex tasks","supportsEffort":true,"supportedEffortLevels":["low","medium","high","max"]}
+                ],
+                "account": {}
+            }
+        }
+    })
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let arg_after = |flag: &str| {
@@ -39,13 +63,16 @@ fn main() {
             .cloned()
     };
     let model = arg_after("--model").unwrap_or_default();
-    let prompt_path = arg_after("--system-prompt-file").unwrap_or_default();
-    let prompt = match std::fs::read_to_string(&prompt_path) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("fake_claude: cannot read system prompt file {prompt_path:?}: {e}");
-            std::process::exit(3);
-        }
+    // The model probe passes no system prompt file; a session always does.
+    let prompt = match arg_after("--system-prompt-file") {
+        None => String::new(),
+        Some(prompt_path) => match std::fs::read_to_string(&prompt_path) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("fake_claude: cannot read system prompt file {prompt_path:?}: {e}");
+                std::process::exit(3);
+            }
+        },
     };
     let directive = |key: &str| {
         prompt.lines().find_map(|l| {
@@ -78,6 +105,10 @@ fn main() {
         let Ok(msg) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
+        if msg["type"] == "control_request" && msg["request"]["subtype"] == "initialize" {
+            emit(&mut out, &initialize_response(&msg["request_id"]));
+            continue;
+        }
         if msg["type"] != "user" {
             continue;
         }

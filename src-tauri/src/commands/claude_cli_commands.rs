@@ -9,11 +9,9 @@ use crate::llm::cli_agent::detect::{
     claude_auth_status, claude_version, find_claude_binary, find_npm_claude, ClaudeAuthStatus,
 };
 use crate::llm::cli_agent::manager::{AgentSessionStatus, ClaudeCliConfig};
+use crate::llm::cli_agent::models::{probe_models, ClaudeModelInfo, EFFORTS};
 use crate::llm::ProviderType;
 use crate::state::AppState;
-
-/// Effort levels the CLI accepts for `--effort`.
-const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
 /// Installation and login state of the local `claude` CLI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +66,27 @@ pub async fn claude_cli_status() -> Result<ClaudeCliStatus, String> {
         auth,
         npm_only: false,
     })
+}
+
+/// The models the CLI offers, from its `initialize` answer (no model call).
+/// Returns the cached catalog unless `refresh` is set or none is cached yet;
+/// a successful probe replaces the cache (sessions clamp `--effort` to it).
+#[command]
+pub async fn claude_cli_models(
+    refresh: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<Vec<ClaudeModelInfo>, String> {
+    if !refresh.unwrap_or(false) {
+        if let Some(models) = state.claude_models.get() {
+            return Ok(models);
+        }
+    }
+    let bin = resolve_binary()
+        .await
+        .ok_or_else(|| "Claude CLI is not installed".to_string())?;
+    let models = probe_models(&bin).await?;
+    state.claude_models.set(models.clone());
+    Ok(models)
 }
 
 /// A model alias or id (`haiku`, `claude-haiku-4-5-20251001`, `opus[1m]`).

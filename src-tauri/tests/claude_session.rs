@@ -6,6 +6,7 @@
 
 use nexq_lib::llm::cli_agent::command::SessionConfig;
 use nexq_lib::llm::cli_agent::detect::find_claude_binary;
+use nexq_lib::llm::cli_agent::models::probe_models;
 use nexq_lib::llm::cli_agent::protocol::AgentErrorKind;
 use nexq_lib::llm::cli_agent::session::{AgentError, ClaudeSession, SessionTimeouts};
 use nexq_lib::llm::provider::CancelToken;
@@ -71,7 +72,7 @@ fn cfg(mode: &str, record: Option<&Path>) -> SessionConfig {
     }
     SessionConfig {
         model: "haiku".into(),
-        effort: "low".into(),
+        effort: Some("low".into()),
         system_prompt,
     }
 }
@@ -332,6 +333,42 @@ async fn spawn_missing_binary_is_not_installed() {
     assert_eq!(err.kind(), AgentErrorKind::NotInstalled);
 }
 
+#[tokio::test]
+async fn probe_lists_models_from_the_initialize_answer() {
+    // The fake prints junk lines first; the probe must skip them.
+    let models = probe_models(&fake_bin()).await.expect("probe");
+    let values: Vec<&str> = models.iter().map(|m| m.value.as_str()).collect();
+    assert_eq!(values, ["opus", "sonnet", "haiku", "claude-opus-4-6"]);
+    let haiku = &models[2];
+    assert!(!haiku.supports_effort && haiku.effort_levels.is_empty());
+    assert_eq!(models[1].display_name, "Sonnet 5.5");
+    assert_eq!(models[3].effort_levels, ["low", "medium", "high", "max"]);
+}
+
+#[tokio::test]
+async fn probe_missing_binary_fails() {
+    let bin = std::env::temp_dir()
+        .join("nexq-no-such-dir")
+        .join("claude.exe");
+    assert!(probe_models(&bin).await.is_err());
+}
+
+/// Manual check against the real `claude` (no model call, costs nothing):
+/// `cargo test --test claude_session real_claude_models -- --ignored --nocapture`
+#[tokio::test]
+#[ignore]
+async fn real_claude_models() {
+    let bin = find_claude_binary().expect("claude.exe not found");
+    let models = probe_models(&bin).await.expect("probe");
+    for m in &models {
+        println!(
+            "{:<28} -> {:<28} {:<22} effort {:?}",
+            m.value, m.resolved_model, m.display_name, m.effort_levels
+        );
+    }
+    assert!(models.iter().any(|m| m.value == "sonnet"));
+}
+
 /// Manual smoke test against the real, logged-in `claude` (costs a few tokens):
 /// `cargo test --test claude_session real_claude -- --ignored`
 #[tokio::test]
@@ -340,7 +377,7 @@ async fn real_claude_two_turns() {
     let bin = find_claude_binary().expect("claude.exe not found");
     let cfg = SessionConfig {
         model: "haiku".into(),
-        effort: "low".into(),
+        effort: Some("low".into()),
         system_prompt: "You are a terse assistant. Answer in as few words as possible.".into(),
     };
     let session = ClaudeSession::spawn(bin, cfg)

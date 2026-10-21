@@ -359,7 +359,8 @@ pub fn run() {
                 Arc::new(llm::cli_agent::manager::ClaudeSpawner),
                 Arc::new(llm::cli_agent::manager::TauriStatusSink(app.handle().clone())),
                 app_state.claude_cli_config.clone(),
-            ));
+            )
+            .with_catalog(app_state.claude_models.clone()));
             tauri::async_runtime::spawn(llm::cli_agent::manager::run_idle_reaper(
                 app_state.agent_sessions.clone(),
             ));
@@ -695,6 +696,7 @@ pub fn run() {
             // == COMMANDS: claude cli ==
             claude_cli_commands::claude_cli_status,
             claude_cli_commands::set_claude_cli_config,
+            claude_cli_commands::claude_cli_models,
             claude_cli_commands::get_agent_sessions,
             claude_cli_commands::open_claude_login_terminal,
         ])

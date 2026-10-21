@@ -17,6 +17,7 @@
 use super::command::SessionConfig;
 use super::context::DeltaCursor;
 use super::detect::find_claude_binary;
+use super::models::{effective_effort, ModelCatalog};
 use super::protocol::{AgentErrorKind, TurnResult};
 use super::session::{AgentError, ClaudeSession};
 use crate::llm::provider::CancelToken;
@@ -304,6 +305,8 @@ pub struct AgentSessionManager {
     spawner: Arc<dyn SessionSpawner>,
     sink: Arc<dyn StatusSink>,
     config: Arc<RwLock<ClaudeCliConfig>>,
+    /// Which efforts each model accepts (`--effort` is clamped to it).
+    catalog: Arc<ModelCatalog>,
     entries: Mutex<HashMap<SessionKey, Entry>>,
     /// Serializes spawning per key so concurrent `ensure`s start one session.
     spawn_locks: Mutex<HashMap<SessionKey, Arc<AsyncMutex<()>>>>,
@@ -322,12 +325,21 @@ impl AgentSessionManager {
             spawner,
             sink,
             config,
+            catalog: Arc::new(ModelCatalog::default()),
             entries: Mutex::new(HashMap::new()),
             spawn_locks: Mutex::new(HashMap::new()),
             cursors: Mutex::new(HashMap::new()),
             usage: Mutex::new(HashMap::new()),
             shutting_down: AtomicBool::new(false),
         }
+    }
+
+    /// Clamp `--effort` to what each model accepts, per `catalog` (the app
+    /// passes the catalog the CLI reported). Without one the saved effort is
+    /// passed as is.
+    pub fn with_catalog(mut self, catalog: Arc<ModelCatalog>) -> Self {
+        self.catalog = catalog;
+        self
     }
 
     /// The running session for `key`, spawning it (with `init`) if there is
@@ -362,7 +374,7 @@ impl AgentSessionManager {
         let (model, effort) = {
             let cfg = self.config.read().unwrap();
             let (m, e) = cfg.model_for(key.tier);
-            (m.to_string(), e.to_string())
+            (m.to_string(), effective_effort(self.catalog.find(m).as_ref(), e))
         };
         self.emit(key, SessionState::Starting, &model, None);
         let cfg = SessionConfig {
@@ -909,6 +921,42 @@ mod tests {
         assert_eq!(partial.model_for(Tier::Deep), ("opus", "medium"));
     }
 
+    #[tokio::test]
+    async fn ensure_clamps_effort_to_the_model_catalog() {
+        let spawner = Arc::new(FakeSpawner::default());
+        let catalog = Arc::new(ModelCatalog::default());
+        let info = |value: &str, levels: &[&str]| crate::llm::cli_agent::models::ClaudeModelInfo {
+            value: value.into(),
+            resolved_model: value.into(),
+            display_name: value.into(),
+            description: String::new(),
+            supports_effort: !levels.is_empty(),
+            effort_levels: levels.iter().map(|s| s.to_string()).collect(),
+        };
+        catalog.set(vec![
+            info("haiku", &[]),
+            info("claude-opus-4-6", &["low", "medium", "high", "max"]),
+        ]);
+        let cfg = ClaudeCliConfig {
+            deep_model: "claude-opus-4-6".into(),
+            deep_effort: "xhigh".into(),
+            ..ClaudeCliConfig::default()
+        };
+        let mgr = AgentSessionManager::new(
+            spawner.clone(),
+            Arc::new(NoopStatusSink),
+            Arc::new(RwLock::new(cfg)),
+        )
+        .with_catalog(catalog);
+        mgr.ensure(&key(SessionScope::Utility, Tier::Fast), init(&[])).await.unwrap();
+        mgr.ensure(&key(SessionScope::Past("m".into()), Tier::Deep), init(&[])).await.unwrap();
+        let spawned = spawner.spawned.lock().unwrap();
+        // Haiku takes no effort: none is passed.
+        assert_eq!((spawned[0].0.model.as_str(), spawned[0].0.effort.as_deref()), ("haiku", None));
+        // xhigh isn't offered by this model: the closest lower level is used.
+        assert_eq!(spawned[1].0.effort.as_deref(), Some("high"));
+    }
+
     #[test]
     fn status_serializes_snake_case() {
         let s = AgentSessionStatus {
@@ -953,8 +1001,8 @@ mod tests {
             let spawned = spawner.spawned.lock().unwrap();
             let (cfg, first) = &spawned[0];
             assert_eq!(
-                (cfg.model.as_str(), cfg.effort.as_str()),
-                ("sonnet", "medium")
+                (cfg.model.as_str(), cfg.effort.as_deref()),
+                ("sonnet", Some("medium"))
             );
             assert_eq!(cfg.system_prompt, "sp");
             assert_eq!(*first.appended.lock().unwrap(), vec!["doc1", "doc2"]);

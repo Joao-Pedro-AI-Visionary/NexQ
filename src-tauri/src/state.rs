@@ -12,6 +12,7 @@ use crate::intelligence::IntelligenceEngine;
 use crate::llm::cli_agent::manager::{
     AgentSessionManager, ClaudeCliConfig, ClaudeSpawner, NoopStatusSink,
 };
+use crate::llm::cli_agent::models::ModelCatalog;
 use crate::llm::cli_agent::routing::{CachedFallback, HealthTracker, MeetingSessions};
 use crate::llm::gemini_cache::CachedContent;
 use crate::llm::openrouter_models::OpenRouterModelCache;
@@ -122,6 +123,8 @@ pub struct AppState {
     pub agent_sessions: Arc<AgentSessionManager>,
     /// Claude CLI model settings, read whenever a session is spawned.
     pub claude_cli_config: Arc<RwLock<ClaudeCliConfig>>,
+    /// Last model catalog the Claude CLI reported (`claude_cli_models`).
+    pub claude_models: Arc<ModelCatalog>,
     /// Whether Claude can take requests (else they go to the fallback).
     pub claude_health: Arc<HealthTracker>,
     /// What each open meeting session was given, for restarts.
@@ -143,6 +146,7 @@ pub struct LiveMeeting {
 impl AppState {
     pub fn new() -> Self {
         let claude_cli_config = Arc::new(RwLock::new(ClaudeCliConfig::default()));
+        let claude_models = ModelCatalog::global();
         Self {
             database: None,
             audio: Arc::new(Mutex::new(Some(AudioCaptureManager::new()))),
@@ -176,8 +180,10 @@ impl AppState {
                 Arc::new(ClaudeSpawner),
                 Arc::new(NoopStatusSink),
                 claude_cli_config.clone(),
-            )),
+            )
+            .with_catalog(claude_models.clone())),
             claude_cli_config,
+            claude_models,
             claude_health: Arc::new(HealthTracker::default()),
             meeting_sessions: Arc::new(MeetingSessions::default()),
             live_meeting: Arc::new(Mutex::new(None)),

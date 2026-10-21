@@ -12,11 +12,12 @@
 //! after a CLI error, so unrelated requests never pile up into one huge
 //! conversation.
 //!
-//! The provider holds no state. It reaches the session manager through the
+//! The provider holds no state besides the shared model catalog. It reaches the session manager through the
 //! `AppHandle` every `stream_completion` call already receives, so
 //! `create_provider` needs no access to `AppState`.
 
 use super::detect::{claude_status, find_claude_binary, ClaudeLogin, API_BILLED_NOTE};
+use super::models::ModelCatalog;
 use super::manager::{AgentSessionManager, OnDelta, SessionInit, SessionKey, SessionScope, Tier};
 use super::protocol::{AgentErrorKind, TurnResult};
 use super::session::AgentError;
@@ -44,7 +45,8 @@ pub const UTILITY_MAX_CONTEXT_TOKENS: u64 = 60_000;
 /// ... or after this many turns, whichever comes first.
 pub const UTILITY_MAX_TURNS: usize = 30;
 
-/// Static model list: CLI aliases that always resolve to the latest model.
+/// Static model list (CLI aliases that always resolve to the latest model),
+/// used until the CLI has reported its catalog.
 const MODELS: [(&str, &str); 4] = [
     ("haiku", "Claude Haiku"),
     ("sonnet", "Claude Sonnet"),
@@ -52,11 +54,18 @@ const MODELS: [(&str, &str); 4] = [
     ("fable", "Claude Fable"),
 ];
 
-pub struct ClaudeCliProvider;
+pub struct ClaudeCliProvider {
+    catalog: Arc<ModelCatalog>,
+}
 
 impl ClaudeCliProvider {
+    /// Lists the app-wide catalog the CLI reported.
     pub fn new() -> Self {
-        Self
+        Self::with_catalog(ModelCatalog::global())
+    }
+
+    pub fn with_catalog(catalog: Arc<ModelCatalog>) -> Self {
+        Self { catalog }
     }
 }
 
@@ -169,6 +178,17 @@ impl LLMProvider for ClaudeCliProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>, LLMError> {
+        if let Some(models) = self.catalog.get().filter(|m| !m.is_empty()) {
+            return Ok(models
+                .into_iter()
+                .map(|m| ModelInfo {
+                    id: m.value,
+                    name: m.display_name,
+                    provider: "claude_cli".to_string(),
+                    context_window: None,
+                })
+                .collect());
+        }
         Ok(MODELS
             .iter()
             .map(|(id, name)| ModelInfo {
@@ -261,6 +281,7 @@ impl LLMProvider for ClaudeCliProvider {
 mod tests {
     use super::*;
     use crate::llm::cli_agent::command::SessionConfig;
+    use crate::llm::cli_agent::models::ClaudeModelInfo;
     use crate::llm::cli_agent::manager::{
         ClaudeCliConfig, NoopStatusSink, SessionHandle, SessionSpawner,
     };
@@ -276,12 +297,35 @@ mod tests {
 
     #[tokio::test]
     async fn claude_cli_list_models_static() {
-        let models = ClaudeCliProvider::new().list_models().await.unwrap();
+        let models = ClaudeCliProvider::with_catalog(Arc::new(ModelCatalog::default()))
+            .list_models()
+            .await
+            .unwrap();
         let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, ["haiku", "sonnet", "opus", "fable"]);
         let names: Vec<&str> = models.iter().map(|m| m.name.as_str()).collect();
         assert_eq!(names, ["Claude Haiku", "Claude Sonnet", "Claude Opus", "Claude Fable"]);
         assert!(models.iter().all(|m| m.provider == "claude_cli"));
+    }
+
+    #[tokio::test]
+    async fn claude_cli_list_models_uses_the_cli_catalog() {
+        let catalog = Arc::new(ModelCatalog::default());
+        let provider = ClaudeCliProvider::with_catalog(catalog.clone());
+        // Nothing probed yet: the static aliases.
+        assert_eq!(provider.list_models().await.unwrap().len(), 4);
+        catalog.set(vec![ClaudeModelInfo {
+            value: "claude-opus-4-8".into(),
+            resolved_model: "claude-opus-4-8".into(),
+            display_name: "Opus 4.8".into(),
+            description: String::new(),
+            supports_effort: true,
+            effort_levels: vec!["low".into()],
+        }]);
+        let models = provider.list_models().await.unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!((models[0].id.as_str(), models[0].name.as_str()), ("claude-opus-4-8", "Opus 4.8"));
+        assert_eq!(models[0].provider, "claude_cli");
     }
 
     #[test]
@@ -398,7 +442,7 @@ mod tests {
         let configs = rec.configs.lock().unwrap();
         assert_eq!(configs.len(), 1, "the Utility session is spawned once");
         assert_eq!(configs[0].model, "haiku");
-        assert_eq!(configs[0].effort, "low");
+        assert_eq!(configs[0].effort.as_deref(), Some("low"));
         assert_eq!(configs[0].system_prompt, UTILITY_SYSTEM_PROMPT);
         assert_eq!(rec.prompts.lock().unwrap().len(), 2);
         assert_eq!(streamed.lock().unwrap().as_str(), "HelloHello");
