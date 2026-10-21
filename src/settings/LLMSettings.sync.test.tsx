@@ -42,6 +42,7 @@ vi.mock("../lib/ipc", async (importOriginal) => ({
 import { LLMSettings } from "./LLMSettings";
 import { ServiceStatusBar } from "../components/ServiceStatusBar";
 import { resetAgentStoreForTests } from "../stores/agentStore";
+import { useStreamStore } from "../stores/streamStore";
 import { DEFAULT_CLAUDE_CLI_CONFIG, useConfigStore } from "../stores/configStore";
 
 const LOGGED_IN: ClaudeCliStatus = {
@@ -121,6 +122,26 @@ describe("Settings ↔ footer sync of the active LLM", () => {
     fireEvent.click(screen.getByRole("button", { name: /set claude \(subscription\) as active provider/i }));
     await waitFor(() => expect(footerShowsClaude()).toBe(true));
     expect(ipc.setActiveModel).toHaveBeenCalledWith("claude_cli", "haiku");
+  });
+
+  it("after an answer has streamed, the footer shows the newly activated provider, not the last stream's", async () => {
+    // An answer streamed with Groq earlier in the meeting; the stream store
+    // keeps its provider/model until the meeting ends.
+    useConfigStore.setState({ llmProvider: "groq", llmModel: "llama-3.3-70b", lastModelByProvider: { groq: "llama-3.3-70b", openai: "gpt-4o" } });
+    useStreamStore.setState({ isStreaming: false, currentProvider: "groq", currentModel: "llama-3.3-70b" });
+    render(<ServiceStatusBar />);
+
+    await act(async () => {
+      await useConfigStore.getState().activateLLMProvider("openai");
+    });
+    const chip = screen.getByTitle(/^LLM:/);
+    expect(chip).toHaveAttribute("title", expect.stringContaining("OpenAI"));
+    expect(chip).not.toHaveAttribute("title", expect.stringContaining("Groq"));
+
+    // While an answer streams, the chip names what actually serves it.
+    act(() => useStreamStore.setState({ isStreaming: true, currentProvider: "ollama", currentModel: "llama3.2" }));
+    expect(screen.getByTitle(/^LLM:/)).toHaveAttribute("title", expect.stringContaining("Ollama"));
+    act(() => useStreamStore.setState({ isStreaming: false, currentProvider: "", currentModel: "" }));
   });
 
   it("a provider switched in the footer is reflected in open Settings", async () => {

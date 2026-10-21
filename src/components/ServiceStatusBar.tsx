@@ -167,8 +167,13 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
   const activateLLMProvider = useConfigStore((s) => s.activateLLMProvider);
 
   // ── Derive display values ──
-  const llmProviderLabel = LLM_LABELS[streamProvider || llmProvider] || (streamProvider || llmProvider);
-  const llmModelLabel = formatModel(streamModel || llmModel);
+  // While an answer streams, name what serves it (it can be a fallback);
+  // otherwise the active provider. The stream store keeps the last stream's
+  // provider until the meeting ends, so it must not outlive the stream.
+  const shownProvider = (isStreaming && streamProvider) || llmProvider;
+  const shownModel = (isStreaming && streamModel) || llmModel;
+  const llmProviderLabel = LLM_LABELS[shownProvider] || shownProvider;
+  const llmModelLabel = formatModel(shownModel);
 
   const DEFAULT_MODEL_PER_ENGINE: Record<string, string> = {
     sherpa_onnx: "streaming-zipformer-en-20M",
