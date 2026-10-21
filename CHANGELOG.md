@@ -1,3 +1,20 @@
+# [2.23.0](https://github.com/naxhq/NexQ/compare/v2.22.0...v2.23.0) (2026-10-21)
+
+
+### Bug Fixes
+
+* **claude:** return the model catalog without waiting for the CLI to exit ([3cf0489](https://github.com/naxhq/NexQ/commit/3cf04895d43c85da2f95c5dadb742db38f0907fa))
+* **claude:** seed the backend model catalog from the saved list on startup ([38c1b87](https://github.com/naxhq/NexQ/commit/38c1b87689238466700349132959479b3ea8b040))
+* **footer:** show the last stream's provider only while it streams ([23ff142](https://github.com/naxhq/NexQ/commit/23ff1426216dd7d8df40b6179e905a105d1452dd))
+* **settings:** activate Claude from its Settings panel; keep Settings and footer in sync ([b26ef1c](https://github.com/naxhq/NexQ/commit/b26ef1c3bde712eb6f2f82b03dd3190d8e76e6a5))
+* **settings:** Check connection covers the model list refresh and reports its failure ([3c03ec3](https://github.com/naxhq/NexQ/commit/3c03ec3a817931af6a91756daf4c28e1f96da199))
+* **settings:** report a model the backend refuses instead of recording it ([9db6617](https://github.com/naxhq/NexQ/commit/9db661713b6fae8c38e545a9e537bb4e2c1ae47e))
+
+
+### Features
+
+* **claude:** model pickers from the CLI catalog, per-model effort and Check connection feedback ([fcf8c21](https://github.com/naxhq/NexQ/commit/fcf8c21c9e0c63e47a89b37f24eb483d22d723e1))
+* **claude:** read the model catalog from the CLI and clamp effort per model ([71e187f](https://github.com/naxhq/NexQ/commit/71e187f94cc064219e5f485909e050f60322644d))
 # [2.22.0](https://github.com/naxhq/NexQ/compare/v2.21.1...v2.22.0) (2026-10-20)
 
 
