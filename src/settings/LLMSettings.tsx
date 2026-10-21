@@ -127,6 +127,7 @@ export function LLMSettings() {
   const verifiedCloudProviders = useConfigStore((s) => s.verifiedCloudProviders);
   const setVerifiedCloudProviders = useConfigStore((s) => s.setVerifiedCloudProviders);
   const claudeCliConfig = useConfigStore((s) => s.claudeCliConfig);
+  const claudeModels = useConfigStore((s) => s.claudeModels) ?? undefined;
   const claudeStatus = useAgentStore((s) => s.status);
 
   const [selectedProvider, setSelectedProvider] = useState<LLMProviderType>(llmProvider);
@@ -318,7 +319,7 @@ export function LLMSettings() {
           </p>
           <p className="mt-0.5 text-xs text-muted-foreground">
             {llmProvider === "claude_cli"
-              ? `Fast: ${claudeTierLabel(claudeCliConfig.fast_model, claudeCliConfig.fast_effort)} — Deep: ${claudeTierLabel(claudeCliConfig.deep_model, claudeCliConfig.deep_effort)}`
+              ? `Fast: ${claudeTierLabel(claudeCliConfig.fast_model, claudeCliConfig.fast_effort, claudeModels)} — Deep: ${claudeTierLabel(claudeCliConfig.deep_model, claudeCliConfig.deep_effort, claudeModels)}`
               : llmModel
                 ? "This provider and model will be used for AI responses"
                 : "Select a provider, test connection, and load models below"}

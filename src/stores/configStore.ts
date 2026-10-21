@@ -13,6 +13,7 @@ import type {
   AudioMode,
   AIScenario,
   ClaudeCliConfig,
+  ClaudeModelInfo,
 } from "../lib/types";
 
 const DEFAULT_DEEPGRAM_CONFIG: DeepgramConfig = {
@@ -131,6 +132,12 @@ interface ConfigState {
    * the last active non-CLI provider and its model.
    */
   claudeCliFallbackPinned: boolean;
+  /**
+   * Last model catalog the Claude CLI reported (refreshed by the launcher on
+   * every start and on Check connection). Null until fetched once; the
+   * pickers then offer the static aliases.
+   */
+  claudeModels: ClaudeModelInfo[] | null;
 
   // Audio (legacy — kept for backward compat, new code uses meetingAudioConfig)
   micDeviceId: string | null;
@@ -255,6 +262,8 @@ interface ConfigState {
   setClaudeCliConfig: (config: ClaudeCliConfig) => void;
   /** The user's fallback choice: pins it so it no longer follows the active provider. */
   setClaudeCliFallback: (provider: string | null, model: string | null) => void;
+  /** Keep the latest Claude model catalog (persisted, shared with every window). */
+  setClaudeModels: (models: ClaudeModelInfo[]) => void;
   setMicDeviceId: (id: string | null) => void;
   setSystemDeviceId: (id: string | null) => void;
   setRecordingEnabled: (enabled: boolean) => void;
@@ -327,6 +336,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
   lastModelByProvider: {},
   claudeCliConfig: DEFAULT_CLAUDE_CLI_CONFIG,
   claudeCliFallbackPinned: false,
+  claudeModels: null,
   micDeviceId: null,
   systemDeviceId: null,
   recordingEnabled: false,
@@ -475,6 +485,10 @@ export const useConfigStore = create<ConfigState>((set) => ({
           .catch((e) => console.warn("[configStore] Failed to set Claude model:", e))
       );
     }
+  },
+  setClaudeModels: (models) => {
+    set({ claudeModels: models });
+    persistValue("claudeModels", models);
   },
   setClaudeCliFallback: (provider, model) => {
     set({ claudeCliFallbackPinned: true });
@@ -844,6 +858,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
       const storedLastModels = await store.get<Record<string, string>>("lastModelByProvider");
       const storedClaudeCliConfig = await store.get<Partial<ClaudeCliConfig>>("claudeCliConfig");
       const claudeCliFallbackPinned = (await store.get<boolean>("claudeCliFallbackPinned")) ?? false;
+      const claudeModels = await store.get<ClaudeModelInfo[]>("claudeModels");
 
       // Last model per provider; seeded from the saved active provider on upgrade.
       const lastModelByProvider: Record<string, string> = { ...(storedLastModels ?? {}) };
@@ -966,6 +981,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
         lastModelByProvider,
         claudeCliConfig,
         claudeCliFallbackPinned,
+        ...(Array.isArray(claudeModels) && claudeModels.length > 0 && { claudeModels }),
         ...(micDeviceId !== undefined && { micDeviceId }),
         ...(systemDeviceId !== undefined && { systemDeviceId }),
         ...(recordingEnabled != null && { recordingEnabled }),
@@ -1061,6 +1077,9 @@ export const useConfigStore = create<ConfigState>((set) => ({
       });
       store.onKeyChange<ClaudeCliConfig>("claudeCliConfig", (val) => {
         if (val != null) set({ claudeCliConfig: { ...DEFAULT_CLAUDE_CLI_CONFIG, ...val } });
+      });
+      store.onKeyChange<ClaudeModelInfo[]>("claudeModels", (val) => {
+        if (Array.isArray(val) && val.length > 0) set({ claudeModels: val });
       });
       store.onKeyChange<boolean>("claudeCliFallbackPinned", (val) => {
         if (val != null) set({ claudeCliFallbackPinned: val });

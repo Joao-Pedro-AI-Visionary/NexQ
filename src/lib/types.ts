@@ -330,6 +330,19 @@ export interface ClaudeCliConfig {
   fallback_model: string | null;
 }
 
+/** Mirrors Rust `ClaudeModelInfo`: one model the Claude CLI offers (`claude_cli_models`). */
+export interface ClaudeModelInfo {
+  /** What `--model` takes: an alias ("sonnet") or a pinned id ("claude-opus-4-8"). */
+  value: string;
+  /** The model id the value resolves to today. */
+  resolved_model: string;
+  display_name: string;
+  description: string;
+  supports_effort: boolean;
+  /** Accepted efforts, lowest first; empty without effort support. */
+  effort_levels: string[];
+}
+
 /** Mirrors Rust `AgentFallbackPayload` (payload of `agent_fallback`). */
 export interface AgentFallbackEvent {
   /** Short reason, e.g. "not logged in", "usage limit reached". */

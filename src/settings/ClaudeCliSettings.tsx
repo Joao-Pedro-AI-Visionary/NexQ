@@ -3,19 +3,20 @@ import { open } from "@tauri-apps/plugin-shell";
 import { ExternalLink, Loader2, RefreshCw, Terminal } from "lucide-react";
 import { API_BILLED_NOTE, NPM_ONLY_NOTE } from "../lib/agentUsage";
 import { getApiKey, listModels, openClaudeLoginTerminal } from "../lib/ipc";
-import type { ClaudeCliConfig, ClaudeCliStatus } from "../lib/types";
+import {
+  STATIC_CLAUDE_MODELS,
+  effectiveEffort,
+  findClaudeModel,
+  formatCheckedAgo,
+  groupClaudeModels,
+  isClaudeAlias,
+} from "../lib/claudeModels";
+import type { ClaudeCliConfig, ClaudeCliStatus, ClaudeModelInfo } from "../lib/types";
 import { isSessionRunning, useAgentStore } from "../stores/agentStore";
 import { CLAUDE_FALLBACK_PROVIDERS, useConfigStore } from "../stores/configStore";
 import { showToast } from "../stores/toastStore";
 
 export const CLAUDE_INSTALL_URL = "https://code.claude.com/docs/en/setup";
-
-export const CLAUDE_MODELS = [
-  { value: "haiku", label: "Haiku" },
-  { value: "sonnet", label: "Sonnet" },
-  { value: "opus", label: "Opus" },
-  { value: "fable", label: "Fable" },
-] as const;
 
 export const CLAUDE_EFFORTS = [
   { value: "low", label: "Low" },
@@ -35,15 +36,25 @@ const FALLBACK_LABELS: Record<string, string> = {
   openrouter: "OpenRouter",
 };
 
-/** "haiku" → "Haiku"; unknown ids are shown as they are. */
-export function claudeModelLabel(model: string): string {
-  return CLAUDE_MODELS.find((m) => m.value === model)?.label ?? model;
+function currentCatalog(): ClaudeModelInfo[] {
+  return useConfigStore.getState().claudeModels ?? STATIC_CLAUDE_MODELS;
 }
 
-/** "Haiku · Low" */
-export function claudeTierLabel(model: string, effort: string): string {
-  const e = CLAUDE_EFFORTS.find((x) => x.value === effort)?.label ?? effort;
-  return `${claudeModelLabel(model)} · ${e}`;
+/** "haiku" → "Haiku", a pinned id → its name ("Opus 4.8"); unknown ids as they are. */
+export function claudeModelLabel(model: string, models: ClaudeModelInfo[] = currentCatalog()): string {
+  if (isClaudeAlias(model)) return model.charAt(0).toUpperCase() + model.slice(1);
+  return findClaudeModel(models, model)?.display_name || model;
+}
+
+function effortLabel(effort: string): string {
+  return CLAUDE_EFFORTS.find((x) => x.value === effort)?.label ?? effort;
+}
+
+/** "Sonnet · Medium" with the effort the session actually gets; just "Haiku" without effort. */
+export function claudeTierLabel(model: string, effort: string, models: ClaudeModelInfo[] = currentCatalog()): string {
+  const effective = effectiveEffort(findClaudeModel(models, model), effort);
+  const label = claudeModelLabel(model, models);
+  return effective === null ? label : `${label} · ${effortLabel(effective)}`;
 }
 
 type ConnectionState =
@@ -118,6 +129,39 @@ function statusLine(state: ConnectionState, status: ClaudeCliStatus | undefined)
     case "api_billed":
       return [status?.auth?.email ?? "Logged in", "API account"].join(" · ");
   }
+}
+
+/** Outcome of the last check, shown next to Check connection; color only where it means something. */
+function checkResult(state: ConnectionState, error: string | undefined): { text: string; className: string } | null {
+  if (state === "checking") return null;
+  // The last check itself failed: say so, not the state an earlier check found.
+  if (error) return { text: `Couldn't check: ${error}`, className: "text-warning" };
+  switch (state) {
+    case "connected":
+      return { text: "✓ Connected", className: "text-success" };
+    case "api_billed":
+      return { text: "API account, not your subscription", className: "text-warning" };
+    case "logged_out":
+      return { text: "Not logged in", className: "text-warning" };
+    case "unknown":
+      return { text: "Login state unavailable", className: "text-warning" };
+    case "npm_only":
+      return { text: "npm install found — needs the native installer", className: "text-warning" };
+    case "not_installed":
+      return { text: "Not installed", className: "text-muted-foreground" };
+    case "failed":
+      return { text: "Couldn't check", className: "text-warning" };
+  }
+}
+
+/** Current time, re-read every `ms` so relative times stay honest. */
+function useNow(ms: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), ms);
+    return () => window.clearInterval(timer);
+  }, [ms]);
+  return now;
 }
 
 /** While waiting for a login in the terminal: re-check this often, this many times. */
@@ -239,6 +283,17 @@ function ClaudeDetails({
 }) {
   const [awaitingLogin, setAwaitingLogin] = useState(false);
   const [activating, setActivating] = useState(false);
+  const checkedAt = useAgentStore((s) => s.checkedAt);
+  const statusError = useAgentStore((s) => s.statusError);
+  const refreshModels = useAgentStore((s) => s.refreshModels);
+  const now = useNow(15_000);
+  const result = checkResult(state, statusError);
+
+  // A check also refreshes the model catalog.
+  const handleCheck = () => {
+    void refreshStatus();
+    void refreshModels();
+  };
   // Same rule as "Set as Active": usable unless known to be missing or logged out.
   const unusable = state === "not_installed" || state === "npm_only" || state === "logged_out";
 
@@ -315,10 +370,22 @@ function ClaudeDetails({
               </p>
             )}
           </div>
-          <button type="button" onClick={() => refreshStatus()} disabled={checking} className={BUTTON_CLASS}>
-            {checking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-            Check connection
-          </button>
+          <div className="flex shrink-0 items-center gap-3">
+            {!checking && result && checkedAt !== undefined && (
+              <span
+                role="status"
+                className={`max-w-[16rem] truncate text-meta ${result.className}`}
+                title={result.text}
+              >
+                {result.text}
+                <span className="text-muted-foreground"> · checked {formatCheckedAgo(checkedAt, Math.max(now, checkedAt))}</span>
+              </span>
+            )}
+            <button type="button" onClick={handleCheck} disabled={checking} className={BUTTON_CLASS}>
+              {checking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+              {checking ? "Checking…" : "Check connection"}
+            </button>
+          </div>
         </div>
 
         {(state === "not_installed" || state === "npm_only") && (
@@ -389,7 +456,12 @@ function ModelSettings() {
   const config = useConfigStore((s) => s.claudeCliConfig);
   const setConfig = useConfigStore((s) => s.setClaudeCliConfig);
   const sessionRunning = useAgentStore((s) => Object.values(s.sessions).some(isSessionRunning));
+  const catalog = useConfigStore((s) => s.claudeModels);
+  const modelsError = useAgentStore((s) => s.modelsError);
   const [changed, setChanged] = useState(false);
+  // The CLI's catalog; the static aliases only until it was fetched once.
+  const models = catalog ?? STATIC_CLAUDE_MODELS;
+  const { latest, pinned } = groupClaudeModels(models);
 
   // The hint is about sessions running now; once they end it no longer applies.
   useEffect(() => {
@@ -410,46 +482,83 @@ function ModelSettings() {
     <div>
       <div className="flex items-baseline justify-between">
         <h4 className="text-xs font-semibold text-foreground">Models</h4>
-        {changed && sessionRunning && (
+        {changed && sessionRunning ? (
           <span className="text-meta text-muted-foreground">Applies to the next session</span>
+        ) : (
+          catalog === null &&
+          modelsError && (
+            <span className="text-meta text-muted-foreground" title={modelsError}>
+              Model list unavailable — showing the standard models
+            </span>
+          )
         )}
       </div>
       <div className="mt-2 space-y-2">
-        {rows.map((row) => (
-          <div key={row.tier} className="flex items-center gap-3">
-            <div className="w-40 shrink-0">
-              <p className="text-xs font-medium text-foreground">{row.tier}</p>
-              <p className="text-meta text-muted-foreground/70">{row.hint}</p>
+        {rows.map((row) => {
+          const saved = config[row.model];
+          const info = findClaudeModel(models, saved);
+          const listed = [...latest, ...pinned].some((o) => o.value === saved);
+          // Only a fetched catalog can say a model is gone.
+          const unavailable = !info && catalog !== null;
+          const noEffort = !!info && !info.supports_effort;
+          const levels = info ? info.effort_levels : CLAUDE_EFFORTS.map((x) => x.value);
+          // Shown as the session will run it; the saved effort is kept as chosen.
+          const effort = effectiveEffort(info, config[row.effort]) ?? "";
+          return (
+            <div key={row.tier} className="flex items-start gap-3">
+              <div className="w-40 shrink-0 pt-0.5">
+                <p className="text-xs font-medium text-foreground">{row.tier}</p>
+                <p className="text-meta text-muted-foreground/70">{row.hint}</p>
+              </div>
+              <div className="min-w-0 flex-1">
+                <select
+                  aria-label={`${row.tier} model`}
+                  value={saved}
+                  title={info?.description || undefined}
+                  onChange={(e) => update({ [row.model]: e.target.value })}
+                  className={`${SELECT_CLASS} w-full ${unavailable ? "border-warning/50" : ""}`}
+                >
+                  {!listed && <option value={saved}>{info?.display_name || saved}</option>}
+                  <optgroup label="Latest">
+                    {latest.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                  {pinned.length > 0 && (
+                    <optgroup label="Pinned versions">
+                      {pinned.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                </select>
+                {unavailable && <p className="mt-1 text-meta text-warning">No longer available</p>}
+              </div>
+              <select
+                aria-label={`${row.tier} effort`}
+                value={effort}
+                disabled={noEffort}
+                title={noEffort ? "This model doesn't take an effort level" : undefined}
+                onChange={(e) => update({ [row.effort]: e.target.value })}
+                className={`${SELECT_CLASS} w-36`}
+              >
+                {noEffort ? (
+                  <option value="">Not supported</option>
+                ) : (
+                  levels.map((level) => (
+                    <option key={level} value={level}>
+                      {effortLabel(level)}
+                    </option>
+                  ))
+                )}
+              </select>
             </div>
-            <select
-              aria-label={`${row.tier} model`}
-              value={config[row.model]}
-              onChange={(e) => update({ [row.model]: e.target.value })}
-              className={`${SELECT_CLASS} flex-1`}
-            >
-              {!CLAUDE_MODELS.some((m) => m.value === config[row.model]) && (
-                <option value={config[row.model]}>{config[row.model]}</option>
-              )}
-              {CLAUDE_MODELS.map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
-            <select
-              aria-label={`${row.tier} effort`}
-              value={config[row.effort]}
-              onChange={(e) => update({ [row.effort]: e.target.value })}
-              className={`${SELECT_CLASS} w-36`}
-            >
-              {CLAUDE_EFFORTS.map((x) => (
-                <option key={x.value} value={x.value}>
-                  {x.label}
-                </option>
-              ))}
-            </select>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

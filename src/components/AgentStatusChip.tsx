@@ -16,7 +16,7 @@ import {
   isRateLimited,
 } from "../lib/agentUsage";
 import { claudeTierLabel } from "../settings/ClaudeCliSettings";
-import type { AgentSessionStatus, ClaudeCliConfig, ClaudeCliStatus, SessionUsage } from "../lib/types";
+import type { AgentSessionStatus, ClaudeCliConfig, ClaudeCliStatus, ClaudeModelInfo, SessionUsage } from "../lib/types";
 
 export type AgentChipState = "idle" | "starting" | "ready" | "busy" | "error" | "limited" | "attention";
 
@@ -70,6 +70,7 @@ function buildTooltip(
   cfg: ClaudeCliConfig,
   note: string,
   apiBilled: boolean,
+  models?: ClaudeModelInfo[],
 ): string {
   const tiers = sessions.length
     ? sessions
@@ -77,11 +78,11 @@ function buildTooltip(
         .sort((a, b) => (a.tier === b.tier ? 0 : a.tier === "fast" ? -1 : 1))
         .map((s) => {
           const effort = s.tier === "fast" ? cfg.fast_effort : cfg.deep_effort;
-          return `${s.tier === "fast" ? "Fast" : "Deep"}: ${claudeTierLabel(s.model, effort)}`;
+          return `${s.tier === "fast" ? "Fast" : "Deep"}: ${claudeTierLabel(s.model, effort, models)}`;
         })
     : [
-        `Fast: ${claudeTierLabel(cfg.fast_model, cfg.fast_effort)}`,
-        `Deep: ${claudeTierLabel(cfg.deep_model, cfg.deep_effort)}`,
+        `Fast: ${claudeTierLabel(cfg.fast_model, cfg.fast_effort, models)}`,
+        `Deep: ${claudeTierLabel(cfg.deep_model, cfg.deep_effort, models)}`,
       ];
   const lines = [apiBilled ? "Claude (API account)" : "Claude (subscription)", ...tiers];
   if (apiBilled) lines.push(API_BILLED_NOTE);
@@ -104,6 +105,7 @@ export function AgentStatusChip({
   const status = useAgentStore((s) => s.status);
   const statusError = useAgentStore((s) => s.statusError);
   const cfg = useConfigStore((s) => s.claudeCliConfig);
+  const claudeModels = useConfigStore((s) => s.claudeModels);
   const { sessions, usage } = useMeetingAgentUsage();
 
   // Session updates only arrive once the store has subscribed (per window).
@@ -121,7 +123,14 @@ export function AgentStatusChip({
   const state: AgentChipState = apiBilled && chip.state === "ready" ? "attention" : chip.state;
   const label = chip.label;
   const style = STATE_STYLE[state];
-  const tooltip = buildTooltip(sessions, usage, cfg, inSession ? "" : providerNote(status), apiBilled);
+  const tooltip = buildTooltip(
+    sessions,
+    usage,
+    cfg,
+    inSession ? "" : providerNote(status),
+    apiBilled,
+    claudeModels ?? undefined,
+  );
 
   return (
     <div

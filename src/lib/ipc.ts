@@ -34,6 +34,7 @@ import type {
   AgentSessionStatus,
   ClaudeCliConfig,
   ClaudeCliStatus,
+  ClaudeModelInfo,
   MeetingChatMessage,
 } from "./types";
 
@@ -744,6 +745,14 @@ export async function isQuitPending(): Promise<boolean> {
 /** Detect `claude.exe`, its version and login state (no model call). */
 export async function claudeCliStatus(): Promise<ClaudeCliStatus> {
   return invoke<ClaudeCliStatus>("claude_cli_status");
+}
+
+/**
+ * The models the Claude CLI offers (no model call). Cached by the backend;
+ * `refresh` asks the CLI again.
+ */
+export async function claudeCliModels(refresh = false): Promise<ClaudeModelInfo[]> {
+  return invoke<ClaudeModelInfo[]>("claude_cli_models", { refresh });
 }
 
 /** Replace the Fast/Deep model settings; applies to sessions started afterwards. */

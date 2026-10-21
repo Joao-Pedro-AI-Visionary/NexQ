@@ -15,6 +15,7 @@ import { useTranslation } from "./hooks/useTranslation";
 import { useTraySync } from "./hooks/useTraySync";
 import { useUpdater } from "./hooks/useUpdater";
 import { useAgentFallbackToast } from "./hooks/useAgentFallbackToast";
+import { refreshClaudeModelsOnStart } from "./stores/agentStore";
 import { useTranslationStore } from "./stores/translationStore";
 import { CallLogPanel } from "./calllog";
 import { SelectionToolbar } from "./components/SelectionToolbar";
@@ -176,6 +177,12 @@ function App() {
 
   // Toast when Claude is unavailable and requests move to the fallback provider
   useAgentFallbackToast(windowLabel);
+
+  // Claude's model catalog: asked once per app start by the launcher (no
+  // model call); the overlay gets it through the persisted config store.
+  useEffect(() => {
+    if (configLoaded && windowLabel === "launcher") refreshClaudeModelsOnStart();
+  }, [configLoaded, windowLabel]);
 
   const previousView = useMeetingStore((s) => s.previousView);
 

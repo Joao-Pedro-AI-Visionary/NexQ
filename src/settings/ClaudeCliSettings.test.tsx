@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentSessionStatus, ClaudeCliStatus } from "../lib/types";
+import type { AgentSessionStatus, ClaudeCliStatus, ClaudeModelInfo } from "../lib/types";
 
 // ── Tauri stubs ─────────────────────────────────────────────────────────────
 type Handler = (e: { payload: unknown }) => void;
@@ -27,6 +27,7 @@ function emit(name: string, payload: unknown) {
 
 const ipc = vi.hoisted(() => ({
   claudeCliStatus: vi.fn(),
+  claudeCliModels: vi.fn(),
   setClaudeCliConfig: vi.fn(),
   getAgentSessions: vi.fn(),
   openClaudeLoginTerminal: vi.fn(),
@@ -38,6 +39,7 @@ const ipc = vi.hoisted(() => ({
 vi.mock("../lib/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/ipc")>()),
   claudeCliStatus: () => ipc.claudeCliStatus(),
+  claudeCliModels: (...args: unknown[]) => ipc.claudeCliModels(...args),
   setClaudeCliConfig: (...args: unknown[]) => ipc.setClaudeCliConfig(...args),
   getAgentSessions: () => ipc.getAgentSessions(),
   openClaudeLoginTerminal: () => ipc.openClaudeLoginTerminal(),
@@ -46,7 +48,7 @@ vi.mock("../lib/ipc", async (importOriginal) => ({
   setActiveModel: (...args: unknown[]) => ipc.setActiveModel(...args),
 }));
 
-import { ClaudeCliSettings } from "./ClaudeCliSettings";
+import { ClaudeCliSettings, claudeTierLabel } from "./ClaudeCliSettings";
 import { resetAgentStoreForTests } from "../stores/agentStore";
 import { DEFAULT_CLAUDE_CLI_CONFIG, useConfigStore } from "../stores/configStore";
 
@@ -74,6 +76,25 @@ const API_BILLED: ClaudeCliStatus = {
   auth: { logged_in: true, auth_method: "api_key", subscription_type: null, email: "me@example.com", login: "api_billed" },
 };
 
+const ALL_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+function model(value: string, resolved: string, display: string, levels: string[] = ALL_EFFORTS): ClaudeModelInfo {
+  return { value, resolved_model: resolved, display_name: display, description: "", supports_effort: levels.length > 0, effort_levels: levels };
+}
+/** Trimmed from a real `initialize` answer. */
+const CATALOG: ClaudeModelInfo[] = [
+  model("default", "claude-opus-5-5", "Default (recommended)"),
+  model("opus", "claude-opus-5-5", "Opus 5.5"),
+  model("fable", "claude-fable-5-1", "Fable 5.1"),
+  model("sonnet", "claude-sonnet-5-5", "Sonnet 5.5"),
+  model("haiku", "claude-haiku-4-5-20251001", "Haiku 4.5", []),
+  model("claude-opus-4-8", "claude-opus-4-8", "Opus 4.8"),
+  model("claude-opus-4-6", "claude-opus-4-6", "Opus 4.6", ["low", "medium", "high", "max"]),
+];
+
+function optionTexts(label: string): string[] {
+  return Array.from((screen.getByLabelText(label) as HTMLSelectElement).options).map((o) => o.textContent ?? "");
+}
+
 function renderSettings() {
   return render(<ClaudeCliSettings selected active={false} onSelect={() => {}} />);
 }
@@ -87,8 +108,10 @@ describe("ClaudeCliSettings", () => {
       claudeCliConfig: DEFAULT_CLAUDE_CLI_CONFIG,
       claudeCliFallbackPinned: false,
       lastModelByProvider: {},
+      claudeModels: null,
     });
     ipc.claudeCliStatus.mockReset().mockResolvedValue(LOGGED_IN);
+    ipc.claudeCliModels.mockReset().mockResolvedValue(CATALOG);
     ipc.setClaudeCliConfig.mockReset().mockResolvedValue(undefined);
     ipc.getAgentSessions.mockReset().mockResolvedValue([]);
     ipc.openClaudeLoginTerminal.mockReset().mockResolvedValue(undefined);
@@ -154,7 +177,9 @@ describe("ClaudeCliSettings", () => {
     ipc.claudeCliStatus.mockReturnValue(new Promise((r) => (resolve = r)));
     renderSettings();
     expect(screen.getByTestId("claude-status-dot")).toHaveAttribute("data-state", "checking");
-    expect(screen.getByText(/checking/i)).toBeInTheDocument();
+    // On the provider row, and on the Check connection button.
+    expect(within(screen.getByRole("button", { name: /^Claude\b/ })).getByText(/checking/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Checking…" })).toBeDisabled();
     await act(async () => resolve(LOGGED_IN));
     expect(screen.getByTestId("claude-status-dot")).toHaveAttribute("data-state", "connected");
   });
@@ -236,6 +261,113 @@ describe("ClaudeCliSettings", () => {
       screen.getByText("Uses your own Claude login on this PC. NexQ never sees your credentials."),
     ).toBeInTheDocument();
     await screen.findByText(/me@example\.com/);
+  });
+
+  it("groups the CLI's models into Latest (with what they resolve to) and Pinned versions", async () => {
+    useConfigStore.setState({ claudeModels: CATALOG });
+    renderSettings();
+    await screen.findByText(/me@example\.com/);
+    const groups = Array.from(screen.getByLabelText("Deep model").querySelectorAll("optgroup")).map((g) => g.label);
+    expect(groups).toEqual(["Latest", "Pinned versions"]);
+    expect(optionTexts("Deep model")).toEqual([
+      "Opus — Opus 5.5",
+      "Fable — Fable 5.1",
+      "Sonnet — Sonnet 5.5",
+      "Haiku — Haiku 4.5",
+      "Opus 4.8",
+      "Opus 4.6",
+    ]);
+    // Defaults stay Haiku (Fast) and Sonnet (Deep).
+    expect(screen.getByLabelText("Fast model")).toHaveValue("haiku");
+    expect(screen.getByLabelText("Deep model")).toHaveValue("sonnet");
+  });
+
+  it("disables the effort picker for a model without effort support", async () => {
+    useConfigStore.setState({ claudeModels: CATALOG });
+    renderSettings();
+    await screen.findByText(/me@example\.com/);
+    const fastEffort = screen.getByLabelText("Fast effort");
+    expect(fastEffort).toBeDisabled();
+    expect(optionTexts("Fast effort")).toEqual(["Not supported"]);
+    // Sonnet takes every level.
+    expect(screen.getByLabelText("Deep effort")).toBeEnabled();
+    expect(optionTexts("Deep effort")).toEqual(["Low", "Medium", "High", "Extra high", "Max"]);
+  });
+
+  it("offers only the model's effort levels and shows the clamped effort, keeping the saved one", async () => {
+    useConfigStore.setState({
+      claudeModels: CATALOG,
+      claudeCliConfig: { ...DEFAULT_CLAUDE_CLI_CONFIG, deep_model: "claude-opus-4-6", deep_effort: "xhigh" },
+    });
+    renderSettings();
+    await screen.findByText(/me@example\.com/);
+    expect(optionTexts("Deep effort")).toEqual(["Low", "Medium", "High", "Max"]);
+    expect(screen.getByLabelText("Deep effort")).toHaveValue("high");
+    expect(useConfigStore.getState().claudeCliConfig.deep_effort).toBe("xhigh");
+  });
+
+  it("keeps a saved model that is no longer offered selected, with a warning", async () => {
+    useConfigStore.setState({
+      claudeModels: CATALOG,
+      claudeCliConfig: { ...DEFAULT_CLAUDE_CLI_CONFIG, deep_model: "claude-opus-4-1" },
+    });
+    renderSettings();
+    await screen.findByText(/me@example\.com/);
+    expect(screen.getByLabelText("Deep model")).toHaveValue("claude-opus-4-1");
+    expect(screen.getByText("No longer available")).toBeInTheDocument();
+    // Only the Deep row warns.
+    expect(screen.getAllByText("No longer available")).toHaveLength(1);
+  });
+
+  it("falls back to the static aliases when no catalog was ever fetched", async () => {
+    ipc.claudeCliModels.mockReturnValue(new Promise(() => {}));
+    renderSettings();
+    await screen.findByText(/me@example\.com/);
+    expect(optionTexts("Deep model")).toEqual(["Haiku", "Sonnet", "Opus", "Fable"]);
+    expect(screen.queryByText("No longer available")).not.toBeInTheDocument();
+  });
+
+  it("Check connection shows progress, then the result with an honest time, and refreshes the models", async () => {
+    renderSettings();
+    await screen.findByText(/me@example\.com/);
+    let resolve: (s: ClaudeCliStatus) => void = () => {};
+    ipc.claudeCliStatus.mockReturnValue(new Promise((r) => (resolve = r)));
+    fireEvent.click(screen.getByRole("button", { name: /check connection/i }));
+    const busy = screen.getByRole("button", { name: "Checking…" });
+    expect(busy).toBeDisabled();
+    await act(async () => resolve(LOGGED_IN));
+    expect(screen.getByRole("status")).toHaveTextContent("Connected · checked just now");
+    expect(ipc.claudeCliModels).toHaveBeenCalledWith(true);
+    await waitFor(() => expect(useConfigStore.getState().claudeModels).toEqual(CATALOG));
+  });
+
+  it("Check connection names the specific problem", async () => {
+    renderSettings();
+    await screen.findByText(/me@example\.com/);
+    ipc.claudeCliStatus.mockResolvedValue(LOGGED_OUT);
+    fireEvent.click(screen.getByRole("button", { name: /check connection/i }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Not logged in · checked just now"));
+    ipc.claudeCliStatus.mockResolvedValue(NPM_ONLY);
+    fireEvent.click(screen.getByRole("button", { name: /check connection/i }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(/npm install/i));
+  });
+
+  it("says a failed re-check failed instead of repeating the earlier result", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    renderSettings();
+    await screen.findByText(/me@example\.com/);
+    expect(screen.getByRole("status")).toHaveTextContent("Connected");
+    ipc.claudeCliStatus.mockRejectedValueOnce(new Error("spawn failed"));
+    fireEvent.click(screen.getByRole("button", { name: /check connection/i }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Couldn't check: spawn failed"));
+  });
+
+  it("labels a tier with the effort the session actually gets", () => {
+    expect(claudeTierLabel("haiku", "low", CATALOG)).toBe("Haiku");
+    expect(claudeTierLabel("claude-opus-4-6", "xhigh", CATALOG)).toBe("Opus 4.6 · High");
+    expect(claudeTierLabel("sonnet", "medium", CATALOG)).toBe("Sonnet · Medium");
+    // No catalog yet: the saved effort as it is.
+    expect(claudeTierLabel("haiku", "low")).toBe("Haiku · Low");
   });
 
   it("pins the fallback provider with the model last used there", async () => {

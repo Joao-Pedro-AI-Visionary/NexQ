@@ -949,6 +949,7 @@ function LLMPickerDropdown({
   const ref = useRef<HTMLDivElement>(null);
   const verifiedProviders = useConfigStore((s) => s.verifiedCloudProviders);
   const claudeCliConfig = useConfigStore((s) => s.claudeCliConfig);
+  const claudeModels = useConfigStore((s) => s.claudeModels) ?? undefined;
   const claudeStatus = useAgentStore((s) => s.status);
   const refreshClaudeStatus = useAgentStore((s) => s.refreshStatus);
 
@@ -1125,8 +1126,8 @@ function LLMPickerDropdown({
                 {currentProvider === "claude_cli" ? "Using Claude" : "Use Claude"}
               </span>
               <span className="block text-meta text-muted-foreground">
-                Fast {claudeTierLabel(claudeCliConfig.fast_model, claudeCliConfig.fast_effort)}, Deep{" "}
-                {claudeTierLabel(claudeCliConfig.deep_model, claudeCliConfig.deep_effort)}
+                Fast {claudeTierLabel(claudeCliConfig.fast_model, claudeCliConfig.fast_effort, claudeModels)}, Deep{" "}
+                {claudeTierLabel(claudeCliConfig.deep_model, claudeCliConfig.deep_effort, claudeModels)}
               </span>
             </span>
             {currentProvider === "claude_cli" && <CheckCircle className="h-3 w-3 shrink-0 text-primary" />}

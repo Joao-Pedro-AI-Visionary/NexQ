@@ -1,7 +1,8 @@
 import { create } from "zustand";
 import type { AgentSessionStatus, ClaudeCliStatus } from "../lib/types";
-import { claudeCliStatus, getAgentSessions } from "../lib/ipc";
+import { claudeCliModels, claudeCliStatus, getAgentSessions } from "../lib/ipc";
 import { onAgentSessionStatus } from "../lib/events";
+import { useConfigStore } from "./configStore";
 
 /** Map key of a session: `${scope}:${meeting_id ?? ""}:${tier}`. */
 export function agentSessionKey(s: Pick<AgentSessionStatus, "scope" | "meeting_id" | "tier">): string {
@@ -20,16 +21,28 @@ interface AgentState {
   checking: boolean;
   /** Why the last status check failed; cleared by the next successful one. */
   statusError?: string;
+  /** When the last status check ended (ms since epoch), either way. */
+  checkedAt?: number;
+  /** Why the last model-catalog refresh failed; cleared by the next successful one. */
+  modelsError?: string;
   /** Open Claude sessions by `agentSessionKey`. Closed sessions are dropped. */
   sessions: Record<string, AgentSessionStatus>;
   /** Re-detect the CLI and its login. Concurrent calls share one check. */
   refreshStatus: () => Promise<void>;
+  /**
+   * Ask the CLI for its model catalog and keep it in the config store
+   * (persisted, so every window and the next start have it). Concurrent
+   * calls share one probe; a failure keeps the last good catalog.
+   */
+  refreshModels: () => Promise<void>;
   /** Subscribe to `agent_session_status` and load the current sessions (once per window). */
   init: () => void;
 }
 
 let inFlight: Promise<void> | null = null;
+let modelsInFlight: Promise<void> | null = null;
 let initialized = false;
+let startupModelsFetched = false;
 
 function applySession(
   sessions: Record<string, AgentSessionStatus>,
@@ -61,9 +74,26 @@ export const useAgentStore = create<AgentState>((set) => ({
       })
       .finally(() => {
         inFlight = null;
-        set({ checking: false });
+        set({ checking: false, checkedAt: Date.now() });
       });
     return inFlight;
+  },
+
+  refreshModels: () => {
+    if (modelsInFlight) return modelsInFlight;
+    modelsInFlight = claudeCliModels(true)
+      .then((models) => {
+        if (models.length > 0) useConfigStore.getState().setClaudeModels(models);
+        set({ modelsError: undefined });
+      })
+      .catch((e) => {
+        console.warn("[agentStore] Claude model list failed:", e);
+        set({ modelsError: e instanceof Error ? e.message : String(e) });
+      })
+      .finally(() => {
+        modelsInFlight = null;
+      });
+    return modelsInFlight;
   },
 
   init: () => {
@@ -93,9 +123,25 @@ export const useAgentStore = create<AgentState>((set) => ({
   },
 }));
 
+/** Refresh the model catalog once per app start (called by the launcher window). */
+export function refreshClaudeModelsOnStart(): void {
+  if (startupModelsFetched) return;
+  startupModelsFetched = true;
+  void useAgentStore.getState().refreshModels();
+}
+
 /** Test-only: forget the subscription and any in-flight check. */
 export function resetAgentStoreForTests(): void {
   inFlight = null;
+  modelsInFlight = null;
   initialized = false;
-  useAgentStore.setState({ status: undefined, checking: false, statusError: undefined, sessions: {} });
+  startupModelsFetched = false;
+  useAgentStore.setState({
+    status: undefined,
+    checking: false,
+    statusError: undefined,
+    checkedAt: undefined,
+    modelsError: undefined,
+    sessions: {},
+  });
 }

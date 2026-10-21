@@ -60,6 +60,26 @@ describe("configStore: active LLM across windows", () => {
     expect(overlay.getState().llmModel).toBe("haiku");
   });
 
+  it("the Claude model catalog fetched by the launcher reaches the overlay and the next start", async () => {
+    const launcher = await openWindow();
+    const overlay = await openWindow();
+    expect(overlay.getState().claudeModels).toBeNull();
+    const catalog = [
+      {
+        value: "haiku",
+        resolved_model: "claude-haiku-4-5-20251001",
+        display_name: "Haiku 4.5",
+        description: "",
+        supports_effort: false,
+        effort_levels: [],
+      },
+    ];
+    launcher.getState().setClaudeModels(catalog);
+    await vi.waitFor(() => expect(overlay.getState().claudeModels).toEqual(catalog));
+    const nextStart = await openWindow();
+    expect(nextStart.getState().claudeModels).toEqual(catalog);
+  });
+
   it("activating in either window updates the backend and both windows", async () => {
     const launcher = await openWindow();
     const overlay = await openWindow();
