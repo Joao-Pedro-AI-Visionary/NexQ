@@ -50,4 +50,15 @@ describe("generateAssist", () => {
       requestId: "req-42",
     });
   });
+
+  it("sends a picked scope, and nothing for the default", async () => {
+    const scope = { kind: "minutes" as const, since_ms: 100, minutes: 5, label: "Last 5 min" };
+    await generateAssist("Recap", undefined, { requestId: "r", scope });
+    expect(invoke.mock.calls[0][1].scope).toEqual(scope);
+
+    await generateAssist("Recap", undefined, { scope: { kind: "default", since_ms: null, label: "" } });
+    await generateAssist("Recap", undefined, { scope: null });
+    expect("scope" in invoke.mock.calls[1][1]).toBe(false);
+    expect("scope" in invoke.mock.calls[2][1]).toBe(false);
+  });
 });

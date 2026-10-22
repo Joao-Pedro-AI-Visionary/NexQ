@@ -14,7 +14,9 @@ import type {
   AIScenario,
   ClaudeCliConfig,
   ClaudeModelInfo,
+  ContextScopeSetting,
 } from "../lib/types";
+import { clampMinutes, DEFAULT_CONTEXT_SCOPE, SCOPE_KINDS } from "../lib/contextScope";
 
 const DEFAULT_DEEPGRAM_CONFIG: DeepgramConfig = {
   model: "nova-3",
@@ -104,6 +106,12 @@ async function getStore(): Promise<Store> {
  * Persist a key-value pair to the Tauri plugin-store.
  * Fire-and-forget: errors are logged but do not block the UI.
  */
+/** A saved/synced scope with a known kind and minutes in range (else the default). */
+function normalizeContextScope(value: Partial<ContextScopeSetting> | null | undefined): ContextScopeSetting {
+  if (!value || !SCOPE_KINDS.includes(value.kind as ContextScopeSetting["kind"])) return DEFAULT_CONTEXT_SCOPE;
+  return { kind: value.kind as ContextScopeSetting["kind"], minutes: clampMinutes(value.minutes ?? DEFAULT_CONTEXT_SCOPE.minutes) };
+}
+
 async function persistValue(key: string, value: unknown): Promise<void> {
   try {
     const store = await getStore();
@@ -209,6 +217,11 @@ interface ConfigState {
   // Overlay appearance
   overlayOpacity: number;
 
+  // Transcript scope of user actions (overlay picker)
+  contextScope: ContextScopeSetting;
+  /** Keep the picked scope for the next actions; off = back to the default after one action. */
+  contextScopeSticky: boolean;
+
   // Post-meeting translation
   showPostMeetingTranslation: boolean;
 
@@ -301,6 +314,8 @@ interface ConfigState {
   setAiResponseHPad: (v: number) => void;
   setAiResponseAlign: (align: "left" | "center" | "right") => void;
   setOverlayOpacity: (opacity: number) => void;
+  setContextScope: (scope: ContextScopeSetting) => void;
+  setContextScopeSticky: (sticky: boolean) => void;
   setShowPostMeetingTranslation: (enabled: boolean) => void;
   toggleOpenRouterFavorite: (id: string) => void;
   addOpenRouterRecentlyUsed: (id: string) => void;
@@ -373,6 +388,8 @@ export const useConfigStore = create<ConfigState>((set) => ({
   aiResponseHPad: 0,
   aiResponseAlign: "left" as const,
   overlayOpacity: 0.65,
+  contextScope: DEFAULT_CONTEXT_SCOPE,
+  contextScopeSticky: true,
   showPostMeetingTranslation: true,
   openrouterFavorites: [],
   openrouterRecentlyUsed: [],
@@ -748,6 +765,15 @@ export const useConfigStore = create<ConfigState>((set) => ({
     set({ overlayOpacity: opacity });
     persistValue("overlayOpacity", opacity);
   },
+  setContextScope: (scope) => {
+    const next = normalizeContextScope(scope);
+    set({ contextScope: next });
+    persistValue("contextScope", next);
+  },
+  setContextScopeSticky: (sticky) => {
+    set({ contextScopeSticky: sticky });
+    persistValue("contextScopeSticky", sticky);
+  },
   setShowPostMeetingTranslation: (enabled) => {
     set({ showPostMeetingTranslation: enabled });
     persistValue("showPostMeetingTranslation", enabled);
@@ -855,6 +881,8 @@ export const useConfigStore = create<ConfigState>((set) => ({
       const aiResponseHPad = await store.get<number>("aiResponseHPad");
       const aiResponseAlign = await store.get<string>("aiResponseAlign");
       const overlayOpacity = await store.get<number>("overlayOpacity");
+      const contextScope = await store.get<ContextScopeSetting>("contextScope");
+      const contextScopeSticky = await store.get<boolean>("contextScopeSticky");
       const showPostMeetingTranslation = await store.get<boolean>("showPostMeetingTranslation");
       const trayNotifications = await store.get<boolean>("trayNotifications");
       const trayAutoStart = await store.get<boolean>("trayAutoStart");
@@ -1026,6 +1054,8 @@ export const useConfigStore = create<ConfigState>((set) => ({
         aiResponseHPad: aiResponseHPad ?? 0,
         aiResponseAlign: (aiResponseAlign as "left" | "center" | "right") ?? "left",
         overlayOpacity: overlayOpacity ?? 0.65,
+        contextScope: normalizeContextScope(contextScope),
+        contextScopeSticky: contextScopeSticky ?? true,
         sttLanguage: sttLanguage ?? "en-US",
         showPostMeetingTranslation: showPostMeetingTranslation ?? true,
         ...(trayNotifications != null && { trayNotifications }),
@@ -1099,6 +1129,12 @@ export const useConfigStore = create<ConfigState>((set) => ({
       });
       store.onKeyChange<WhisperDualPassConfig>("whisperDualPass", (val) => {
         if (val != null) set({ whisperDualPass: val });
+      });
+      store.onKeyChange<ContextScopeSetting>("contextScope", (val) => {
+        if (val != null) set({ contextScope: normalizeContextScope(val) });
+      });
+      store.onKeyChange<boolean>("contextScopeSticky", (val) => {
+        if (val != null) set({ contextScopeSticky: val });
       });
       store.onKeyChange<number>("overlayOpacity", (val) => {
         if (val != null) set({ overlayOpacity: val });
