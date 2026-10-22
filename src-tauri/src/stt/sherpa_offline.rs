@@ -278,6 +278,8 @@ impl STTProvider for SherpaOfflineSTT {
                                     speaker: None,
                                     language: Some(language.clone()),
                                     segment_id: Some(segment_id.to_string()),
+                                    duration_ms: None,
+                                    speaker_tag: None,
                                 };
 
                                 if let Err(e) = result_tx.blocking_send(result) {
@@ -424,6 +426,8 @@ impl STTProvider for SherpaOfflineSTT {
                                         speaker: None,
                                         language: Some(language.clone()),
                                         segment_id: Some(segment_id.to_string()),
+                                        duration_ms: None,
+                                        speaker_tag: None,
                                     });
                                 }
                                 break;

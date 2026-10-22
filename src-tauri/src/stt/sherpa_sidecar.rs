@@ -294,6 +294,8 @@ impl STTProvider for SherpaSidecarSTT {
                     speaker: None,
                     language: Some(language.clone()),
                     segment_id: Some(format!("sherpa_seg_{}", parsed.segment_id)),
+                    duration_ms: None,
+                    speaker_tag: None,
                 };
 
                 if let Err(e) = tx.blocking_send(result) {
