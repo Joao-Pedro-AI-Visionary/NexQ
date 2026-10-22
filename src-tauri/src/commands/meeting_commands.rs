@@ -9,7 +9,7 @@ use crate::db::meetings::{
     self, MeetingActionItem, MeetingBookmark, MeetingSpeaker, MeetingTopicSection,
     MeetingUpdate, TranscriptSegment,
 };
-use crate::llm::cli_agent::context::{build_preload_messages, Seg};
+use crate::llm::cli_agent::context::{build_preload_messages, Seg, SentLine};
 use crate::llm::cli_agent::manager::{tier_for, SessionInit, SessionKey, SessionScope, Tier};
 use crate::llm::cli_agent::protocol::AgentErrorKind;
 use crate::llm::cli_agent::routing::{self, SessionRecord, PRELOAD_MESSAGE_CHARS};
@@ -42,10 +42,10 @@ pub(crate) fn live_session_record(state: &AppState, tier: Tier, finals: &[Seg]) 
         .map(|c| c.get_assembled_context())
         .unwrap_or_default();
     let (mut preload, rag_mode) = routing::document_preload(&documents);
-    let mut sent_ids = std::collections::HashSet::new();
+    let mut sent = HashMap::new();
     if tier == Tier::Deep {
         preload.extend(build_preload_messages(finals, None, PRELOAD_MESSAGE_CHARS, true));
-        sent_ids = finals.iter().map(|s| s.id.clone()).collect();
+        sent = finals.iter().map(|s| (s.id.clone(), SentLine::held(&s.text))).collect();
     }
     SessionRecord {
         system_prompt: routing::live_system_prompt(
@@ -54,7 +54,7 @@ pub(crate) fn live_session_record(state: &AppState, tier: Tier, finals: &[Seg]) 
             &custom_instructions(state),
         ),
         preload,
-        sent_ids,
+        sent,
         rag_mode,
         ..SessionRecord::default()
     }

@@ -2,7 +2,7 @@
 //! cursor, the preload messages a fresh session is given (`shouldQuery:false`)
 //! and the delta prompt each AI task sends.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 /// One final transcript segment. `id` is the segment's stable id (the
 /// transcript store / database id). `timestamp_ms` is milliseconds since the
@@ -15,29 +15,75 @@ pub struct Seg {
     pub timestamp_ms: u64,
 }
 
-/// Which final segments (by id) a session has already been sent. Identity,
-/// not position: an interim line that finalizes after later lines were sent,
-/// or a different (e.g. shorter) list of the same meeting, never makes a
-/// segment go twice or be skipped.
+/// Starts the text of a delta line that continues the line with the same
+/// segment id: it carries only the words added since that line was sent.
+pub const CONTINUATION_MARK: &str = "…";
+/// Starts the text of a delta line that replaces the earlier line with the
+/// same segment id (its text changed other than by growing).
+pub const CORRECTED_MARK: &str = "(corrected) ";
+
+/// What a session was sent for one segment id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SentLine {
+    /// The segment's (trimmed) text as last sent.
+    pub text: String,
+    /// The session's context still holds the line. False once a context
+    /// reset dropped it: it is not sent again unless its text changes, and
+    /// then goes whole (unmarked).
+    pub held: bool,
+}
+
+impl SentLine {
+    pub fn held(text: &str) -> Self {
+        Self { text: text.trim().to_string(), held: true }
+    }
+}
+
+/// What a session has been sent, per final segment id. Identity, not
+/// position: an interim line that finalizes after later lines were sent, or
+/// a different (e.g. shorter) list of the same meeting, never makes a
+/// segment go twice or be skipped. A line that grows after it was sent (the
+/// STT merges continuous speech into one line) sends only its new words.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DeltaCursor {
-    sent: HashSet<String>,
+    sent: HashMap<String, SentLine>,
 }
 
 impl DeltaCursor {
-    /// A cursor that has already sent `ids`.
-    pub fn with_sent(ids: HashSet<String>) -> Self {
-        Self { sent: ids }
+    /// A cursor that has already sent `sent`.
+    pub fn with_sent(sent: HashMap<String, SentLine>) -> Self {
+        Self { sent }
     }
 
-    /// Every segment of `finals` not sent yet (each id once), oldest first,
-    /// marking them sent.
+    /// What `finals` adds to what was sent, oldest first, marking it sent:
+    /// - a segment not sent yet: the whole line;
+    /// - a sent segment whose text grew (the sent text is a prefix, ending
+    ///   at a word boundary): only the new words, after [`CONTINUATION_MARK`];
+    /// - a sent segment whose text changed otherwise: the whole line after
+    ///   [`CORRECTED_MARK`];
+    /// - unchanged segments: nothing.
     pub fn take_new(&mut self, finals: &[Seg]) -> Vec<Seg> {
-        let mut new: Vec<Seg> = finals
-            .iter()
-            .filter(|s| self.sent.insert(s.id.clone()))
-            .cloned()
-            .collect();
+        let mut new: Vec<Seg> = Vec::new();
+        for seg in finals {
+            let text = seg.text.trim();
+            let delta_text = match self.sent.get(&seg.id) {
+                None => Some(text.to_string()),
+                Some(prev) if prev.text == text => None,
+                Some(prev) if !prev.held => Some(text.to_string()),
+                Some(prev) => match grown_suffix(&prev.text, text) {
+                    Some("") => None,
+                    Some(suffix) => Some(format!("{CONTINUATION_MARK}{suffix}")),
+                    None => Some(format!("{CORRECTED_MARK}{text}")),
+                },
+            };
+            if let Some(delta_text) = delta_text {
+                self.sent.insert(seg.id.clone(), SentLine::held(text));
+                new.push(Seg { text: delta_text, ..seg.clone() });
+            } else if let Some(prev) = self.sent.get_mut(&seg.id) {
+                // Whitespace-only growth: nothing to say, but remember the text.
+                prev.text = text.to_string();
+            }
+        }
         new.sort_by_key(|s| s.timestamp_ms);
         new
     }
@@ -47,9 +93,20 @@ impl DeltaCursor {
         self.sent.len()
     }
 
-    /// Ids of the segments already sent.
-    pub fn sent_ids(&self) -> &HashSet<String> {
+    /// What was sent, per segment id.
+    pub fn sent_lines(&self) -> &HashMap<String, SentLine> {
         &self.sent
+    }
+}
+
+/// The words `text` adds to `prev` when `text` is `prev` followed by more
+/// words (empty when only whitespace was added); `None` otherwise.
+fn grown_suffix<'a>(prev: &str, text: &'a str) -> Option<&'a str> {
+    let rest = text.strip_prefix(prev)?;
+    if prev.is_empty() || rest.is_empty() || rest.starts_with(char::is_whitespace) {
+        Some(rest.trim())
+    } else {
+        None
     }
 }
 
@@ -279,6 +336,15 @@ mod tests {
     }
 
     #[test]
+    fn delta_lines_render_continuation_and_correction_markers() {
+        let mut cursor = DeltaCursor::default();
+        let line = Seg { id: "them_1".into(), ..seg("Hi", "Them", 65_000) };
+        cursor.take_new(&[line.clone()]);
+        let new = cursor.take_new(&[Seg { text: "Hi there".into(), ..line }]);
+        assert_eq!(transcript_lines(&new, true), "[01:05] [them_1] Them: …there");
+    }
+
+    #[test]
     fn cursor_sends_only_new() {
         let (a, b, c) = (seg("a", "You", 0), seg("b", "Them", 1), seg("c", "You", 2));
         let mut cursor = DeltaCursor::default();
@@ -320,6 +386,60 @@ mod tests {
         let (a, b) = (seg("a", "You", 2_000), seg("b", "Them", 1_000));
         let mut cursor = DeltaCursor::default();
         assert_eq!(cursor.take_new(&[a.clone(), b.clone(), a.clone()]), vec![b, a]);
+    }
+
+    fn with_text(seg: &Seg, text: &str) -> Seg {
+        Seg { text: text.into(), ..seg.clone() }
+    }
+
+    #[test]
+    fn cursor_sends_only_the_new_words_of_a_grown_line_once() {
+        let line = seg("We should ship", "Them", 10_000);
+        let mut cursor = DeltaCursor::default();
+        assert_eq!(cursor.take_new(&[line.clone()]), vec![line.clone()]);
+        // The STT merged the next final into the same line (same id).
+        let grown = with_text(&line, "We should ship on Friday.");
+        assert_eq!(cursor.take_new(&[grown.clone()]), vec![with_text(&line, "…on Friday.")]);
+        assert!(cursor.take_new(&[grown.clone()]).is_empty(), "nothing resent when unchanged");
+        let grown2 = with_text(&line, "We should ship on Friday. Agreed?");
+        assert_eq!(cursor.take_new(&[grown2]), vec![with_text(&line, "…Agreed?")]);
+        assert_eq!(cursor.sent(), 1);
+    }
+
+    #[test]
+    fn cursor_sends_a_corrected_line_whole_once() {
+        let line = seg("We should sip", "Them", 10_000);
+        let mut cursor = DeltaCursor::default();
+        cursor.take_new(&[line.clone()]);
+        let fixed = with_text(&line, "We should ship");
+        assert_eq!(
+            cursor.take_new(&[fixed.clone()]),
+            vec![with_text(&line, "(corrected) We should ship")]
+        );
+        assert!(cursor.take_new(&[fixed]).is_empty());
+        // Growth that splits a word is a correction, not a continuation.
+        let mut cursor = DeltaCursor::default();
+        cursor.take_new(&[with_text(&line, "Hello wor")]);
+        assert_eq!(
+            cursor.take_new(&[with_text(&line, "Hello world")]),
+            vec![with_text(&line, "(corrected) Hello world")]
+        );
+    }
+
+    #[test]
+    fn cursor_dropped_line_is_resent_whole_only_when_it_changes() {
+        let (old, growing) = (seg("Old line", "You", 1_000), seg("Still talking", "Them", 2_000));
+        let mut sent = HashMap::new();
+        sent.insert(old.id.clone(), SentLine { held: false, ..SentLine::held("Old line") });
+        sent.insert(growing.id.clone(), SentLine { held: false, ..SentLine::held("Still talking") });
+        let mut cursor = DeltaCursor::with_sent(sent);
+        assert!(cursor.take_new(&[old.clone(), growing.clone()]).is_empty(), "dropped context is not resent");
+        let grown = with_text(&growing, "Still talking about it");
+        assert_eq!(cursor.take_new(&[old.clone(), grown.clone()]), vec![grown.clone()], "whole, unmarked");
+        assert!(cursor.sent_lines()[&growing.id].held);
+        assert!(!cursor.sent_lines()[&old.id].held);
+        let more = with_text(&growing, "Still talking about it now");
+        assert_eq!(cursor.take_new(&[old, more]), vec![with_text(&growing, "…now")]);
     }
 
     #[test]

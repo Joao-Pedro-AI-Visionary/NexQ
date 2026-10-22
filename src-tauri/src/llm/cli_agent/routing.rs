@@ -15,6 +15,7 @@
 
 use super::context::{
     build_delta_prompt, build_document_preload, pack_messages, transcript_lines, DeltaCursor, Seg,
+    SentLine,
 };
 use super::detect::{claude_auth_status, find_claude_binary, ClaudeLogin, API_BILLED_NOTE};
 use super::manager::{
@@ -27,7 +28,7 @@ use crate::context::token_counter::count_tokens;
 use crate::llm::provider::{CancelToken, LLMProvider};
 use crate::llm::{ProviderConfig, ProviderType};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -215,8 +216,9 @@ pub struct SessionRecord {
     pub preload: Vec<String>,
     /// Every delta the session received since, in order.
     pub replay: Vec<String>,
-    /// Ids of the final transcript segments the session holds.
-    pub sent_ids: HashSet<String>,
+    /// What the session was sent of each final transcript segment (by id):
+    /// its text, and whether the context still holds it.
+    pub sent: HashMap<String, SentLine>,
     /// Context documents were over the cap: requests run RAG retrieval.
     pub rag_mode: bool,
     /// The preload alone overflows the context: requests skip the session
@@ -324,12 +326,12 @@ impl MeetingSessions {
         self.records.lock().unwrap().get(key).map(SessionRecord::restart_init)
     }
 
-    fn sent_ids(&self, key: &SessionKey) -> HashSet<String> {
+    fn sent_lines(&self, key: &SessionKey) -> HashMap<String, SentLine> {
         self.records
             .lock()
             .unwrap()
             .get(key)
-            .map(|r| r.sent_ids.clone())
+            .map(|r| r.sent.clone())
             .unwrap_or_default()
     }
 
@@ -347,16 +349,18 @@ impl MeetingSessions {
         }
     }
 
-    fn record_sent(&self, key: &SessionKey, prompt: &str, sent_ids: HashSet<String>) {
+    fn record_sent(&self, key: &SessionKey, prompt: &str, sent: HashMap<String, SentLine>) {
         if let Some(record) = self.records.lock().unwrap().get_mut(key) {
             record.replay.push(prompt.to_string());
-            record.sent_ids = sent_ids;
+            record.sent = sent;
         }
     }
 
     /// Keep only the most recent deltas that fit in `budget` characters.
     /// When that drops nothing (the preload itself is too big), mark the
-    /// record stateless-only.
+    /// record stateless-only. Lines left only in dropped deltas stay sent
+    /// (old context is forgotten on purpose) but are no longer held, so one
+    /// that changes later goes whole instead of as a continuation.
     fn truncate_replay(&self, key: &SessionKey, budget: usize) {
         if let Some(record) = self.records.lock().unwrap().get_mut(key) {
             let mut used = 0usize;
@@ -373,6 +377,11 @@ impl MeetingSessions {
             record.replay.drain(..drop);
             if drop == 0 {
                 record.stateless_only = true;
+            }
+            let SessionRecord { preload, replay, sent, .. } = record;
+            for (id, line) in sent.iter_mut() {
+                let tag = format!("[{id}]");
+                line.held = preload.iter().chain(replay.iter()).any(|m| m.contains(&tag));
             }
         }
     }
@@ -455,8 +464,9 @@ fn retire(manager: &AgentSessionManager, key: &SessionKey) {
 }
 
 /// Send one request on the meeting session `key` (whose record the caller
-/// inserted): ensure the session, take the final segments it has not seen
-/// (by id), build the prompt with `compose(new_segments)`, report it with
+/// inserted): ensure the session, take what the final segments add to what
+/// it was sent (new lines, the new words of grown lines, corrected lines;
+/// see [`DeltaCursor::take_new`]), build the prompt with `compose(new_segments)`, report it with
 /// `on_sent(prompt, model, new_segment_count)` and ask.
 ///
 /// - A crash, timeout, logout or rate limit before any output restarts the
@@ -498,8 +508,8 @@ pub async fn ask_meeting_session(
             let mut cursor = manager.cursor(key).await;
             // The manager resets a cursor whenever its session (re)starts; the
             // record knows what the (replayed) context holds.
-            let known = sessions.sent_ids(key);
-            if *cursor.sent_ids() != known {
+            let known = sessions.sent_lines(key);
+            if *cursor.sent_lines() != known {
                 *cursor = DeltaCursor::with_sent(known);
             }
             let before = cursor.clone();
@@ -524,7 +534,7 @@ pub async fn ask_meeting_session(
             };
             let result = manager.ask(key, &text, on_delta, cancel.clone()).await;
             if delivered(&result) {
-                sessions.record_sent(key, &text, cursor.sent_ids().clone());
+                sessions.record_sent(key, &text, cursor.sent_lines().clone());
             } else {
                 *cursor = before;
             }
@@ -621,8 +631,12 @@ const LIVE_SESSION_RULES: &str = "\
 You are connected to a live meeting through NexQ. Context documents and the \
 transcript arrive as messages. Each request carries only the transcript lines \
 that are new since the previous request (\"[mm:ss] [SEGMENT_ID] Speaker: \
-text\"), then \"## Task instructions\" and, when present, the question. Treat \
-every transcript line you have received as one continuous meeting. Follow the \
+text\"), then \"## Task instructions\" and, when present, the question. A \
+line whose text starts with \"…\" continues the earlier line with the same \
+SEGMENT_ID (the speaker kept talking; it carries only the new words). A line \
+whose text starts with \"(corrected)\" replaces the earlier line with the same \
+SEGMENT_ID. Treat every transcript line you have received as one continuous \
+meeting. Follow the \
 task instructions of the current message only; they replace those of earlier \
 messages. When asked for segment ids, use the [SEGMENT_ID] of the lines; \
 otherwise never mention them. Answer directly, without preamble, and never \
@@ -1216,7 +1230,7 @@ mod tests {
         assert_eq!(script.spawns.load(Ordering::SeqCst), 1);
         assert_eq!(script.appended.lock().unwrap()[0], vec!["docs"]);
         let record = sessions.get(&key).unwrap();
-        assert_eq!(record.sent_ids.len(), 3);
+        assert_eq!(record.sent.len(), 3);
         assert_eq!(record.replay.len(), 3);
         assert_eq!(manager.usage(&live()).input_tokens, 21, "usage counted per turn");
     }
@@ -1236,6 +1250,62 @@ mod tests {
         assert!(!last_prompt(&script).contains("## New transcript"));
     }
 
+    fn grown(id: &str, text: &str, ts: u64) -> Seg {
+        Seg { text: text.into(), ..seg(id, ts) }
+    }
+
+    #[tokio::test]
+    async fn routing_grown_line_sends_only_its_new_words() {
+        let (manager, sessions, script, key) = setup(&[]);
+        ask(&manager, &sessions, &key, &[grown("p1", "We ship", 0)]).await.unwrap();
+        ask(&manager, &sessions, &key, &[grown("p1", "We ship on Friday", 0)]).await.unwrap();
+        let p = last_prompt(&script);
+        assert!(p.contains("[00:00] [p1] Them: …on Friday"), "{p}");
+        assert!(!p.contains("We ship"), "the sent part is not repeated: {p}");
+        ask(&manager, &sessions, &key, &[grown("p1", "We ship on Friday", 0)]).await.unwrap();
+        assert!(!last_prompt(&script).contains("## New transcript"));
+        assert_eq!(sessions.get(&key).unwrap().sent["p1"], SentLine::held("We ship on Friday"));
+    }
+
+    #[tokio::test]
+    async fn routing_restart_after_growth_replays_consistently() {
+        let (manager, sessions, script, key) = setup(&["docs"]);
+        ask(&manager, &sessions, &key, &[grown("p1", "Hello", 0)]).await.unwrap();
+        ask(&manager, &sessions, &key, &[grown("p1", "Hello there", 0)]).await.unwrap();
+        let (first, second) = {
+            let prompts = script.prompts.lock().unwrap();
+            (prompts[0].clone(), prompts[1].clone())
+        };
+        // The session crashes on the next request; the restart replays both
+        // deltas and the cursor resumes from the record (no resend of p1).
+        script.fail_next(AgentError::Crashed("exit code 1".into()));
+        ask(&manager, &sessions, &key, &[grown("p1", "Hello there friend", 0), seg("b", 1)]).await.unwrap();
+        assert_eq!(script.appended.lock().unwrap()[1], vec!["docs".to_string(), pack_messages(&[first, second], PRELOAD_MESSAGE_CHARS)[0].clone()]);
+        let p = last_prompt(&script);
+        assert!(p.contains("[p1] Them: …friend") && p.contains("[b] Them: b"), "{p}");
+        assert!(!p.contains("Hello"), "{p}");
+    }
+
+    #[tokio::test]
+    async fn routing_overflow_marks_dropped_lines_not_held() {
+        let (manager, sessions, script, key) = setup(&["docs"]);
+        let big = |id: &str| Seg { id: id.into(), text: "x".repeat(REPLAY_TAIL_CHARS / 2 + 10), speaker: "Them".into(), timestamp_ms: 0 };
+        ask(&manager, &sessions, &key, &[grown("p1", "Old words", 0), big("old")]).await.unwrap();
+        ask(&manager, &sessions, &key, &[big("recent")]).await.unwrap();
+        script.fail_next(AgentError::Cli(AgentErrorKind::ContextOverflow, "Prompt is too long".into()));
+        ask(&manager, &sessions, &key, &[seg("new", 1)]).await.unwrap_err();
+        let record = sessions.get(&key).unwrap();
+        assert!(!record.sent["p1"].held && !record.sent["old"].held);
+        assert!(record.sent["recent"].held);
+        // p1 kept growing: it goes whole (the session lost its start); the
+        // dropped unchanged line is not resent.
+        let finals = [grown("p1", "Old words and more", 0), big("old"), big("recent"), seg("new", 1)];
+        ask(&manager, &sessions, &key, &finals).await.unwrap();
+        let p = last_prompt(&script);
+        assert!(p.contains("[p1] Them: Old words and more") && p.contains("Them: new"), "{p}");
+        assert!(!p.contains("xxxx"), "dropped context is not resent");
+    }
+
     #[tokio::test]
     async fn routing_crash_restarts_once_with_replay() {
         let (manager, sessions, script, key) = setup(&["docs"]);
@@ -1253,7 +1323,7 @@ mod tests {
         // The new session got the preload plus the first delta, not the failed one.
         let replayed = script.appended.lock().unwrap()[1].clone();
         assert_eq!(replayed, vec!["docs".to_string(), prompts[0].clone()]);
-        assert_eq!(sessions.get(&key).unwrap().sent_ids.len(), 2);
+        assert_eq!(sessions.get(&key).unwrap().sent.len(), 2);
     }
 
     #[tokio::test]
@@ -1267,7 +1337,7 @@ mod tests {
         assert!(matches!(failure, AskFailure::Unavailable(AgentErrorKind::NotLoggedIn, _)), "{failure:?}");
         assert_eq!(script.spawns.load(Ordering::SeqCst), 2, "one restart only");
         let record = sessions.get(&key).unwrap();
-        assert!(record.sent_ids.is_empty(), "undelivered segments are rolled back");
+        assert!(record.sent.is_empty(), "undelivered segments are rolled back");
         assert!(record.replay.is_empty());
 
         // Healthy again: the next request carries the rolled-back segment.
@@ -1447,7 +1517,7 @@ mod tests {
         assert!(matches!(failure, AskFailure::Error(AgentError::Cli(AgentErrorKind::Other, _))));
         assert_eq!(script.spawns.load(Ordering::SeqCst), 1, "not retried");
         // The prompt is in Claude's history: its segments are not resent.
-        assert!(sessions.get(&key).unwrap().sent_ids.contains("a"));
+        assert!(sessions.get(&key).unwrap().sent.contains_key("a"));
         ask(&manager, &sessions, &key, &[seg("a", 0)]).await.unwrap();
         assert!(!last_prompt(&script).contains("## New transcript"));
     }
@@ -1471,7 +1541,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(failure, AskFailure::Cancelled);
         assert!(script.prompts.lock().unwrap().is_empty());
-        assert!(sessions.get(&key).unwrap().sent_ids.is_empty());
+        assert!(sessions.get(&key).unwrap().sent.is_empty());
     }
 
     #[tokio::test]
@@ -1481,11 +1551,11 @@ mod tests {
         script.fail_next(AgentError::CancelledBeforeSend);
         let failure = ask(&manager, &sessions, &key, &[seg("a", 0)]).await.unwrap_err();
         assert_eq!(failure, AskFailure::Cancelled);
-        assert!(sessions.get(&key).unwrap().sent_ids.is_empty(), "segments stay unsent");
+        assert!(sessions.get(&key).unwrap().sent.is_empty(), "segments stay unsent");
         // Stopped mid-turn: the prompt is in history.
         script.fail_next(AgentError::Cancelled);
         ask(&manager, &sessions, &key, &[seg("a", 0)]).await.unwrap_err();
-        assert!(sessions.get(&key).unwrap().sent_ids.contains("a"));
+        assert!(sessions.get(&key).unwrap().sent.contains_key("a"));
     }
 
     #[tokio::test]
