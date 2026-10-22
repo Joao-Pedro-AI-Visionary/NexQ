@@ -7,8 +7,9 @@ import { showToast } from "../stores/toastStore";
 import { CallLogEntry } from "./CallLogEntry";
 import { useMeetingAgentUsage } from "../hooks/useMeetingAgentUsage";
 import { useAgentStore } from "../stores/agentStore";
-import { formatTokenUsage, formatCostEstimate, isApiBilled } from "../lib/agentUsage";
+import { formatUsageSummary, formatCostEstimate, formatDuration, isApiBilled } from "../lib/agentUsage";
 import { PromptViewer } from "./PromptViewer";
+import { callLogStats, formatCompactTokens } from "./stats";
 import type { LogFilterKind } from "../lib/types";
 import {
   X,
@@ -88,22 +89,7 @@ export function CallLogPanel() {
   }, [entries]);
 
   // Performance stats
-  const stats = useMemo(() => {
-    const completed = entries.filter((e) => e.status === "complete");
-    const totalTokens = completed.reduce(
-      (s, e) => s + (e.totalTokens ?? 0),
-      0
-    );
-    const avgLatency =
-      completed.length > 0
-        ? Math.round(
-            completed.reduce((s, e) => s + (e.latencyMs ?? 0), 0) /
-              completed.length
-          )
-        : 0;
-    const errorCount = entries.filter((e) => e.status === "error").length;
-    return { total: entries.length, avgLatency, totalTokens, errorCount };
-  }, [entries]);
+  const stats = useMemo(() => callLogStats(entries), [entries]);
 
   // Selected entry for detail view
   const selectedEntry = useMemo(
@@ -242,7 +228,7 @@ export function CallLogPanel() {
             {claudeSessions.length > 0 && (
               <div className="mt-2 text-meta text-muted-foreground" data-testid="claude-usage">
                 <span className="font-medium text-foreground/80">Claude</span>{" "}
-                {formatTokenUsage(claudeUsage)}
+                <span className="tabular-nums">{formatUsageSummary(claudeUsage)}</span>
                 <span className="block text-muted-foreground/70">{formatCostEstimate(claudeUsage, claudeApiBilled)}</span>
               </div>
             )}
@@ -282,17 +268,20 @@ export function CallLogPanel() {
 
           {/* ── Stats mini-dashboard ── */}
           {stats.total > 0 && (
-            <div className="flex items-center justify-between border-b border-border/20 bg-secondary/20 px-3 py-1.5 shrink-0">
+            <div
+              className="flex items-center justify-between border-b border-border/20 bg-secondary/20 px-3 py-1.5 shrink-0"
+              data-testid="call-log-stats"
+            >
               <StatTile label="Calls" value={`${stats.total}`} />
-              <StatTile label="Avg" value={`${stats.avgLatency}ms`} />
               <StatTile
-                label="Tokens"
-                value={
-                  stats.totalTokens > 999
-                    ? `${(stats.totalTokens / 1000).toFixed(1)}k`
-                    : `${stats.totalTokens}`
-                }
+                label="Avg response"
+                value={stats.avgLatencyMs != null ? formatDuration(stats.avgLatencyMs) : "—"}
               />
+              <StatTile
+                label="First word"
+                value={stats.avgFirstTokenMs != null ? formatDuration(stats.avgFirstTokenMs) : "—"}
+              />
+              <StatTile label="Tokens" value={formatCompactTokens(stats.totalTokens)} />
               {stats.errorCount > 0 && (
                 <StatTile
                   label="Errors"

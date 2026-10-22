@@ -4,15 +4,44 @@
 use serde_json::{json, Value};
 
 /// Token/cost accounting and final text for one finished turn.
+///
+/// With prompt caching most of the prompt is in `cache_read_tokens` /
+/// `cache_write_tokens`; `input_tokens` is only the uncached rest. All token
+/// counts are per turn. The CLI's `total_cost_usd` is cumulative for its
+/// process, so the session turns it into the per-turn `cost_usd`.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TurnResult {
     pub text: String,
     pub is_error: bool,
+    /// Uncached prompt tokens (`usage.input_tokens`).
     pub input_tokens: u64,
+    /// Output tokens, thinking included (`usage.output_tokens`).
     pub output_tokens: u64,
+    /// Prompt tokens read from the cache (`usage.cache_read_input_tokens`).
     pub cache_read_tokens: u64,
+    /// Prompt tokens written to the cache (`usage.cache_creation_input_tokens`).
+    pub cache_write_tokens: u64,
+    /// The part of `output_tokens` spent thinking
+    /// (`usage.output_tokens_details.thinking_tokens`).
+    pub thinking_tokens: u64,
+    /// This turn's cost estimate. Set by the session from `total_cost_usd`
+    /// (0 straight out of [`parse_line`]).
     pub cost_usd: f64,
+    /// `total_cost_usd` as reported: cumulative for the CLI process.
+    pub total_cost_usd: f64,
+    /// The CLI's own duration of this turn (`duration_ms`).
     pub duration_ms: u64,
+    /// Wall time of the `ask` (set by the manager; 0 elsewhere).
+    pub latency_ms: u64,
+    /// From the `ask` until its first text arrived (set by the manager).
+    pub first_text_ms: Option<u64>,
+}
+
+impl TurnResult {
+    /// Every prompt token of the turn: uncached, cache reads and cache writes.
+    pub fn prompt_tokens(&self) -> u64 {
+        self.input_tokens + self.cache_read_tokens + self.cache_write_tokens
+    }
 }
 
 /// One parsed stdout line.
@@ -20,6 +49,8 @@ pub struct TurnResult {
 pub enum AgentEvent {
     Init { session_id: String, model: String },
     TextDelta(String),
+    /// The model is thinking (extended thinking) before it answers.
+    ThinkingDelta,
     TurnComplete(TurnResult),
     /// Any event NexQ does not act on (status, assistant, user, other deltas...).
     Other,
@@ -44,23 +75,31 @@ pub fn parse_line(line: &str) -> Result<AgentEvent, String> {
         }),
         ("stream_event", _) => {
             let delta = &v["event"]["delta"];
-            if v["event"]["type"] == "content_block_delta" && delta["type"] == "text_delta" {
-                if let Some(t) = delta["text"].as_str() {
-                    return Ok(AgentEvent::TextDelta(t.to_string()));
+            if v["event"]["type"] == "content_block_delta" {
+                if delta["type"] == "text_delta" {
+                    if let Some(t) = delta["text"].as_str() {
+                        return Ok(AgentEvent::TextDelta(t.to_string()));
+                    }
+                } else if delta["type"] == "thinking_delta" {
+                    return Ok(AgentEvent::ThinkingDelta);
                 }
             }
             Ok(AgentEvent::Other)
         }
         ("result", _) => {
             let usage = &v["usage"];
+            let count = |field: &Value| field.as_u64().unwrap_or(0);
             Ok(AgentEvent::TurnComplete(TurnResult {
                 text: result_text(&v),
                 is_error: v["is_error"].as_bool().unwrap_or(false),
-                input_tokens: usage["input_tokens"].as_u64().unwrap_or(0),
-                output_tokens: usage["output_tokens"].as_u64().unwrap_or(0),
-                cache_read_tokens: usage["cache_read_input_tokens"].as_u64().unwrap_or(0),
-                cost_usd: v["total_cost_usd"].as_f64().unwrap_or(0.0),
-                duration_ms: v["duration_ms"].as_u64().unwrap_or(0),
+                input_tokens: count(&usage["input_tokens"]),
+                output_tokens: count(&usage["output_tokens"]),
+                cache_read_tokens: count(&usage["cache_read_input_tokens"]),
+                cache_write_tokens: count(&usage["cache_creation_input_tokens"]),
+                thinking_tokens: count(&usage["output_tokens_details"]["thinking_tokens"]),
+                total_cost_usd: v["total_cost_usd"].as_f64().unwrap_or(0.0),
+                duration_ms: count(&v["duration_ms"]),
+                ..Default::default()
             }))
         }
         _ => Ok(AgentEvent::Other),
@@ -171,7 +210,7 @@ pub fn classify_error(text: &str) -> AgentErrorKind {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -200,10 +239,44 @@ mod tests {
                 input_tokens: 612,
                 output_tokens: 20,
                 cache_read_tokens: 0,
-                cost_usd: 0.0012,
+                total_cost_usd: 0.0012,
                 duration_ms: 900,
+                ..Default::default()
             })
         );
+    }
+
+    /// A real `result` line of CLI 2.1.288 (Haiku, prompt caching, thinking).
+    pub(crate) const REAL_RESULT: &str = r#"{"type":"result","subtype":"success","is_error":false,"duration_ms":4199,"duration_api_ms":10703,"num_turns":1,"result":"What share of them enroll?","session_id":"s","total_cost_usd":0.01933,"usage":{"input_tokens":10,"cache_creation_input_tokens":4190,"cache_read_input_tokens":0,"output_tokens":189,"output_tokens_details":{"thinking_tokens":151},"server_tool_use":{"web_search_requests":0},"service_tier":"standard"},"modelUsage":{"claude-haiku-4-5-20251001":{"inputTokens":7250,"outputTokens":740,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0.01933}}}"#;
+
+    #[test]
+    fn parse_real_result_counts_cache_writes_and_thinking() {
+        match parse_line(REAL_RESULT).unwrap() {
+            AgentEvent::TurnComplete(r) => {
+                assert_eq!(r.input_tokens, 10);
+                assert_eq!(r.cache_write_tokens, 4190);
+                assert_eq!(r.cache_read_tokens, 0);
+                assert_eq!(r.prompt_tokens(), 4200);
+                assert_eq!(r.output_tokens, 189);
+                assert_eq!(r.thinking_tokens, 151);
+                // Cumulative per process (the session derives the turn's
+                // cost); the cumulative `modelUsage` is ignored.
+                assert_eq!(r.total_cost_usd, 0.01933);
+                assert_eq!(r.cost_usd, 0.0);
+                assert_eq!(r.duration_ms, 4199);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_thinking_delta() {
+        let l = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The user wants"}},"session_id":"s"}"#;
+        assert_eq!(parse_line(l).unwrap(), AgentEvent::ThinkingDelta);
+        let sig = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"x"}}}"#;
+        assert_eq!(parse_line(sig).unwrap(), AgentEvent::Other);
+        let tokens = r#"{"type":"system","subtype":"thinking_tokens","tokens":151}"#;
+        assert_eq!(parse_line(tokens).unwrap(), AgentEvent::Other);
     }
 
     #[test]

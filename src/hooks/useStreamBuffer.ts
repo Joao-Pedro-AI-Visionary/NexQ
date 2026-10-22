@@ -13,7 +13,7 @@ import {
 import type { IntelligenceMode } from "../lib/types";
 
 /** Generations for a past meeting stream into that meeting's view, never the live buffer. */
-const PAST_MEETING_MODES: ReadonlySet<string> = new Set([
+export const PAST_MEETING_MODES: ReadonlySet<string> = new Set([
   "MeetingSummary",
   "ActionItemsExtraction",
   "BookmarkSuggestions",

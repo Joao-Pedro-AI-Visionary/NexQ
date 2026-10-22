@@ -49,6 +49,8 @@ describe("configStore: Claude CLI config", () => {
       fast_effort: "low",
       deep_model: "sonnet",
       deep_effort: "medium",
+      fast_thinking: false,
+      deep_thinking: true,
       fallback_provider: "openai",
       fallback_model: "gpt-4o",
     });
@@ -69,8 +71,10 @@ describe("configStore: Claude CLI config", () => {
     const store = await freshStore();
     await store.getState().loadConfig();
 
-    expect(store.getState().claudeCliConfig).toEqual(config);
-    await vi.waitFor(() => expect(pushedConfigs()).toContainEqual(config));
+    // Saved before the thinking settings existed: they load with their defaults.
+    const loaded = { ...config, fast_thinking: false, deep_thinking: true };
+    expect(store.getState().claudeCliConfig).toEqual(loaded);
+    await vi.waitFor(() => expect(pushedConfigs()).toContainEqual(loaded));
     // With Claude active, the backend's model slot gets the Fast model.
     await vi.waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("set_active_model", { provider: "claude_cli", modelId: "sonnet" }),

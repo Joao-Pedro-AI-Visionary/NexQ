@@ -324,6 +324,10 @@ export interface ClaudeCliConfig {
   fast_effort: string;
   deep_model: string;
   deep_effort: string;
+  /** Extended thinking on the Fast tier (and utility calls). Off = fastest replies. */
+  fast_thinking: boolean;
+  /** Extended thinking on the Deep tier. */
+  deep_thinking: boolean;
   /** Provider id used when Claude is unavailable; null = no fallback. */
   fallback_provider: string | null;
   /** Model used on the fallback provider; null = its first listed model. */
@@ -354,9 +358,26 @@ export interface AgentFallbackEvent {
 
 /** Mirrors Rust `SessionUsage`: cumulative estimate for one session scope. */
 export interface SessionUsage {
+  /** Uncached prompt tokens. */
   input_tokens: number;
+  /** Prompt tokens read from the prompt cache. */
+  cache_read_tokens: number;
+  /** Prompt tokens written to the prompt cache. */
+  cache_write_tokens: number;
+  /** Output tokens, thinking included. */
   output_tokens: number;
+  /** The part of `output_tokens` spent thinking. */
+  thinking_tokens: number;
   cost_usd: number;
+  /** Answered requests. */
+  requests: number;
+  /** Sum of every request's wall time (ms). */
+  total_latency_ms: number;
+  /** Sum of every request's time to its first words (ms). */
+  total_first_token_ms: number;
+  last_latency_ms: number;
+  /** When the last answered request started (ms since epoch); 0 = none yet. */
+  last_request_at_ms: number;
 }
 
 /** Mirrors Rust `AgentSessionStatus` (payload of `agent_session_status`). */
@@ -632,6 +653,28 @@ export interface StreamEndEvent {
   request_id: string | null;
   /** True when the user stopped the stream; a normal stop, not an error. */
   cancelled: boolean;
+  /** The request's actual token usage, when the provider reported it. */
+  usage?: StreamUsage | null;
+}
+
+/** Mirrors Rust `StreamUsage`: actual token usage of one request. */
+export interface StreamUsage {
+  /** Uncached prompt tokens (all prompt tokens for providers without a cache). */
+  input_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  /** Output tokens, thinking included. */
+  output_tokens: number;
+  thinking_tokens: number;
+  /** This request's cost estimate, when known. */
+  cost_usd: number | null;
+  /** From the request's start until its first words (ms), when measured. */
+  first_token_ms: number | null;
+}
+
+/** Payload of `llm_stream_thinking`: the model is thinking before it answers (once per request). */
+export interface StreamThinkingEvent {
+  request_id: string | null;
 }
 
 export interface StreamErrorEvent {
@@ -698,6 +741,12 @@ export interface LogEntry {
   // Token accounting
   totalTokens: number | null;
   latencyMs: number | null;
+  /** Actual usage from the stream end, when the provider reported it. */
+  usage?: StreamUsage | null;
+  /** The Claude session that answered ("live:<meeting>:fast"...); null on the stateless path. */
+  sessionKey?: string | null;
+  /** Nothing has arrived for a long time; late tokens or the end still revive the entry. */
+  stalled?: boolean;
   // Content
   responseContent: string;
   responseContentClean: string;

@@ -93,6 +93,11 @@ pub struct ClaudeCliConfig {
     pub fast_effort: String,
     pub deep_model: String,
     pub deep_effort: String,
+    /// Extended thinking on the Fast tier (and the Utility session). Off by
+    /// default: Haiku otherwise thinks on every turn before its first word.
+    pub fast_thinking: bool,
+    /// Extended thinking on the Deep tier.
+    pub deep_thinking: bool,
     /// Provider id used when Claude is unavailable; `None` = no fallback.
     pub fallback_provider: Option<String>,
     /// Model used on the fallback provider; `None` = its first listed model.
@@ -106,6 +111,8 @@ impl Default for ClaudeCliConfig {
             fast_effort: "low".into(),
             deep_model: "sonnet".into(),
             deep_effort: "medium".into(),
+            fast_thinking: false,
+            deep_thinking: true,
             fallback_provider: None,
             fallback_model: None,
         }
@@ -120,6 +127,14 @@ impl ClaudeCliConfig {
             Tier::Deep => (&self.deep_model, &self.deep_effort),
         }
     }
+
+    /// Whether a tier's sessions use extended thinking.
+    pub fn thinking_for(&self, tier: Tier) -> bool {
+        match tier {
+            Tier::Fast => self.fast_thinking,
+            Tier::Deep => self.deep_thinking,
+        }
+    }
 }
 
 /// Which tier serves `mode` (an intelligence mode such as `"Assist"` or
@@ -127,7 +142,9 @@ impl ClaudeCliConfig {
 /// always use Deep, utility calls use Fast. Identical Fast/Deep settings
 /// always resolve to Fast so only one session runs.
 pub fn tier_for(mode: &str, scope: &SessionScope, cfg: &ClaudeCliConfig) -> Tier {
-    if cfg.model_for(Tier::Fast) == cfg.model_for(Tier::Deep) {
+    if cfg.model_for(Tier::Fast) == cfg.model_for(Tier::Deep)
+        && cfg.thinking_for(Tier::Fast) == cfg.thinking_for(Tier::Deep)
+    {
         return Tier::Fast;
     }
     match scope {
@@ -137,12 +154,57 @@ pub fn tier_for(mode: &str, scope: &SessionScope, cfg: &ClaudeCliConfig) -> Tier
     }
 }
 
-/// Cumulative token/cost accounting for one scope (estimate from the CLI).
+/// Cumulative token/cost/timing accounting for one scope (estimate from the
+/// CLI), over every successful turn of every tier and restart.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SessionUsage {
+    /// Uncached prompt tokens.
     pub input_tokens: u64,
+    /// Prompt tokens read from the prompt cache.
+    pub cache_read_tokens: u64,
+    /// Prompt tokens written to the prompt cache.
+    pub cache_write_tokens: u64,
+    /// Output tokens, thinking included.
     pub output_tokens: u64,
+    /// The part of `output_tokens` spent thinking.
+    pub thinking_tokens: u64,
     pub cost_usd: f64,
+    /// Answered requests.
+    pub requests: u64,
+    /// Sum of every request's wall time (ask start → result).
+    pub total_latency_ms: u64,
+    /// Sum of every request's time to its first text (its whole wall time
+    /// when no text came before the result).
+    pub total_first_token_ms: u64,
+    pub last_latency_ms: u64,
+    /// When the last answered request started (ms since the Unix epoch).
+    pub last_request_at_ms: u64,
+}
+
+impl SessionUsage {
+    /// Add one answered turn (its `latency_ms` / `first_text_ms` measured by
+    /// the manager), started at `started_at_ms` (epoch ms).
+    pub fn add_turn(&mut self, turn: &TurnResult, started_at_ms: u64) {
+        self.input_tokens += turn.input_tokens;
+        self.cache_read_tokens += turn.cache_read_tokens;
+        self.cache_write_tokens += turn.cache_write_tokens;
+        self.output_tokens += turn.output_tokens;
+        self.thinking_tokens += turn.thinking_tokens;
+        self.cost_usd += turn.cost_usd;
+        self.requests += 1;
+        self.total_latency_ms += turn.latency_ms;
+        self.total_first_token_ms += turn.first_text_ms.unwrap_or(turn.latency_ms);
+        self.last_latency_ms = turn.latency_ms;
+        self.last_request_at_ms = started_at_ms;
+    }
+}
+
+fn epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Payload of the `agent_session_status` event.
@@ -371,16 +433,21 @@ impl AgentSessionManager {
             dead.handle.close().await;
         }
 
-        let (model, effort) = {
+        let (model, effort, thinking) = {
             let cfg = self.config.read().unwrap();
             let (m, e) = cfg.model_for(key.tier);
-            (m.to_string(), effective_effort(self.catalog.find(m).as_ref(), e))
+            (
+                m.to_string(),
+                effective_effort(self.catalog.find(m).as_ref(), e),
+                cfg.thinking_for(key.tier),
+            )
         };
         self.emit(key, SessionState::Starting, &model, None);
         let cfg = SessionConfig {
             model: model.clone(),
             effort,
             system_prompt: init.system_prompt,
+            thinking,
         };
         let handle = match self.spawner.spawn(cfg).await {
             Ok(handle) => handle,
@@ -424,6 +491,8 @@ impl AgentSessionManager {
 
     /// Ask on the session `ensure` started for `key`, reporting busy, then
     /// ready (or error), and adding the turn's usage to the scope's total.
+    /// The result carries the turn's wall time (`latency_ms`) and time to
+    /// first text (`first_text_ms`), measured from this call.
     pub async fn ask(
         &self,
         key: &SessionKey,
@@ -451,14 +520,29 @@ impl AgentSessionManager {
             handle: handle.clone(),
             outcome: TurnOutcome::Abandoned,
         };
-        let result = handle.ask(prompt, on_delta, cancel).await;
+        let started = Instant::now();
+        let started_at_ms = epoch_ms();
+        let first_text: Arc<std::sync::OnceLock<u64>> = Arc::default();
+        let on_delta: OnDelta = {
+            let first_text = first_text.clone();
+            Box::new(move |token: &str| {
+                if !token.is_empty() {
+                    first_text.get_or_init(|| started.elapsed().as_millis() as u64);
+                }
+                on_delta(token)
+            })
+        };
+        let mut result = handle.ask(prompt, on_delta, cancel).await;
 
-        if let Ok(done) = &result {
-            let mut usage = self.usage.lock().unwrap();
-            let total = usage.entry(key.scope.clone()).or_default();
-            total.input_tokens += done.input_tokens;
-            total.output_tokens += done.output_tokens;
-            total.cost_usd += done.cost_usd;
+        if let Ok(done) = &mut result {
+            done.latency_ms = started.elapsed().as_millis() as u64;
+            done.first_text_ms = first_text.get().copied();
+            self.usage
+                .lock()
+                .unwrap()
+                .entry(key.scope.clone())
+                .or_default()
+                .add_turn(done, started_at_ms);
         }
         turn.outcome = match &result {
             Ok(_) => TurnOutcome::Succeeded,
@@ -801,11 +885,22 @@ mod tests {
                 // Still in flight across a scheduler turn.
                 tokio::task::yield_now().await;
             }
-            on_delta(prompt);
+            if prompt == "slow" {
+                // Thinks, then answers 30 ms in and finishes 60 ms in.
+                on_delta(crate::llm::cli_agent::session::THINKING_SIGNAL);
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                on_delta("a");
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            } else {
+                on_delta(prompt);
+            }
             Ok(TurnResult {
                 text: prompt.to_string(),
                 input_tokens: 10,
+                cache_read_tokens: 30,
+                cache_write_tokens: 4,
                 output_tokens: 2,
+                thinking_tokens: 1,
                 cost_usd: 0.5,
                 ..Default::default()
             })
@@ -905,10 +1000,14 @@ mod tests {
         let same = ClaudeCliConfig {
             deep_model: "haiku".into(),
             deep_effort: "low".into(),
+            deep_thinking: false,
             ..ClaudeCliConfig::default()
         };
         assert_eq!(tier_for("Recap", &live, &same), Tier::Fast);
         assert_eq!(tier_for("Assist", &past, &same), Tier::Fast);
+        // Same model, but only Deep thinks: two different sessions.
+        let thinks = ClaudeCliConfig { deep_thinking: true, ..same };
+        assert_eq!(tier_for("Recap", &live, &thinks), Tier::Deep);
     }
 
     #[test]
@@ -916,9 +1015,28 @@ mod tests {
         let cfg = ClaudeCliConfig::default();
         assert_eq!(cfg.model_for(Tier::Fast), ("haiku", "low"));
         assert_eq!(cfg.model_for(Tier::Deep), ("sonnet", "medium"));
+        assert!(!cfg.thinking_for(Tier::Fast));
+        assert!(cfg.thinking_for(Tier::Deep));
         assert_eq!(cfg.fallback_provider, None);
         let partial: ClaudeCliConfig = serde_json::from_str(r#"{"deep_model":"opus"}"#).unwrap();
         assert_eq!(partial.model_for(Tier::Deep), ("opus", "medium"));
+        // A config saved before the thinking settings existed loads with defaults.
+        let old: ClaudeCliConfig = serde_json::from_str(
+            r#"{"fast_model":"haiku","fast_effort":"low","deep_model":"sonnet","deep_effort":"medium","fallback_provider":null,"fallback_model":null}"#,
+        )
+        .unwrap();
+        assert_eq!((old.fast_thinking, old.deep_thinking), (false, true));
+    }
+
+    #[tokio::test]
+    async fn ensure_passes_each_tiers_thinking_setting() {
+        let spawner = Arc::new(FakeSpawner::default());
+        let cfg = ClaudeCliConfig { fast_thinking: true, deep_thinking: false, ..Default::default() };
+        let mgr = AgentSessionManager::new(spawner.clone(), Arc::new(NoopStatusSink), Arc::new(RwLock::new(cfg)));
+        mgr.ensure(&key(SessionScope::Utility, Tier::Fast), init(&[])).await.unwrap();
+        mgr.ensure(&key(SessionScope::Past("m".into()), Tier::Deep), init(&[])).await.unwrap();
+        let thinking: Vec<bool> = spawner.spawned.lock().unwrap().iter().map(|(c, _)| c.thinking).collect();
+        assert_eq!(thinking, vec![true, false]);
     }
 
     #[tokio::test]
@@ -971,6 +1089,10 @@ mod tests {
                 input_tokens: 1,
                 output_tokens: 2,
                 cost_usd: 0.5,
+                cache_read_tokens: 3,
+                requests: 4,
+                last_request_at_ms: 5,
+                ..Default::default()
             },
         };
         let v = serde_json::to_value(&s).unwrap();
@@ -978,6 +1100,14 @@ mod tests {
         assert_eq!(v["usage"]["input_tokens"], 1);
         assert_eq!(v["usage"]["output_tokens"], 2);
         assert_eq!(v["usage"]["cost_usd"], 0.5);
+        assert_eq!(v["usage"]["cache_read_tokens"], 3);
+        assert_eq!(v["usage"]["cache_write_tokens"], 0);
+        assert_eq!(v["usage"]["thinking_tokens"], 0);
+        assert_eq!(v["usage"]["requests"], 4);
+        assert_eq!(v["usage"]["total_latency_ms"], 0);
+        assert_eq!(v["usage"]["total_first_token_ms"], 0);
+        assert_eq!(v["usage"]["last_latency_ms"], 0);
+        assert_eq!(v["usage"]["last_request_at_ms"], 5);
         assert!(v["error_kind"].is_null());
     }
 
@@ -1067,14 +1197,21 @@ mod tests {
         mgr.ask(&k, "q2", no_delta(), Arc::new(CancelToken::new()))
             .await
             .unwrap();
+        let usage = mgr.usage(&scope);
         assert_eq!(
-            mgr.usage(&scope),
-            SessionUsage {
-                input_tokens: 20,
-                output_tokens: 4,
-                cost_usd: 1.0
-            }
+            (
+                usage.input_tokens,
+                usage.cache_read_tokens,
+                usage.cache_write_tokens,
+                usage.output_tokens,
+                usage.thinking_tokens,
+                usage.cost_usd,
+                usage.requests
+            ),
+            (20, 60, 8, 4, 2, 1.0, 2)
         );
+        assert!(usage.last_request_at_ms > 0);
+        assert!(usage.total_first_token_ms <= usage.total_latency_ms);
         assert_eq!(
             sink.states(),
             vec!["starting", "ready", "busy", "ready", "busy", "ready"]
@@ -1085,6 +1222,7 @@ mod tests {
         assert_eq!(last.tier, "deep");
         assert_eq!(last.model, "sonnet");
         assert_eq!(last.usage.input_tokens, 20);
+        assert_eq!(last.usage.requests, 2);
 
         let err = mgr
             .ask(&k, "fail:boom", no_delta(), Arc::new(CancelToken::new()))
@@ -1095,6 +1233,42 @@ mod tests {
         assert_eq!(snap[0].state, "error");
         assert!(snap[0].detail.as_deref().unwrap().contains("boom"));
         assert_eq!(snap[0].error_kind.as_deref(), Some("crashed"));
+    }
+
+    #[tokio::test]
+    async fn ask_measures_latency_and_first_text_and_accumulates_them() {
+        let (mgr, _spawner, sink) = setup();
+        let scope = SessionScope::Live("m9".into());
+        let k = key(scope.clone(), Tier::Fast);
+        mgr.ensure(&k, init(&[])).await.unwrap();
+        let before = epoch_ms();
+        let turn = mgr.ask(&k, "slow", no_delta(), Arc::new(CancelToken::new())).await.unwrap();
+        // The thinking signal (empty) does not count as the first text.
+        let first = turn.first_text_ms.expect("text arrived");
+        assert!(first >= 25, "first text after {first} ms");
+        assert!(turn.latency_ms >= first + 25, "{} vs {first}", turn.latency_ms);
+
+        let quick = mgr.ask(&k, "q", no_delta(), Arc::new(CancelToken::new())).await.unwrap();
+        let usage = mgr.usage(&scope);
+        assert_eq!(usage.requests, 2);
+        assert_eq!(usage.total_latency_ms, turn.latency_ms + quick.latency_ms);
+        assert_eq!(usage.total_first_token_ms, first + quick.first_text_ms.unwrap());
+        assert_eq!(usage.last_latency_ms, quick.latency_ms);
+        assert!(usage.last_request_at_ms >= before);
+        // A failed turn adds nothing.
+        let _ = mgr.ask(&k, "fail:x", no_delta(), Arc::new(CancelToken::new())).await;
+        assert_eq!(mgr.usage(&scope).requests, 2);
+        // The status event carries the scope total.
+        let last_ok = sink.0.lock().unwrap().iter().rev().find(|s| s.state == "ready").cloned().unwrap();
+        assert_eq!(last_ok.usage.requests, 2);
+    }
+
+    #[test]
+    fn usage_add_turn_without_text_counts_its_latency_as_first_token() {
+        let mut usage = SessionUsage::default();
+        let turn = TurnResult { latency_ms: 900, first_text_ms: None, ..Default::default() };
+        usage.add_turn(&turn, 42);
+        assert_eq!((usage.total_first_token_ms, usage.last_request_at_ms), (900, 42));
     }
 
     #[tokio::test]

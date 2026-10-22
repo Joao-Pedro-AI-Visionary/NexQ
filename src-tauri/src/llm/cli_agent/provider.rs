@@ -22,8 +22,9 @@ use super::manager::{AgentSessionManager, OnDelta, SessionInit, SessionKey, Sess
 use super::protocol::{AgentErrorKind, TurnResult};
 use super::session::AgentError;
 use crate::llm::provider::{
-    emit_end, emit_error, emit_token, is_cancelled, CancelToken, CompletionStats,
-    GenerationParams, LLMError, LLMMessage, LLMProvider, ModelInfo, TokenSink,
+    emit_end_with_usage, emit_error, emit_thinking, emit_token, is_cancelled, CancelToken,
+    CompletionStats, GenerationParams, LLMError, LLMMessage, LLMProvider, ModelInfo,
+    StreamUsage, TokenSink,
 };
 use crate::state::AppState;
 use std::sync::Arc;
@@ -143,8 +144,7 @@ pub async fn ask_utility(
 /// True when the Utility session should be replaced after `turn`, its
 /// `turns`-th finished turn.
 fn needs_recycle(turn: &TurnResult, turns: usize) -> bool {
-    turn.input_tokens + turn.cache_read_tokens >= UTILITY_MAX_CONTEXT_TOKENS
-        || turns >= UTILITY_MAX_TURNS
+    turn.prompt_tokens() >= UTILITY_MAX_CONTEXT_TOKENS || turns >= UTILITY_MAX_TURNS
 }
 
 /// Map a session error onto the provider error the callers already handle.
@@ -161,13 +161,63 @@ pub fn to_llm_error(err: AgentError) -> LLMError {
 }
 
 /// `latency_ms` is the whole call as the user felt it (cold start, queueing).
+/// Prompt tokens count cache reads and writes too.
 fn stats_from(turn: &TurnResult, latency_ms: u64) -> CompletionStats {
-    let prompt_tokens = turn.input_tokens + turn.cache_read_tokens;
+    let prompt_tokens = turn.prompt_tokens();
     CompletionStats {
         prompt_tokens,
         completion_tokens: turn.output_tokens,
         total_tokens: prompt_tokens + turn.output_tokens,
         latency_ms,
+    }
+}
+
+/// What a Claude turn's stream end reports: its real token counts, its
+/// per-turn cost and `first_token_ms` (measured by the caller from the
+/// request's start, like the end's `latency_ms`).
+pub fn stream_usage(turn: &TurnResult, first_token_ms: Option<u64>) -> StreamUsage {
+    StreamUsage {
+        input_tokens: turn.input_tokens,
+        cache_read_tokens: turn.cache_read_tokens,
+        cache_write_tokens: turn.cache_write_tokens,
+        output_tokens: turn.output_tokens,
+        thinking_tokens: turn.thinking_tokens,
+        cost_usd: Some(turn.cost_usd),
+        first_token_ms,
+    }
+}
+
+/// Request-side timing of one streamed answer: when its first words came
+/// (from `start`) and whether thinking was already reported.
+pub struct StreamTiming {
+    start: Instant,
+    first_token_ms: std::sync::OnceLock<u64>,
+    thinking: std::sync::atomic::AtomicBool,
+}
+
+impl StreamTiming {
+    pub fn new(start: Instant) -> Self {
+        Self {
+            start,
+            first_token_ms: std::sync::OnceLock::new(),
+            thinking: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Note one delta. Returns true for the first thinking signal (an empty
+    /// delta before any text): the caller reports thinking once.
+    pub fn on_delta(&self, token: &str) -> bool {
+        if token.is_empty() {
+            return self.first_token_ms.get().is_none()
+                && !self.thinking.swap(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        self.first_token_ms
+            .get_or_init(|| self.start.elapsed().as_millis() as u64);
+        false
+    }
+
+    pub fn first_token_ms(&self) -> Option<u64> {
+        self.first_token_ms.get().copied()
     }
 }
 
@@ -245,11 +295,19 @@ impl LLMProvider for ClaudeCliProvider {
             .unwrap_or_else(|| Arc::new(CancelToken::new()));
         let prompt = build_utility_prompt(&messages);
 
+        let timing = Arc::new(StreamTiming::new(start));
         let on_delta: OnDelta = {
             let app = app_handle.clone();
             let params = params.clone();
+            let timing = timing.clone();
             Box::new(move |token: &str| {
-                if !token.is_empty() && !is_cancelled(&params) {
+                let thinking = timing.on_delta(token);
+                if is_cancelled(&params) {
+                    return;
+                }
+                if thinking {
+                    emit_thinking(&app, &params);
+                } else if !token.is_empty() {
                     emit_token(&app, &params, token, sink.as_ref());
                 }
             })
@@ -261,7 +319,8 @@ impl LLMProvider for ClaudeCliProvider {
                     return Err(LLMError::Cancelled);
                 }
                 let stats = stats_from(&turn, start.elapsed().as_millis() as u64);
-                emit_end(&app_handle, &params, stats.total_tokens, stats.latency_ms);
+                let usage = stream_usage(&turn, timing.first_token_ms());
+                emit_end_with_usage(&app_handle, &params, stats.total_tokens, stats.latency_ms, Some(usage));
                 Ok(stats)
             }
             Err(e) => {
@@ -499,17 +558,72 @@ mod tests {
     }
 
     #[test]
-    fn claude_cli_stats_count_cache_reads_as_prompt() {
+    fn claude_cli_stats_count_cache_reads_and_writes_as_prompt() {
         let turn = TurnResult {
             input_tokens: 10,
             cache_read_tokens: 90,
+            cache_write_tokens: 4190,
             output_tokens: 5,
             duration_ms: 1,
             ..Default::default()
         };
         let stats = stats_from(&turn, 1500);
-        assert_eq!(stats.prompt_tokens, 100);
-        assert_eq!(stats.total_tokens, 105);
+        assert_eq!(stats.prompt_tokens, 4290);
+        assert_eq!(stats.total_tokens, 4295);
         assert_eq!(stats.latency_ms, 1500);
+    }
+
+    #[test]
+    fn claude_cli_recycle_threshold_counts_cache_writes() {
+        let turn = |input, read, write| TurnResult {
+            input_tokens: input,
+            cache_read_tokens: read,
+            cache_write_tokens: write,
+            ..Default::default()
+        };
+        // Mostly cache writes (a fresh session's first big prompt).
+        assert!(needs_recycle(&turn(10, 0, UTILITY_MAX_CONTEXT_TOKENS - 10), 1));
+        assert!(needs_recycle(&turn(10, 30_000, 29_990), 1));
+        assert!(!needs_recycle(&turn(10, 30_000, 29_989), 1));
+        assert!(needs_recycle(&turn(0, 0, 0), UTILITY_MAX_TURNS));
+    }
+
+    #[test]
+    fn claude_cli_stream_usage_carries_real_counts() {
+        let turn = TurnResult {
+            input_tokens: 10,
+            cache_read_tokens: 4000,
+            cache_write_tokens: 190,
+            output_tokens: 189,
+            thinking_tokens: 151,
+            cost_usd: 0.0093,
+            total_cost_usd: 0.0193,
+            ..Default::default()
+        };
+        let usage = stream_usage(&turn, Some(640));
+        assert_eq!(
+            (usage.input_tokens, usage.cache_read_tokens, usage.cache_write_tokens),
+            (10, 4000, 190)
+        );
+        assert_eq!((usage.output_tokens, usage.thinking_tokens), (189, 151));
+        assert_eq!(usage.cost_usd, Some(0.0093), "per turn, not the process total");
+        assert_eq!(usage.first_token_ms, Some(640));
+    }
+
+    #[test]
+    fn claude_cli_stream_timing_reports_thinking_once_before_text() {
+        let timing = StreamTiming::new(Instant::now());
+        assert!(timing.on_delta(""), "first thinking signal is reported");
+        assert!(!timing.on_delta(""), "only once");
+        assert_eq!(timing.first_token_ms(), None);
+        assert!(!timing.on_delta("Hi"));
+        let first = timing.first_token_ms().expect("first token time");
+        assert!(!timing.on_delta("!"));
+        assert_eq!(timing.first_token_ms(), Some(first));
+
+        // Thinking after text has started is not reported.
+        let late = StreamTiming::new(Instant::now());
+        late.on_delta("x");
+        assert!(!late.on_delta(""));
     }
 }

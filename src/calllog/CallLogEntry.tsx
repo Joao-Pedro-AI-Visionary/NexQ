@@ -1,6 +1,8 @@
 import { useCallback } from "react";
 import { useCallLogStore } from "../stores/callLogStore";
 import { getModeLabel } from "../lib/utils";
+import { formatDuration } from "../lib/agentUsage";
+import { entryFirstTokenMs, isClaudeEntry } from "./stats";
 import type { LogEntry, IntelligenceMode } from "../lib/types";
 import {
   CheckCircle2,
@@ -57,6 +59,7 @@ export function CallLogEntry({ entry, isSelected }: Props) {
     setExpanded(entry.id);
   }, [entry.id, setExpanded]);
 
+  const firstTokenMs = entryFirstTokenMs(entry);
   const timeStr = new Date(entry.timestamp).toLocaleTimeString([], {
     hour: "2-digit",
     minute: "2-digit",
@@ -73,7 +76,9 @@ export function CallLogEntry({ entry, isSelected }: Props) {
       }`}
     >
       {/* Status indicator */}
-      <StatusDot status={entry.status} dotColor={colors.dot} />
+      <span className="flex shrink-0" title={entry.errorMessage ?? undefined}>
+        <StatusDot status={entry.status} dotColor={colors.dot} />
+      </span>
 
       {/* Mode badge */}
       <span
@@ -106,10 +111,25 @@ export function CallLogEntry({ entry, isSelected }: Props) {
         {entry.provider}/{entry.model.split(":")[0].split("/").pop()}
       </span>
 
-      {/* Latency */}
+      {entry.stalled && (
+        <span className="shrink-0 text-meta text-destructive/70">{entry.errorMessage}</span>
+      )}
+
+      {/* Latency: first words · whole answer */}
       {entry.latencyMs != null && (
-        <span className="shrink-0 text-xs tabular-nums text-muted-foreground/70">
-          {entry.latencyMs}ms
+        <span
+          className="shrink-0 text-xs tabular-nums text-muted-foreground/70"
+          title={
+            firstTokenMs != null
+              ? `Answered in ${formatDuration(entry.latencyMs)} — first words after ${formatDuration(firstTokenMs)}`
+              : `Answered in ${formatDuration(entry.latencyMs)}`
+          }
+          data-testid="entry-latency"
+        >
+          {firstTokenMs != null && (
+            <span className="text-muted-foreground/50">{formatDuration(firstTokenMs)} · </span>
+          )}
+          {formatDuration(entry.latencyMs)}
         </span>
       )}
 
@@ -118,8 +138,8 @@ export function CallLogEntry({ entry, isSelected }: Props) {
         {timeStr}
       </span>
 
-      {/* Temperature */}
-      {entry.temperature != null && (
+      {/* Temperature (Claude ignores it) */}
+      {entry.temperature != null && !isClaudeEntry(entry) && (
         <span
           className="shrink-0 text-meta tabular-nums text-muted-foreground/50"
           title={`Temperature: ${entry.temperature}`}

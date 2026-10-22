@@ -51,6 +51,7 @@ vi.mock("../lib/ipc", async (importOriginal) => ({
 import { ClaudeCliSettings, claudeTierLabel } from "./ClaudeCliSettings";
 import { resetAgentStoreForTests } from "../stores/agentStore";
 import { DEFAULT_CLAUDE_CLI_CONFIG, useConfigStore } from "../stores/configStore";
+import { EMPTY_USAGE } from "../lib/agentUsage";
 
 const NOT_INSTALLED: ClaudeCliStatus = { installed: false, binary_path: null, version: null, auth: null, npm_only: false };
 const NPM_ONLY: ClaudeCliStatus = { ...NOT_INSTALLED, npm_only: true };
@@ -224,6 +225,23 @@ describe("ClaudeCliSettings", () => {
     );
   });
 
+  it("toggles extended thinking per tier (Fast off, Deep on by default)", async () => {
+    renderSettings();
+    await screen.findByText(/me@example\.com/);
+    const fast = screen.getByRole("switch", { name: "Fast extended thinking" });
+    const deep = screen.getByRole("switch", { name: "Deep extended thinking" });
+    expect(fast).toHaveAttribute("aria-checked", "false");
+    expect(deep).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(fast);
+    expect(useConfigStore.getState().claudeCliConfig.fast_thinking).toBe(true);
+    await waitFor(() =>
+      expect(ipc.setClaudeCliConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ fast_thinking: true, deep_thinking: true }),
+      ),
+    );
+    expect(screen.getByRole("switch", { name: "Fast extended thinking" })).toHaveAttribute("aria-checked", "true");
+  });
+
   it("says a change applies to the next session while a session runs", async () => {
     const running: AgentSessionStatus = {
       scope: "live",
@@ -233,7 +251,7 @@ describe("ClaudeCliSettings", () => {
       model: "haiku",
       detail: null,
       error_kind: null,
-      usage: { input_tokens: 0, output_tokens: 0, cost_usd: 0 },
+      usage: { ...EMPTY_USAGE },
     };
     renderSettings();
     await screen.findByText(/me@example\.com/);
