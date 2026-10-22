@@ -9,7 +9,13 @@ pub struct SessionConfig {
     /// `None` for a model that takes no effort: `--effort` is left out.
     pub effort: Option<String>,
     pub system_prompt: String,
+    /// Extended thinking. Off sets [`DISABLE_THINKING_ENV`] on the process:
+    /// the first words then come far sooner (Haiku thinks on every turn).
+    pub thinking: bool,
 }
+
+/// Env var that turns off extended thinking in the `claude` CLI.
+pub const DISABLE_THINKING_ENV: &str = "CLAUDE_CODE_DISABLE_THINKING";
 
 /// Env vars removed from the child so a stray API key / provider switch can
 /// never override the user's own `claude` login.
@@ -79,12 +85,51 @@ pub fn configure_command(cmd: &mut std::process::Command, sandbox: &Path) {
     }
 }
 
+/// [`configure_command`] plus the session's own env: thinking off sets
+/// [`DISABLE_THINKING_ENV`], thinking on removes any inherited value.
+pub fn configure_session_command(cmd: &mut std::process::Command, sandbox: &Path, thinking: bool) {
+    configure_command(cmd, sandbox);
+    if thinking {
+        cmd.env_remove(DISABLE_THINKING_ENV);
+    } else {
+        cmd.env(DISABLE_THINKING_ENV, "1");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn cfg() -> SessionConfig {
-        SessionConfig { model: "haiku".into(), effort: Some("low".into()), system_prompt: "sp".into() }
+        SessionConfig {
+            model: "haiku".into(),
+            effort: Some("low".into()),
+            system_prompt: "sp".into(),
+            thinking: true,
+        }
+    }
+
+    fn env_of(cmd: &std::process::Command, key: &str) -> Option<Option<String>> {
+        cmd.get_envs()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+    }
+
+    #[test]
+    fn session_env_disables_thinking_iff_off() {
+        assert!(!STRIPPED_ENV.contains(&DISABLE_THINKING_ENV));
+        let dir = std::env::temp_dir().join("nexq-cli-agent-test-thinking");
+        let mut off = std::process::Command::new("claude.exe");
+        configure_session_command(&mut off, &dir, false);
+        assert_eq!(env_of(&off, DISABLE_THINKING_ENV), Some(Some("1".into())));
+        let mut on = std::process::Command::new("claude.exe");
+        configure_session_command(&mut on, &dir, true);
+        // Removed, so a value inherited from the user's env can't turn it off.
+        assert_eq!(env_of(&on, DISABLE_THINKING_ENV), Some(None));
+        for cmd in [&off, &on] {
+            assert!(STRIPPED_ENV.iter().all(|k| env_of(cmd, k) == Some(None)));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

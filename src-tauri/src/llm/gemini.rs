@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use super::provider::{
     CompletionStats, GenerationParams, LLMError, LLMMessage, LLMProvider, ModelInfo,
-    cancellable, check_cancelled, is_cancelled, emit_end, emit_error, emit_sources, emit_token, StreamSource, TokenSink,
+    cancellable, check_cancelled, is_cancelled, emit_end_with_stats, emit_error, emit_sources, emit_token, StreamSource, TokenSink,
 };
 use super::stream_parser::{LineBuffer, SSEParser};
 
@@ -336,7 +336,7 @@ impl LLMProvider for GeminiClient {
         }
 
         check_cancelled(&params)?;
-        emit_end(&app_handle, &params, total, latency_ms);
+        emit_end_with_stats(&app_handle, &params, &stats);
 
         Ok(stats)
     }

@@ -74,6 +74,7 @@ fn cfg(mode: &str, record: Option<&Path>) -> SessionConfig {
         model: "haiku".into(),
         effort: Some("low".into()),
         system_prompt,
+        thinking: false,
     }
 }
 
@@ -201,6 +202,63 @@ async fn cancel_then_ask_has_no_bleed() {
     assert_eq!(*buf2.lock().unwrap(), "answer:second");
     assert_eq!(*buf1.lock().unwrap(), "a");
     session.close().await;
+}
+
+/// `on_delta` that records every delta, empty ones included.
+fn recorder() -> (Arc<Mutex<Vec<String>>>, Box<dyn Fn(&str) + Send + Sync>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    (seen, Box::new(move |d: &str| sink.lock().unwrap().push(d.to_string())))
+}
+
+#[tokio::test]
+async fn thinking_off_sets_the_env_var_and_streams_only_text() {
+    let session = spawn("normal").await;
+    let (seen, on_delta) = recorder();
+    let turn = session.ask("hello", on_delta, token()).await.unwrap();
+    assert_eq!(*seen.lock().unwrap(), vec!["Hello", " world"]);
+    assert_eq!(turn.thinking_tokens, 0, "the fake saw CLAUDE_CODE_DISABLE_THINKING=1");
+    session.close().await;
+}
+
+#[tokio::test]
+async fn thinking_on_is_signalled_once_before_text() {
+    let cfg = SessionConfig { thinking: true, ..cfg("normal", None) };
+    let session = ClaudeSession::spawn(fake_bin(), cfg).await.expect("spawn fake");
+    let (seen, on_delta) = recorder();
+    let turn = session.ask("hello", on_delta, token()).await.unwrap();
+    assert_eq!(*seen.lock().unwrap(), vec!["", "Hello", " world"]);
+    assert_eq!(turn.thinking_tokens, 3);
+    assert_eq!(turn.output_tokens, 14);
+    session.close().await;
+}
+
+#[tokio::test]
+async fn usage_is_per_turn_although_the_cli_cost_is_cumulative() {
+    let session = spawn("normal").await;
+    let mut turns = Vec::new();
+    for q in ["a", "b", "c"] {
+        let (_, on_delta) = collector();
+        turns.push(session.ask(q, on_delta, token()).await.unwrap());
+    }
+    for (i, t) in turns.iter().enumerate() {
+        let expected_total = 0.0001 * (i + 1) as f64;
+        assert!((t.total_cost_usd - expected_total).abs() < 1e-12, "total {}", t.total_cost_usd);
+    }
+    for t in &turns {
+        assert!((t.cost_usd - 0.0001).abs() < 1e-12, "per-turn cost {}", t.cost_usd);
+    }
+    assert_eq!((turns[0].cache_write_tokens, turns[0].cache_read_tokens), (500, 0));
+    assert_eq!((turns[1].cache_write_tokens, turns[1].cache_read_tokens), (20, 500));
+    assert_eq!(turns[1].prompt_tokens(), 530);
+    session.close().await;
+
+    // A new process starts counting from zero again.
+    let fresh = spawn("normal").await;
+    let (_, on_delta) = collector();
+    let t = fresh.ask("d", on_delta, token()).await.unwrap();
+    assert!((t.cost_usd - 0.0001).abs() < 1e-12);
+    fresh.close().await;
 }
 
 #[tokio::test]
@@ -388,6 +446,7 @@ async fn real_claude_two_turns() {
         model: "haiku".into(),
         effort: Some("low".into()),
         system_prompt: "You are a terse assistant. Answer in as few words as possible.".into(),
+        thinking: false,
     };
     let session = ClaudeSession::spawn(bin, cfg)
         .await

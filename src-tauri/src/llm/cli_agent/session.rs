@@ -12,7 +12,7 @@
 //! arrives, so a cancelled or dropped `ask` never leaves stale events behind for
 //! the next turn.
 
-use super::command::{build_args, configure_command, sandbox_dir, SessionConfig};
+use super::command::{build_args, configure_session_command, sandbox_dir, SessionConfig};
 use super::protocol::{
     classify_error, parse_line, user_message, AgentErrorKind, AgentEvent, TurnResult,
 };
@@ -28,6 +28,27 @@ use tokio::sync::{mpsc, Mutex as AsyncMutex, OwnedMutexGuard};
 
 const CLOSE_GRACE: Duration = Duration::from_secs(2);
 const STDERR_TAIL_LINES: usize = 20;
+
+/// Passed to `ask`'s `on_delta` once per turn when the model starts thinking
+/// before any text. Empty, so callers that only want text skip it; real
+/// text deltas are never empty.
+pub const THINKING_SIGNAL: &str = "";
+
+/// Turns the CLI's cumulative `total_cost_usd` (per process) into per-turn
+/// costs. One per process, so it starts over when a session (re)starts.
+#[derive(Debug, Default)]
+pub struct CostTracker {
+    last_total: f64,
+}
+
+impl CostTracker {
+    /// This turn's cost from the cumulative `total`; never negative.
+    pub fn per_turn(&mut self, total: f64) -> f64 {
+        let cost = (total - self.last_total).max(0.0);
+        self.last_total = self.last_total.max(total);
+        cost
+    }
+}
 
 /// Guards against a hung `claude` process. A session that hits `append`,
 /// `inactivity` or `drain` is killed (reported dead), so the next `ensure`
@@ -109,9 +130,16 @@ struct Shared {
     stderr_tail: Mutex<VecDeque<String>>,
     stderr_done: AtomicBool,
     exit_status: Mutex<Option<String>>,
+    cost: Mutex<CostTracker>,
 }
 
 impl Shared {
+    /// Fill `result.cost_usd` with this turn's share of the process total.
+    fn settle_cost(&self, mut result: TurnResult) -> TurnResult {
+        result.cost_usd = self.cost.lock().unwrap().per_turn(result.total_cost_usd);
+        result
+    }
+
     /// Readable reason for an unexpected exit: exit status + last stderr lines.
     fn crash_reason(&self) -> String {
         if self.closed.load(Ordering::SeqCst) {
@@ -148,6 +176,7 @@ impl Shared {
 
 enum TurnMsg {
     Delta(String),
+    Thinking,
     Done(Result<TurnResult, AgentError>),
 }
 
@@ -191,7 +220,8 @@ impl ClaudeSession {
         })?;
 
         let args = build_args(&cfg, &prompt_file);
-        let started = tokio::task::spawn_blocking(move || start_process(&bin, &args))
+        let thinking = cfg.thinking;
+        let started = tokio::task::spawn_blocking(move || start_process(&bin, &args, thinking))
             .await
             .map_err(|e| AgentError::Spawn(format!("spawn task failed: {e}")))
             .and_then(|r| r);
@@ -232,7 +262,7 @@ impl ClaudeSession {
         let wait = async {
             loop {
                 match rx.recv().await {
-                    Some(TurnMsg::Delta(_)) => {}
+                    Some(TurnMsg::Delta(_)) | Some(TurnMsg::Thinking) => {}
                     Some(TurnMsg::Done(r)) => return r,
                     None => return Err(AgentError::Crashed(self.shared.crash_reason())),
                 }
@@ -251,10 +281,11 @@ impl ClaudeSession {
         into_outcome(result).map(|_| ())
     }
 
-    /// Ask one question; text deltas go to `on_delta` as they stream. Turns are
-    /// FIFO per session. When `cancel` fires, deltas stop at once and this
-    /// returns `Err(Cancelled)`; the turn is drained in the background until its
-    /// `result`, and only then may the next turn start.
+    /// Ask one question; text deltas go to `on_delta` as they stream, and
+    /// [`THINKING_SIGNAL`] once if the model thinks before its first text.
+    /// Turns are FIFO per session. When `cancel` fires, deltas stop at once
+    /// and this returns `Err(Cancelled)`; the turn is drained in the
+    /// background until its `result`, and only then may the next turn start.
     pub async fn ask(
         &self,
         prompt: &str,
@@ -262,12 +293,23 @@ impl ClaudeSession {
         cancel: Arc<CancelToken>,
     ) -> Result<TurnResult, AgentError> {
         let mut rx = self.start_turn(prompt, true, Some(&cancel)).await?;
+        // Thinking is reported once, and only before any text.
+        let mut quiet = false;
         loop {
             tokio::select! {
                 biased;
                 _ = cancel.cancelled() => return Err(AgentError::Cancelled),
                 msg = rx.recv() => match msg {
-                    Some(TurnMsg::Delta(text)) => on_delta(&text),
+                    Some(TurnMsg::Thinking) => {
+                        if !quiet {
+                            quiet = true;
+                            on_delta(THINKING_SIGNAL);
+                        }
+                    }
+                    Some(TurnMsg::Delta(text)) => {
+                        quiet = true;
+                        on_delta(&text);
+                    }
                     Some(TurnMsg::Done(result)) => return into_outcome(result),
                     None => return Err(AgentError::Crashed(self.shared.crash_reason())),
                 },
@@ -328,7 +370,7 @@ impl ClaudeSession {
                     init_seen = true;
                 }
                 Some(AgentEvent::TurnComplete(result)) if init_seen => {
-                    return into_outcome(Ok(result)).map(|_| ());
+                    return into_outcome(Ok(self.shared.settle_cost(result))).map(|_| ());
                 }
                 Some(AgentEvent::TurnComplete(_)) => {
                     return Err(AgentError::Spawn(
@@ -418,9 +460,14 @@ async fn drive_turn(
         tokio::select! {
             event = tokio::time::timeout(wait, events.recv()) => match event {
                 Ok(Some(AgentEvent::TextDelta(text))) => {
-                    let _ = tx.send(TurnMsg::Delta(text));
+                    if !text.is_empty() {
+                        let _ = tx.send(TurnMsg::Delta(text));
+                    }
                 }
-                Ok(Some(AgentEvent::TurnComplete(result))) => break Ok(result),
+                Ok(Some(AgentEvent::ThinkingDelta)) => {
+                    let _ = tx.send(TurnMsg::Thinking);
+                }
+                Ok(Some(AgentEvent::TurnComplete(result))) => break Ok(shared.settle_cost(result)),
                 Ok(Some(_)) => {}
                 Ok(None) => break Err(AgentError::Crashed(shared.crash_reason())),
                 Err(_) => {
@@ -470,10 +517,10 @@ type Started = (
 
 /// Spawn the child (no shell, no window, sandbox cwd, stripped env) and its
 /// three pipe threads. Blocking; run on a blocking thread.
-fn start_process(bin: &Path, args: &[String]) -> Result<Started, AgentError> {
+fn start_process(bin: &Path, args: &[String], thinking: bool) -> Result<Started, AgentError> {
     let mut cmd = Command::new(bin);
     cmd.args(args);
-    configure_command(&mut cmd, &sandbox_dir());
+    configure_session_command(&mut cmd, &sandbox_dir(), thinking);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -495,6 +542,7 @@ fn start_process(bin: &Path, args: &[String]) -> Result<Started, AgentError> {
         stderr_tail: Mutex::new(VecDeque::new()),
         stderr_done: AtomicBool::new(false),
         exit_status: Mutex::new(None),
+        cost: Mutex::new(CostTracker::default()),
     });
     let (stdin_tx, stdin_rx) = std_mpsc::channel::<String>();
     let (event_tx, event_rx) = mpsc::unbounded_channel();
@@ -558,7 +606,7 @@ fn start_process(bin: &Path, args: &[String]) -> Result<Started, AgentError> {
     spawn_thread(
         "claude-stdout",
         Box::new(move || {
-            // `Other` events (status, thinking deltas, ...) are forwarded too:
+            // `Other` events (status, thinking token counts, ...) are forwarded too:
             // turn drivers ignore them, but they prove the CLI is still alive
             // for the inactivity watchdog during long thinking phases.
             let read = for_each_line(stdout, |line| match parse_line(line) {
@@ -647,6 +695,45 @@ mod tests {
             AgentError::Cli(AgentErrorKind::RateLimited, "x".into()).kind(),
             AgentErrorKind::RateLimited
         );
+    }
+
+    #[test]
+    fn cost_tracker_turns_cumulative_totals_into_per_turn_costs() {
+        // The CLI's `total_cost_usd` over a priming message and three turns.
+        let mut costs = CostTracker::default();
+        let per_turn: Vec<f64> = [0.0, 0.0049, 0.0100, 0.0193]
+            .into_iter()
+            .map(|total| costs.per_turn(total))
+            .collect();
+        let rounded: Vec<f64> = per_turn.iter().map(|c| (c * 1e6).round() / 1e6).collect();
+        assert_eq!(rounded, vec![0.0, 0.0049, 0.0051, 0.0093]);
+        // Never negative, even if the total goes backwards.
+        assert_eq!(costs.per_turn(0.01), 0.0);
+        // A new process starts over.
+        assert_eq!(CostTracker::default().per_turn(0.002), 0.002);
+    }
+
+    #[test]
+    fn settle_cost_uses_the_real_result_line() {
+        let shared = Shared {
+            child: Mutex::new(None),
+            alive: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
+            stderr_tail: Mutex::new(VecDeque::new()),
+            stderr_done: AtomicBool::new(true),
+            exit_status: Mutex::new(None),
+            cost: Mutex::new(CostTracker::default()),
+        };
+        let first = shared.settle_cost(TurnResult { total_cost_usd: 0.0100, ..Default::default() });
+        assert_eq!(first.cost_usd, 0.0100);
+        let AgentEvent::TurnComplete(real) =
+            parse_line(crate::llm::cli_agent::protocol::tests::REAL_RESULT).unwrap()
+        else {
+            panic!("not a result");
+        };
+        let second = shared.settle_cost(real);
+        assert!((second.cost_usd - 0.00933).abs() < 1e-9, "{}", second.cost_usd);
+        assert_eq!(second.total_cost_usd, 0.01933);
     }
 
     #[test]

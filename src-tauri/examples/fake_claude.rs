@@ -24,6 +24,11 @@
 //!   `control_response` with a small model catalog (Haiku without effort
 //!   support, like the real CLI). After that, stdin EOF takes 3 s to exit
 //!   (a CLI slow to shut down).
+//! - Thinking: unless `CLAUDE_CODE_DISABLE_THINKING=1` is set, every query
+//!   first streams a `thinking_delta` and reports `thinking_tokens: 3`.
+//! - Usage: like the real CLI, `total_cost_usd` is cumulative for the process
+//!   (0.0001 per answered query); token counts are per turn, mostly cache
+//!   writes on the first query and cache reads afterwards.
 //! - stdin EOF: exits 0.
 
 use serde_json::{json, Value};
@@ -94,6 +99,8 @@ fn main() {
     let init = json!({"type":"system","subtype":"init","session_id":"fake-session","model":model,"tools":[],"mcp_servers":[]});
     eprintln!("fake_claude: ready (mode={mode})");
 
+    let thinking = std::env::var("CLAUDE_CODE_DISABLE_THINKING").as_deref() != Ok("1");
+    let mut answered = 0u32;
     let mut answered_initialize = false;
     for line in std::io::stdin().lock().lines() {
         let Ok(line) = line else { break };
@@ -157,6 +164,16 @@ fn main() {
             &mut out,
             &json!({"type":"stream_event","event":{"type":"message_start"}}),
         );
+        if thinking {
+            emit(
+                &mut out,
+                &json!({"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me see"}}}),
+            );
+            emit(
+                &mut out,
+                &json!({"type":"system","subtype":"thinking_tokens","tokens":3}),
+            );
+        }
         for d in deltas {
             emit(
                 &mut out,
@@ -180,9 +197,16 @@ fn main() {
             &mut out,
             &json!({"type":"assistant","message":{"content":[{"type":"text","text":answer}]}}),
         );
+        answered += 1;
+        let (cache_write, cache_read) = if answered == 1 { (500, 0) } else { (20, 500) };
+        let thinking_tokens = if thinking { 3 } else { 0 };
         emit(
             &mut out,
-            &json!({"type":"result","subtype":"success","is_error":false,"result":answer,"total_cost_usd":0.0001,"duration_ms":5,"usage":{"input_tokens":10,"output_tokens":chars.len()}}),
+            &json!({"type":"result","subtype":"success","is_error":false,"result":answer,
+                "total_cost_usd":0.0001 * f64::from(answered),"duration_ms":5,
+                "usage":{"input_tokens":10,"cache_creation_input_tokens":cache_write,
+                    "cache_read_input_tokens":cache_read,"output_tokens":chars.len() + thinking_tokens,
+                    "output_tokens_details":{"thinking_tokens":thinking_tokens}}}),
         );
     }
     if answered_initialize {

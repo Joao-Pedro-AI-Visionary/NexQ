@@ -11,7 +11,7 @@ use crate::llm::cli_agent::routing::{
     self, choose_route, AgentFallbackPayload, AskFailure, ClaudeHealth, Route,
 };
 use crate::llm::provider::{
-    emit_end, emit_error, emit_token, is_cancelled, CancelToken, GenerationParams, LLMProvider,
+    emit_error, emit_token, is_cancelled, CancelToken, GenerationParams, LLMProvider,
     RagChunkInfo, StreamEndPayload, StreamStartPayload,
 };
 use crate::llm::{create_provider, ProviderConfig, ProviderType};
@@ -472,11 +472,21 @@ pub(crate) async fn session_assist(state: &AppState, app: &AppHandle, req: Sessi
             },
         );
     };
+    // First words (from `start`, like the end's latency) and a once-per-request
+    // thinking signal, across a restart's second attempt too.
+    let timing = Arc::new(crate::llm::cli_agent::provider::StreamTiming::new(start));
     let make_on_delta = || -> OnDelta {
         let app = app.clone();
         let params = params.clone();
+        let timing = timing.clone();
         Box::new(move |token: &str| {
-            if !token.is_empty() && !is_cancelled(&params) {
+            let thinking = timing.on_delta(token);
+            if is_cancelled(&params) {
+                return;
+            }
+            if thinking {
+                crate::llm::provider::emit_thinking(&app, &params);
+            } else if !token.is_empty() {
                 emit_token(&app, &params, token, None);
             }
         })
@@ -499,8 +509,15 @@ pub(crate) async fn session_assist(state: &AppState, app: &AppHandle, req: Sessi
         _ if cancel.is_cancelled() => SessionOutcome::Done(Ok(None)),
         Ok(turn) => {
             state.claude_health.record_success();
-            let total = turn.input_tokens + turn.cache_read_tokens + turn.output_tokens;
-            emit_end(app, params, total, start.elapsed().as_millis() as u64);
+            let total = turn.prompt_tokens() + turn.output_tokens;
+            let usage = crate::llm::cli_agent::provider::stream_usage(&turn, timing.first_token_ms());
+            crate::llm::provider::emit_end_with_usage(
+                app,
+                params,
+                total,
+                start.elapsed().as_millis() as u64,
+                Some(usage),
+            );
             let (prompt, model) = sent.lock().ok().and_then(|mut s| s.take()).unwrap_or_default();
             SessionOutcome::Done(Ok(Some(SessionAnswer { prompt, model, turn })))
         }
@@ -532,6 +549,7 @@ fn end_closed(app: &AppHandle, params: &GenerationParams, start: std::time::Inst
             latency_ms: start.elapsed().as_millis() as u64,
             request_id: params.request_id.clone(),
             cancelled: true,
+            usage: None,
         },
     );
     SessionOutcome::Done(Ok(None))
@@ -973,6 +991,7 @@ pub async fn cancel_generation(
                 latency_ms: 0,
                 request_id: Some(request_id),
                 cancelled: true,
+                usage: None,
             },
         );
     }

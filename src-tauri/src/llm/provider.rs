@@ -160,6 +160,17 @@ pub fn emit_token(app: &AppHandle, params: &GenerationParams, token: &str, sink:
 
 /// Emits `llm_stream_end` for this request (nothing for silent streams).
 pub fn emit_end(app: &AppHandle, params: &GenerationParams, total_tokens: u64, latency_ms: u64) {
+    emit_end_with_usage(app, params, total_tokens, latency_ms, None);
+}
+
+/// [`emit_end`] carrying the request's actual token usage.
+pub fn emit_end_with_usage(
+    app: &AppHandle,
+    params: &GenerationParams,
+    total_tokens: u64,
+    latency_ms: u64,
+    usage: Option<StreamUsage>,
+) {
     if params.silent {
         return;
     }
@@ -170,6 +181,33 @@ pub fn emit_end(app: &AppHandle, params: &GenerationParams, total_tokens: u64, l
             latency_ms,
             request_id: params.request_id.clone(),
             cancelled: false,
+            usage,
+        },
+    );
+}
+
+/// [`emit_end`] for a provider that reports real prompt/completion counts in
+/// `stats`: the end also carries them as usage.
+pub fn emit_end_with_stats(app: &AppHandle, params: &GenerationParams, stats: &CompletionStats) {
+    emit_end_with_usage(
+        app,
+        params,
+        stats.total_tokens,
+        stats.latency_ms,
+        StreamUsage::from_stats(stats),
+    );
+}
+
+/// Emits `llm_stream_thinking` for this request (nothing for silent
+/// streams): the model is thinking before its first words. Once per request.
+pub fn emit_thinking(app: &AppHandle, params: &GenerationParams) {
+    if params.silent {
+        return;
+    }
+    let _ = app.emit(
+        "llm_stream_thinking",
+        StreamThinkingPayload {
+            request_id: params.request_id.clone(),
         },
     );
 }
@@ -313,6 +351,45 @@ pub struct StreamEndPayload {
     /// True when the stream was stopped by the user rather than finishing.
     #[serde(default)]
     pub cancelled: bool,
+    /// The request's actual token usage, when the provider reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<StreamUsage>,
+}
+
+/// Actual token usage of one request, as the provider reported it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct StreamUsage {
+    /// Uncached prompt tokens (all prompt tokens for providers without a cache).
+    pub input_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    /// Output tokens, thinking included.
+    pub output_tokens: u64,
+    pub thinking_tokens: u64,
+    /// This request's cost estimate, when known.
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+    /// From the request's start until its first words, when measured.
+    #[serde(default)]
+    pub first_token_ms: Option<u64>,
+}
+
+impl StreamUsage {
+    /// Prompt/completion counts of `stats`; `None` without a prompt count
+    /// (providers that only count streamed chunks).
+    pub fn from_stats(stats: &CompletionStats) -> Option<StreamUsage> {
+        (stats.prompt_tokens > 0).then(|| StreamUsage {
+            input_tokens: stats.prompt_tokens,
+            output_tokens: stats.completion_tokens,
+            ..Default::default()
+        })
+    }
+}
+
+/// Payload of `llm_stream_thinking`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamThinkingPayload {
+    pub request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -417,6 +494,34 @@ mod tests {
         let payload: StreamEndPayload =
             serde_json::from_str(r#"{"total_tokens":1,"latency_ms":2,"request_id":null}"#).unwrap();
         assert!(!payload.cancelled);
+        assert_eq!(payload.usage, None);
+        // Without usage the payload looks exactly as before.
+        assert!(serde_json::to_value(&payload).unwrap().get("usage").is_none());
+    }
+
+    #[test]
+    fn stream_usage_serializes_snake_case_and_comes_from_real_counts_only() {
+        let usage = StreamUsage {
+            input_tokens: 10,
+            cache_read_tokens: 4000,
+            cache_write_tokens: 190,
+            output_tokens: 38,
+            thinking_tokens: 0,
+            cost_usd: Some(0.002),
+            first_token_ms: Some(640),
+        };
+        let v = serde_json::to_value(&usage).unwrap();
+        assert_eq!(v["cache_write_tokens"], 190);
+        assert_eq!(v["first_token_ms"], 640);
+        let stats = |prompt| CompletionStats {
+            prompt_tokens: prompt,
+            completion_tokens: 7,
+            total_tokens: prompt + 7,
+            latency_ms: 1,
+        };
+        assert_eq!(StreamUsage::from_stats(&stats(0)), None);
+        let real = StreamUsage::from_stats(&stats(12)).unwrap();
+        assert_eq!((real.input_tokens, real.output_tokens, real.cost_usd), (12, 7, None));
     }
 
     /// Mirrors a provider's stream loop (chunk -> lines -> SSE events -> token) over a
