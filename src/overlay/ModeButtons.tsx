@@ -1,8 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useStreamStore } from "../stores/streamStore";
 import { useAIActionsStore } from "../stores/aiActionsStore";
-import { generateAssist, cancelGeneration } from "../lib/ipc";
+import { useConfigStore } from "../stores/configStore";
+import { cancelGeneration } from "../lib/ipc";
+import { runUserAction } from "../lib/userAction";
+import { DEFAULT_CONTEXT_SCOPE, scopeHint } from "../lib/contextScope";
 import { showToast } from "../stores/toastStore";
+import { ContextScopePicker } from "./ContextScopePicker";
 import type { IntelligenceMode } from "../lib/types";
 import {
   Loader2,
@@ -42,7 +46,11 @@ const BUILT_IN_ORDER = ["Assist", "WhatToSay", "Shorten", "FollowUp", "Recap", "
 
 export function ModeButtons() {
   const currentMode = useStreamStore((s) => s.currentMode);
-  const isStreaming = useStreamStore((s) => s.isStreaming);
+  const streaming = useStreamStore((s) => s.isStreaming);
+  // A clicked action awaiting its start counts as running.
+  const sending = useStreamStore((s) => s.phase === "sending");
+  const isStreaming = streaming || sending;
+  const contextScope = useConfigStore((s) => s.contextScope ?? DEFAULT_CONTEXT_SCOPE);
   const actions = useAIActionsStore((s) => s.configs.actions);
   const [askInputText, setAskInputText] = useState("");
   const [askInputVisible, setAskInputVisible] = useState(false);
@@ -91,7 +99,7 @@ export function ModeButtons() {
   const handleClick = useCallback(
     (mode: string) => {
       if (isStreaming) {
-        if (currentMode === mode) cancelGeneration().catch(() => showToast("Couldn't cancel generation", "error"));
+        if (streaming && currentMode === mode) cancelGeneration().catch(() => showToast("Couldn't cancel generation", "error"));
         return;
       }
       // AskQuestion mode: toggle ask input instead of direct generation
@@ -99,15 +107,15 @@ export function ModeButtons() {
         setAskInputVisible((v) => !v);
         return;
       }
-      generateAssist(mode).catch((err) => showToast(err instanceof Error ? err.message : "Couldn't generate AI response", "error"));
+      runUserAction(mode).catch((err) => showToast(err instanceof Error ? err.message : "Couldn't generate AI response", "error"));
     },
-    [isStreaming, currentMode]
+    [isStreaming, streaming, currentMode]
   );
 
   const handleAskSubmit = useCallback(() => {
     const text = askInputText.trim();
     if (!text || isStreaming) return;
-    generateAssist("AskQuestion", text).catch((err) =>
+    runUserAction("AskQuestion", text).catch((err) =>
       showToast(err instanceof Error ? err.message : "Couldn't send question", "error")
     );
     setAskInputText("");
@@ -115,17 +123,20 @@ export function ModeButtons() {
   }, [askInputText, isStreaming]);
 
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex min-w-0 flex-1 flex-col gap-1">
       <div className="flex flex-wrap items-center gap-0.5">
         {visibleModes.map(({ mode, label, shortcut, icon: Icon, isCustom }) => {
           const isActive = currentMode === mode && isStreaming;
           const isAskActive = mode === "AskQuestion" && askInputVisible && !isStreaming;
+          const hint = scopeHint(contextScope, label);
+          const name = hint ? `${label} · ${hint}` : label;
           return (
             <button
               key={mode}
               onClick={() => handleClick(mode)}
               disabled={isStreaming && !isActive}
-              aria-label={shortcut ? `${label} (${shortcut})` : label}
+              aria-label={shortcut ? `${name} (${shortcut})` : name}
+              title={shortcut ? `${name} (${shortcut})` : name}
               aria-pressed={isActive || isAskActive}
               className={`flex items-center gap-1 rounded-lg px-2 py-1 text-meta font-medium transition-all duration-150 cursor-pointer ${
                 isActive
@@ -142,6 +153,7 @@ export function ModeButtons() {
             </button>
           );
         })}
+        <ContextScopePicker />
       </div>
 
       {/* Inline Ask input */}

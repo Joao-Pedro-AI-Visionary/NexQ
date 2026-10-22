@@ -1,13 +1,14 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { useStreamStore } from "../stores/streamStore";
+import { useMeetingStore } from "../stores/meetingStore";
 import {
   Sparkles,
-  Loader2,
   Pin,
   PinOff,
   Copy,
   Check,
   Globe,
+  History,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -15,20 +16,30 @@ import { getModeLabel } from "../lib/utils";
 import type { AIResponse, StreamSource } from "../lib/types";
 import { useConfigStore } from "../stores/configStore";
 import { ColorPickerButton } from "../components/ColorPickerButton";
+import { ResponseProgress } from "./ResponseProgress";
+import { ResponseHistoryList } from "./ResponseHistoryList";
+import { formatDuration } from "./responseFormat";
 
-type TabId = "current" | "history-0" | "history-1" | string;
+/** "current", "resp-<id>" (a history answer) or "pinned-<id>". */
+type TabId = "current" | `resp-${string}` | `pinned-${string}`;
+
+/** Answers shown as tabs next to "Current"; the rest are in History. */
+const PREVIOUS_TABS = 4;
 
 // Sub-PRD 6: Streaming markdown, response history tabs, pin/copy
 export function AIResponsePanel() {
   const isStreaming = useStreamStore((s) => s.isStreaming);
+  const phase = useStreamStore((s) => s.phase);
   const currentContent = useStreamStore((s) => s.currentContent);
   const currentMode = useStreamStore((s) => s.currentMode);
+  const currentId = useStreamStore((s) => s.currentId);
   const error = useStreamStore((s) => s.error);
   const currentSources = useStreamStore((s) => s.currentSources);
   const responseHistory = useStreamStore((s) => s.responseHistory);
   const pinnedResponses = useStreamStore((s) => s.pinnedResponses);
   const pinResponse = useStreamStore((s) => s.pinResponse);
   const unpinResponse = useStreamStore((s) => s.unpinResponse);
+  const meetingStart = useMeetingStore((s) => s.meetingStartTime);
 
   const aiResponseFontSize = useConfigStore((s) => s.aiResponseFontSize ?? 12);
   const aiResponseTextColor = useConfigStore((s) => s.aiResponseTextColor ?? "#d4d4d8");
@@ -51,8 +62,13 @@ export function AIResponsePanel() {
   };
 
   const [activeTab, setActiveTab] = useState<TabId>("current");
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const historyButtonRef = useRef<HTMLButtonElement>(null);
+
+  // A request in flight: clicked (sending) or streaming.
+  const inFlight = isStreaming || phase !== "idle";
 
   // Auto-scroll during streaming
   useEffect(() => {
@@ -61,12 +77,13 @@ export function AIResponsePanel() {
     }
   }, [currentContent, isStreaming]);
 
-  // Switch to "current" tab when a new stream starts
+  // Switch to "current" tab when a new request starts
   useEffect(() => {
-    if (isStreaming) {
+    if (inFlight) {
       setActiveTab("current");
+      setHistoryOpen(false);
     }
-  }, [isStreaming]);
+  }, [inFlight]);
 
   const handleCopy = useCallback(
     async (content: string, id: string) => {
@@ -81,22 +98,31 @@ export function AIResponsePanel() {
     []
   );
 
+  const pinnedIds = useMemo(() => new Set(pinnedResponses.map((r) => r.id)), [pinnedResponses]);
+
   const handlePin = useCallback(
     (id: string) => {
-      const isPinned = pinnedResponses.some((r) => r.id === id);
-      if (isPinned) {
+      if (pinnedIds.has(id)) {
         unpinResponse(id);
       } else {
         pinResponse(id);
       }
     },
-    [pinnedResponses, pinResponse, unpinResponse]
+    [pinnedIds, pinResponse, unpinResponse]
   );
 
-  // Build tab list: Current + previous history + pinned
-  const previousResponses = responseHistory.slice(0, 4);
-  const hasTabs =
-    previousResponses.length > 0 || pinnedResponses.length > 0;
+  // Tabs: Current, the previous answers (never the current one again), pinned.
+  const previousResponses = useMemo(
+    () => responseHistory.filter((r) => r.id !== currentId).slice(0, PREVIOUS_TABS),
+    [responseHistory, currentId]
+  );
+  const currentResponse = currentId ? responseHistory.find((r) => r.id === currentId) ?? null : null;
+  const hasTabs = previousResponses.length > 0 || pinnedResponses.length > 0;
+
+  const closeHistory = useCallback(() => {
+    setHistoryOpen(false);
+    historyButtonRef.current?.focus();
+  }, []);
 
   // Error state
   if (error) {
@@ -107,110 +133,113 @@ export function AIResponsePanel() {
     );
   }
 
-  // Determine what content to show based on active tab
-  let displayContent: string | null = null;
+  // The answer a history / pinned tab shows (by id, so new answers never shift it)
   let displayResponse: AIResponse | null = null;
-
-  if (activeTab === "current") {
-    displayContent = currentContent || null;
-  } else if (activeTab.startsWith("history-")) {
-    const idx = parseInt(activeTab.replace("history-", ""), 10);
-    displayResponse = previousResponses[idx] || null;
-    displayContent = displayResponse?.content || null;
-  } else if (activeTab.startsWith("pinned-")) {
-    const pinnedId = activeTab.replace("pinned-", "");
-    displayResponse = pinnedResponses.find((r) => r.id === pinnedId) || null;
-    displayContent = displayResponse?.content || null;
+  if (activeTab !== "current") {
+    const id = activeTab.replace(/^(resp|pinned)-/, "");
+    displayResponse =
+      responseHistory.find((r) => r.id === id) ?? pinnedResponses.find((r) => r.id === id) ?? null;
   }
+  const displayContent = displayResponse?.content || null;
+  const selectedId = activeTab === "current" ? currentId : displayResponse?.id ?? null;
+  // An answer opened from History that has no tab of its own.
+  const openedFromHistory =
+    activeTab.startsWith("resp-") && !previousResponses.some((r) => `resp-${r.id}` === activeTab);
 
   return (
     <div className="flex flex-1 min-h-0 flex-col">
       {/* Tabs row */}
       {hasTabs && (
-        <div className="mb-2 flex shrink-0 items-center gap-1.5 overflow-x-auto pb-1.5" role="tablist" aria-label="AI response tabs">
-          <TabButton
-            label="Current"
-            active={activeTab === "current"}
-            onClick={() => setActiveTab("current")}
-          />
-          {previousResponses.map((resp, idx) => (
+        <div className="mb-2 flex shrink-0 items-center gap-1.5 pb-1.5">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto" role="tablist" aria-label="AI response tabs">
             <TabButton
-              key={resp.id}
-              label={getModeLabel(resp.mode)}
-              active={activeTab === `history-${idx}`}
-              onClick={() => setActiveTab(`history-${idx}`)}
-              secondary
+              label="Current"
+              active={activeTab === "current"}
+              onClick={() => setActiveTab("current")}
             />
-          ))}
-          {pinnedResponses.map((resp) => (
-            <TabButton
-              key={resp.id}
-              label={`${getModeLabel(resp.mode)}`}
-              active={activeTab === `pinned-${resp.id}`}
-              onClick={() => setActiveTab(`pinned-${resp.id}`)}
-              pinned
-            />
-          ))}
+            {previousResponses.map((resp) => (
+              <TabButton
+                key={resp.id}
+                label={getModeLabel(resp.mode)}
+                active={activeTab === `resp-${resp.id}`}
+                onClick={() => setActiveTab(`resp-${resp.id}`)}
+                secondary
+              />
+            ))}
+            {pinnedResponses.map((resp) => (
+              <TabButton
+                key={resp.id}
+                label={`${getModeLabel(resp.mode)}`}
+                active={activeTab === `pinned-${resp.id}`}
+                onClick={() => setActiveTab(`pinned-${resp.id}`)}
+                pinned
+              />
+            ))}
+          </div>
+          {responseHistory.length > 0 && (
+            <button
+              ref={historyButtonRef}
+              type="button"
+              onClick={() => (historyOpen ? closeHistory() : setHistoryOpen(true))}
+              aria-expanded={historyOpen}
+              aria-haspopup="dialog"
+              aria-label={`History, ${responseHistory.length} ${responseHistory.length === 1 ? "answer" : "answers"}`}
+              className={`flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-meta font-medium transition-colors duration-150 ${
+                historyOpen || openedFromHistory
+                  ? "bg-primary/15 text-primary"
+                  : "text-muted-foreground/60 hover:bg-muted/30 hover:text-muted-foreground"
+              }`}
+            >
+              <History className="h-2.5 w-2.5" aria-hidden="true" />
+              History · <span className="tabular-nums">{responseHistory.length}</span>
+            </button>
+          )}
         </div>
       )}
 
       {/* Content area */}
       <div className="relative flex-1 min-h-0">
+      {historyOpen && (
+        <ResponseHistoryList
+          responses={responseHistory}
+          pinnedIds={pinnedIds}
+          selectedId={selectedId}
+          meetingStart={meetingStart}
+          onSelect={(id) => {
+            setActiveTab(id === currentId ? "current" : `resp-${id}`);
+            closeHistory();
+          }}
+          onClose={closeHistory}
+        />
+      )}
       <div ref={scrollRef} className="absolute inset-0 overflow-y-auto" role="tabpanel" aria-label="AI response content">
-        {/* Active streaming state */}
-        {activeTab === "current" && isStreaming && (
-          <div className="space-y-2.5" aria-live="polite" aria-atomic="false">
-            <div className="flex items-center gap-2">
-              <Loader2 className="h-3 w-3 animate-spin text-primary/50" />
-              <span className="text-meta font-medium text-primary">
-                {currentMode ? getModeLabel(currentMode) : "Generating"}...
-              </span>
-            </div>
-            <div className="prose prose-sm prose-invert max-w-none leading-relaxed" style={proseStyle}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {currentContent}
-              </ReactMarkdown>
-              <span className="inline-block h-3 w-0.5 animate-pulse bg-primary/60 ml-0.5" />
-            </div>
+        {/* Request in flight: progress, then the words as they arrive */}
+        {activeTab === "current" && inFlight && (
+          <div className="space-y-2.5" aria-atomic="false">
+            <ResponseProgress />
+            {currentContent && (
+              <div className="prose prose-sm prose-invert max-w-none leading-relaxed" style={proseStyle}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {currentContent}
+                </ReactMarkdown>
+                <span className="inline-block h-3 w-0.5 animate-pulse bg-primary/60 ml-0.5" />
+              </div>
+            )}
           </div>
         )}
 
         {/* Finished current content (not streaming) */}
-        {activeTab === "current" && !isStreaming && currentContent && (
+        {activeTab === "current" && !inFlight && currentContent && (
           <div className="space-y-2.5">
             {currentMode && (
-              <div className="flex items-center justify-between">
-                <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-meta font-medium text-primary/80">
-                  {getModeLabel(currentMode)}
-                </span>
-                <div className="flex items-center gap-1">
-                  <ActionButton
-                    icon={copiedId === "current" ? Check : Copy}
-                    title="Copy to clipboard"
-                    onClick={() => handleCopy(currentContent, "current")}
-                    active={copiedId === "current"}
-                  />
-                  {responseHistory.length > 0 && responseHistory[0] && (
-                    <ActionButton
-                      icon={
-                        pinnedResponses.some(
-                          (r) => r.id === responseHistory[0].id
-                        )
-                          ? PinOff
-                          : Pin
-                      }
-                      title={
-                        pinnedResponses.some(
-                          (r) => r.id === responseHistory[0].id
-                        )
-                          ? "Unpin"
-                          : "Pin response"
-                      }
-                      onClick={() => handlePin(responseHistory[0].id)}
-                    />
-                  )}
-                </div>
-              </div>
+              <AnswerHeader
+                response={currentResponse}
+                mode={currentMode}
+                copied={copiedId === "current"}
+                pinned={currentResponse ? pinnedIds.has(currentResponse.id) : false}
+                onCopy={() => handleCopy(currentContent, "current")}
+                onPin={currentResponse ? () => handlePin(currentResponse.id) : undefined}
+              />
             )}
             <div className="prose prose-sm prose-invert max-w-none leading-relaxed" style={proseStyle}>
               <ReactMarkdown remarkPlugins={[remarkGfm]}>
@@ -224,34 +253,14 @@ export function AIResponsePanel() {
         {/* History / pinned tab content */}
         {activeTab !== "current" && displayContent && displayResponse && (
           <div className="space-y-2.5">
-            <div className="flex items-center justify-between">
-              <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-meta font-medium text-primary/80">
-                {getModeLabel(displayResponse.mode)}
-              </span>
-              <div className="flex items-center gap-1">
-                <ActionButton
-                  icon={copiedId === displayResponse.id ? Check : Copy}
-                  title="Copy to clipboard"
-                  onClick={() =>
-                    handleCopy(displayContent!, displayResponse!.id)
-                  }
-                  active={copiedId === displayResponse.id}
-                />
-                <ActionButton
-                  icon={
-                    pinnedResponses.some((r) => r.id === displayResponse!.id)
-                      ? PinOff
-                      : Pin
-                  }
-                  title={
-                    pinnedResponses.some((r) => r.id === displayResponse!.id)
-                      ? "Unpin"
-                      : "Pin response"
-                  }
-                  onClick={() => handlePin(displayResponse!.id)}
-                />
-              </div>
-            </div>
+            <AnswerHeader
+              response={displayResponse}
+              mode={displayResponse.mode}
+              copied={copiedId === displayResponse.id}
+              pinned={pinnedIds.has(displayResponse.id)}
+              onCopy={() => handleCopy(displayContent, displayResponse!.id)}
+              onPin={() => handlePin(displayResponse!.id)}
+            />
             <div className="prose prose-sm prose-invert max-w-none leading-relaxed" style={proseStyle}>
               <ReactMarkdown remarkPlugins={[remarkGfm]}>
                 {displayContent}
@@ -262,7 +271,7 @@ export function AIResponsePanel() {
         )}
 
         {/* Empty state */}
-        {activeTab === "current" && !isStreaming && !currentContent && (
+        {activeTab === "current" && !inFlight && !currentContent && (
           <div className="flex h-full flex-col items-center justify-center gap-2">
             <Sparkles className="h-5 w-5 text-primary/30" />
             <p className="text-xs text-muted-foreground/50">
@@ -339,6 +348,58 @@ function SourcesList({ sources }: { sources?: StreamSource[] }) {
           {source.title}
         </a>
       ))}
+    </div>
+  );
+}
+
+/** Mode badge, scope and timing ("1.2 s · first words 0.6 s"), with copy / pin. */
+function AnswerHeader({
+  response,
+  mode,
+  copied,
+  pinned,
+  onCopy,
+  onPin,
+}: {
+  response: AIResponse | null;
+  mode: AIResponse["mode"];
+  copied: boolean;
+  pinned: boolean;
+  onCopy: () => void;
+  onPin?: () => void;
+}) {
+  const total = response ? response.total_ms ?? response.latency_ms : null;
+  const timing = [
+    total ? formatDuration(total) : null,
+    response?.first_token_ms != null ? `first words ${formatDuration(response.first_token_ms)}` : null,
+  ].filter(Boolean).join(" · ");
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="shrink-0 rounded-full bg-primary/10 px-2.5 py-0.5 text-meta font-medium text-primary/80">
+          {getModeLabel(mode)}
+        </span>
+        {(timing || response?.scope_label) && (
+          <span className="min-w-0 truncate text-meta tabular-nums text-muted-foreground/45">
+            {[response?.scope_label, timing].filter(Boolean).join(" · ")}
+          </span>
+        )}
+      </div>
+      <div className="flex shrink-0 items-center gap-1">
+        <ActionButton
+          icon={copied ? Check : Copy}
+          title="Copy to clipboard"
+          onClick={onCopy}
+          active={copied}
+        />
+        {onPin && (
+          <ActionButton
+            icon={pinned ? PinOff : Pin}
+            title={pinned ? "Unpin" : "Pin response"}
+            onClick={onPin}
+          />
+        )}
+      </div>
     </div>
   );
 }
