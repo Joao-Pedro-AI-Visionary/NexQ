@@ -18,6 +18,7 @@ import { showToast } from "../stores/toastStore";
 import { useUpdaterStore } from "../stores/updaterStore";
 import { useAgentStore } from "../stores/agentStore";
 import { AgentStatusChip } from "./AgentStatusChip";
+import { StreamLatency } from "./StreamLatency";
 import { claudeTierLabel } from "../settings/ClaudeCliSettings";
 import { restartToUpdate } from "../hooks/useUpdater";
 
@@ -151,7 +152,6 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
   const audioMode = useMeetingStore((s) => s.audioMode);
   const speakerOrder = useSpeakerStore((s) => s.speakerOrder);
   const isStreaming = useStreamStore((s) => s.isStreaming);
-  const latencyMs = useStreamStore((s) => s.latencyMs);
   const streamProvider = useStreamStore((s) => s.currentProvider);
   const streamModel = useStreamStore((s) => s.currentModel);
   const { micLevel, systemLevel } = useAudioLevel();
@@ -366,22 +366,8 @@ export function ServiceStatusBar({ compact = false }: { compact?: boolean }) {
         </>
       )}
 
-      {/* Latency / streaming indicator */}
-      {(isStreaming || latencyMs != null) && (
-        <>
-          <Divider />
-          <div className="flex items-center gap-1">
-            <Zap className={`h-3 w-3 ${isStreaming ? "text-primary animate-pulse" : "text-muted-foreground/60"}`} />
-            <span className="text-xs tabular-nums font-medium text-muted-foreground">
-              {isStreaming ? (
-                <span className="text-primary animate-pulse">streaming</span>
-              ) : (
-                `${latencyMs}ms`
-              )}
-            </span>
-          </div>
-        </>
-      )}
+      {/* Latency: live timer while an answer streams, then the last answer's time */}
+      <StreamLatency divider={<Divider />} />
 
       {/* Update ready — launcher footer only (the updater runs in the launcher) */}
       {!compact && <UpdatePill />}

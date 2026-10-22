@@ -1,8 +1,9 @@
 // Footer chip for the Claude subscription provider: a status dot, the live
-// session's state during a meeting, and a tooltip with model, effort and the
-// meeting's cumulative usage. Rendered by ServiceStatusBar in both windows.
+// session's state during a meeting, and a hover card with login state, model,
+// effort and thinking per tier, and the meeting's usage and response times.
+// Rendered by ServiceStatusBar in both windows.
 
-import { useEffect } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import { Brain, ChevronUp } from "lucide-react";
 import { useAgentStore } from "../stores/agentStore";
 import { useConfigStore } from "../stores/configStore";
@@ -10,7 +11,11 @@ import { useMeetingAgentUsage } from "../hooks/useMeetingAgentUsage";
 import {
   API_BILLED_NOTE,
   NPM_ONLY_NOTE,
+  avgFirstTokenMs,
+  avgLatencyMs,
+  formatAgo,
   formatCostEstimate,
+  formatDuration,
   formatTokenUsage,
   isApiBilled,
   isRateLimited,
@@ -30,6 +35,14 @@ const STATE_STYLE: Record<AgentChipState, { dot: string; pill: string; pulse: bo
   attention: { dot: "bg-warning", pill: "bg-warning/10 border border-warning/20", pulse: false },
   error: { dot: "bg-destructive", pill: "bg-destructive/10 border border-destructive/20", pulse: false },
   idle: { dot: "bg-muted-foreground/30", pill: "bg-secondary/30 border border-transparent", pulse: false },
+};
+
+const SESSION_STATE_LABEL: Record<AgentSessionStatus["state"], string> = {
+  starting: "starting",
+  ready: "ready",
+  busy: "answering",
+  error: "error",
+  closed: "closed",
 };
 
 function sessionState(sessions: AgentSessionStatus[]): { state: AgentChipState; label: string } {
@@ -64,33 +77,128 @@ function providerNote(status: ClaudeCliStatus | undefined): string {
   return "";
 }
 
-function buildTooltip(
-  sessions: AgentSessionStatus[],
-  usage: SessionUsage,
-  cfg: ClaudeCliConfig,
-  note: string,
-  apiBilled: boolean,
-  models?: ClaudeModelInfo[],
-): string {
-  const tiers = sessions.length
-    ? sessions
-        .slice()
-        .sort((a, b) => (a.tier === b.tier ? 0 : a.tier === "fast" ? -1 : 1))
-        .map((s) => {
-          const effort = s.tier === "fast" ? cfg.fast_effort : cfg.deep_effort;
-          return `${s.tier === "fast" ? "Fast" : "Deep"}: ${claudeTierLabel(s.model, effort, models)}`;
-        })
-    : [
-        `Fast: ${claudeTierLabel(cfg.fast_model, cfg.fast_effort, models)}`,
-        `Deep: ${claudeTierLabel(cfg.deep_model, cfg.deep_effort, models)}`,
-      ];
-  const lines = [apiBilled ? "Claude (API account)" : "Claude (subscription)", ...tiers];
-  if (apiBilled) lines.push(API_BILLED_NOTE);
+/** "Signed in · Max plan" / "Not logged in" / "" when unknown. */
+function loginLine(status: ClaudeCliStatus | undefined): string {
+  if (!status?.installed || !status.auth) return "";
+  if (!status.auth.logged_in) return "Not logged in";
+  const plan = status.auth.subscription_type;
+  return plan ? `Signed in · ${plan.charAt(0).toUpperCase()}${plan.slice(1)} plan` : "Signed in";
+}
+
+interface TierRow {
+  tier: "Fast" | "Deep";
+  label: string;
+  thinking: boolean;
+  state: AgentSessionStatus["state"] | null;
+}
+
+function tierRows(sessions: AgentSessionStatus[], cfg: ClaudeCliConfig, models?: ClaudeModelInfo[]): TierRow[] {
+  return (["fast", "deep"] as const).map((tier) => {
+    const s = sessions.find((x) => x.tier === tier);
+    const effort = tier === "fast" ? cfg.fast_effort : cfg.deep_effort;
+    const model = s?.model ?? (tier === "fast" ? cfg.fast_model : cfg.deep_model);
+    return {
+      tier: tier === "fast" ? "Fast" : "Deep",
+      label: claudeTierLabel(model, effort, models),
+      thinking: tier === "fast" ? cfg.fast_thinking : cfg.deep_thinking,
+      state: s?.state ?? null,
+    };
+  });
+}
+
+function Row({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex items-baseline justify-between gap-4">
+      <dt className="shrink-0 text-muted-foreground">{label}</dt>
+      <dd className="min-w-0 text-right tabular-nums text-foreground/90">{children}</dd>
+    </div>
+  );
+}
+
+function HoverCard({
+  id,
+  sessions,
+  usage,
+  cfg,
+  status,
+  note,
+  apiBilled,
+  models,
+}: {
+  id: string;
+  sessions: AgentSessionStatus[];
+  usage: SessionUsage;
+  cfg: ClaudeCliConfig;
+  status: ClaudeCliStatus | undefined;
+  note: string;
+  apiBilled: boolean;
+  models?: ClaudeModelInfo[];
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 15_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const inSession = sessions.length > 0;
+  const login = loginLine(status);
   const detail = sessions.find((s) => s.state === "error" && s.detail)?.detail;
-  if (detail) lines.push(detail);
-  else if (note) lines.push(note);
-  if (sessions.length > 0) lines.push(formatTokenUsage(usage), formatCostEstimate(usage, apiBilled));
-  return lines.join("\n");
+  const avg = avgLatencyMs(usage);
+  const avgFirst = avgFirstTokenMs(usage);
+
+  return (
+    <div
+      id={id}
+      role="tooltip"
+      data-testid="agent-hover-card"
+      className="absolute bottom-full left-0 z-50 mb-2 w-72 rounded-xl border border-border/40 bg-popover p-3 text-meta shadow-lg animate-in fade-in-0 slide-in-from-bottom-1 duration-150"
+    >
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-xs font-semibold text-foreground">
+          {apiBilled ? "Claude (API account)" : "Claude (subscription)"}
+        </span>
+        {login && <span className="truncate text-muted-foreground">{login}</span>}
+      </div>
+      {apiBilled && <p className="mt-1 text-warning">{API_BILLED_NOTE}</p>}
+
+      <dl className="mt-2.5 space-y-1">
+        {tierRows(sessions, cfg, models).map((row) => (
+          <Row key={row.tier} label={row.tier}>
+            {row.label} · thinking {row.thinking ? "on" : "off"}
+            {row.state && <span className="text-muted-foreground"> · {SESSION_STATE_LABEL[row.state]}</span>}
+          </Row>
+        ))}
+      </dl>
+
+      {inSession && (
+        <dl className="mt-2.5 space-y-1 border-t border-border/30 pt-2.5">
+          <Row label="Requests this meeting">{usage.requests}</Row>
+          {usage.requests > 0 && usage.last_request_at_ms > 0 && (
+            <Row label="Last request">
+              {formatAgo(usage.last_request_at_ms, Math.max(now, usage.last_request_at_ms))} ·{" "}
+              {formatDuration(usage.last_latency_ms)}
+            </Row>
+          )}
+          {avg != null && (
+            <Row label="Average response">
+              {formatDuration(avg)}
+              {avgFirst != null && (
+                <span className="text-muted-foreground"> · first words {formatDuration(avgFirst)}</span>
+              )}
+            </Row>
+          )}
+          <Row label="Tokens">{formatTokenUsage(usage)}</Row>
+          <p className="pt-0.5 text-muted-foreground">{formatCostEstimate(usage, apiBilled)}</p>
+        </dl>
+      )}
+
+      {(detail || note) && (
+        <p className={`mt-2.5 border-t border-border/30 pt-2.5 ${detail ? "text-destructive" : "text-muted-foreground"}`}>
+          {detail ?? note}
+        </p>
+      )}
+    </div>
+  );
 }
 
 export function AgentStatusChip({
@@ -107,6 +215,10 @@ export function AgentStatusChip({
   const cfg = useConfigStore((s) => s.claudeCliConfig);
   const claudeModels = useConfigStore((s) => s.claudeModels);
   const { sessions, usage } = useMeetingAgentUsage();
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+  const cardId = useId();
 
   // Session updates only arrive once the store has subscribed (per window).
   useEffect(() => {
@@ -123,48 +235,79 @@ export function AgentStatusChip({
   const state: AgentChipState = apiBilled && chip.state === "ready" ? "attention" : chip.state;
   const label = chip.label;
   const style = STATE_STYLE[state];
-  const tooltip = buildTooltip(
-    sessions,
-    usage,
-    cfg,
-    inSession ? "" : providerNote(status),
-    apiBilled,
-    claudeModels ?? undefined,
-  );
+  // The picker replaces the card while it is open.
+  const cardOpen = (hovered || focused) && !dismissed && !pickerOpen;
 
   return (
     <div
-      data-testid="agent-status-chip"
-      className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 transition-colors duration-200 ${style.pill} ${
-        onClick ? "cursor-pointer hover:brightness-110" : ""
-      }`}
-      title={tooltip}
-      onClick={onClick}
+      className="relative"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => {
+        setHovered(false);
+        setDismissed(false);
+      }}
     >
-      <span className="relative flex h-2 w-2 shrink-0">
-        {style.pulse && (
-          <span className={`absolute inline-flex h-full w-full animate-pulse rounded-full ${style.dot} opacity-40`} />
-        )}
-        <span
-          data-testid="agent-status-dot"
-          data-state={state}
-          className={`relative inline-flex h-2 w-2 rounded-full transition-colors duration-200 ${style.dot}`}
-        />
-      </span>
-      <Brain className={`h-3.5 w-3.5 shrink-0 ${state === "idle" ? "text-muted-foreground/60" : "text-foreground/70"}`} />
-      <div className="flex min-w-0 items-center gap-1">
-        {!compact && <span className="text-xs font-medium text-foreground/90">Claude</span>}
-        {label && (
-          <span className={`truncate ${compact ? "text-xs font-medium text-foreground/90" : "text-meta text-foreground/60"}`}>
-            {label}
-          </span>
+      <div
+        data-testid="agent-status-chip"
+        role={onClick ? "button" : undefined}
+        tabIndex={0}
+        aria-label={`AI provider: Claude${label ? `, ${label}` : ""}`}
+        aria-describedby={cardOpen ? cardId : undefined}
+        aria-expanded={onClick ? pickerOpen : undefined}
+        className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 outline-none transition-colors duration-200 focus-visible:ring-2 focus-visible:ring-primary/40 ${style.pill} ${
+          onClick ? "cursor-pointer hover:brightness-110" : ""
+        }`}
+        onClick={onClick}
+        onFocus={() => setFocused(true)}
+        onBlur={() => {
+          setFocused(false);
+          setDismissed(false);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") setDismissed(true);
+          else if (onClick && (e.key === "Enter" || e.key === " ")) {
+            e.preventDefault();
+            onClick();
+          }
+        }}
+      >
+        <span className="relative flex h-2 w-2 shrink-0">
+          {style.pulse && (
+            <span className={`absolute inline-flex h-full w-full animate-pulse rounded-full ${style.dot} opacity-40`} />
+          )}
+          <span
+            data-testid="agent-status-dot"
+            data-state={state}
+            className={`relative inline-flex h-2 w-2 rounded-full transition-colors duration-200 ${style.dot}`}
+          />
+        </span>
+        <Brain className={`h-3.5 w-3.5 shrink-0 ${state === "idle" ? "text-muted-foreground/60" : "text-foreground/70"}`} />
+        <div className="flex min-w-0 items-center gap-1">
+          {!compact && <span className="text-xs font-medium text-foreground/90">Claude</span>}
+          {label && (
+            <span className={`truncate ${compact ? "text-xs font-medium text-foreground/90" : "text-meta text-foreground/60"}`}>
+              {label}
+            </span>
+          )}
+        </div>
+        {onClick && (
+          <ChevronUp
+            className={`h-2.5 w-2.5 shrink-0 transition-all duration-200 ${
+              pickerOpen ? "rotate-0 text-foreground/60" : "rotate-180 text-muted-foreground/50"
+            }`}
+          />
         )}
       </div>
-      {onClick && (
-        <ChevronUp
-          className={`h-2.5 w-2.5 shrink-0 transition-all duration-200 ${
-            pickerOpen ? "rotate-0 text-foreground/60" : "rotate-180 text-muted-foreground/50"
-          }`}
+      {cardOpen && (
+        <HoverCard
+          id={cardId}
+          sessions={sessions}
+          usage={usage}
+          cfg={cfg}
+          status={status}
+          note={inSession ? "" : providerNote(status)}
+          apiBilled={apiBilled}
+          models={claudeModels ?? undefined}
         />
       )}
     </div>
