@@ -212,6 +212,7 @@ pub async fn ask_meeting(
             custom_question: Some(&question),
             detected_question: None,
             transcript_segments: None,
+            scope: None,
             task_instructions: session_task_instructions(&presets),
             include_rag: false,
             include_instructions: true,
@@ -281,6 +282,7 @@ pub async fn ask_meeting(
             transcript_segments_total: context.transcript.len(),
             request_id: Some(request_id.clone()),
             session_key: None,
+            scope_label: None,
         },
     );
 

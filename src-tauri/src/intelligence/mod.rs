@@ -1,5 +1,6 @@
 pub mod action_config;
 pub mod context_builder;
+pub mod context_scope;
 pub mod prompt_templates;
 pub mod question_detector;
 pub mod transcript_buffer;
@@ -139,6 +140,7 @@ impl IntelligenceEngine {
         transcript_window_seconds: u64,
         transcript_segments_count: usize,
         transcript_segments_total: usize,
+        scope_label: Option<String>,
         app_handle: tauri::AppHandle,
         cancel_token: Arc<CancelToken>,
     ) -> Result<(), String> {
@@ -202,6 +204,7 @@ impl IntelligenceEngine {
                 transcript_segments_total,
                 request_id: params.request_id.clone(),
                 session_key: None,
+                scope_label,
             },
         );
 
