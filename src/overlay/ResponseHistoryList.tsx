@@ -83,7 +83,7 @@ export function ResponseHistoryList({
       <ul className="min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-0.5">
         {responses.map((r, idx) => {
           const selected = r.id === selectedId;
-          const timing = r.total_ms ?? r.latency_ms;
+          const timing = r.total_ms || r.latency_ms;
           return (
             <li key={r.id}>
               <button

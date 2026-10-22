@@ -368,7 +368,7 @@ function AnswerHeader({
   onCopy: () => void;
   onPin?: () => void;
 }) {
-  const total = response ? response.total_ms ?? response.latency_ms : null;
+  const total = response ? response.total_ms || response.latency_ms : null;
   const timing = [
     total ? formatDuration(total) : null,
     response?.first_token_ms != null ? `first words ${formatDuration(response.first_token_ms)}` : null,
