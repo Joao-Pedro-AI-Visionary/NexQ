@@ -31,6 +31,7 @@ export function useStreamBuffer() {
   const endStream = useStreamStore((s) => s.endStream);
   const setSources = useStreamStore((s) => s.setSources);
   const setError = useStreamStore((s) => s.setError);
+  const recordUserRequest = useStreamStore((s) => s.recordUserRequest);
 
   // Token batching buffer
   const tokenBuffer = useRef<string>("");
@@ -71,10 +72,24 @@ export function useStreamBuffer() {
           cancelAnimationFrame(rafId.current);
           rafId.current = null;
         }
+        // Remember when this request was made (the click, when this window
+        // saw it), for the "since last answer" scopes.
+        const store = useStreamStore.getState();
+        const clickedAt =
+          store.pendingRequestId !== null && store.pendingRequestId === event.request_id
+            ? store.requestStartedAt
+            : null;
+        recordUserRequest(event.mode, clickedAt ?? Date.now());
         startStream(
           event.mode as IntelligenceMode,
           event.model,
-          event.provider
+          event.provider,
+          {
+            requestId: event.request_id,
+            scopeLabel: event.scope_label ?? null,
+            newLines: event.transcript_segments_count ?? null,
+            sessionKey: event.session_key ?? null,
+          }
         );
       })
     );
@@ -135,5 +150,5 @@ export function useStreamBuffer() {
       }
       unlisteners.forEach((p) => p.then((unlisten) => unlisten()));
     };
-  }, [appendToken, startStream, endStream, setSources, setError]);
+  }, [appendToken, startStream, endStream, setSources, setError, recordUserRequest]);
 }

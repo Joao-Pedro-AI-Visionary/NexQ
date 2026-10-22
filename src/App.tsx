@@ -2,6 +2,7 @@ import { useEffect, useCallback, useState } from "react";
 import { useMeetingStore } from "./stores/meetingStore";
 import { useConfigStore } from "./stores/configStore";
 import { useAIActionsStore } from "./stores/aiActionsStore";
+import { useStreamStore } from "./stores/streamStore";
 import { LauncherView } from "./launcher/LauncherView";
 import { OverlayView } from "./overlay/OverlayView";
 import { SettingsOverlay } from "./settings/SettingsOverlay";
@@ -157,6 +158,8 @@ function App() {
       "nexq:meeting_started",
       (e) => {
         const { meeting, audioMode, aiScenario } = e.payload;
+        // The answers and request times shown here belong to the previous meeting.
+        useStreamStore.getState().resetForMeeting();
         useMeetingStore.setState({
           activeMeeting: meeting,
           currentView: "overlay",

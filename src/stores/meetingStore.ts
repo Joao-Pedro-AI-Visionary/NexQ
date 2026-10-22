@@ -226,8 +226,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
       // Clear AI response history, dev log, and call log from any prior meeting
       try {
         const { useStreamStore } = await import("./streamStore");
-        useStreamStore.getState().clearCurrent();
-        useStreamStore.setState({ responseHistory: [], pinnedResponses: [] });
+        useStreamStore.getState().resetForMeeting();
       } catch { /* non-critical */ }
       try {
         const { useDevLogStore } = await import("./devLogStore");

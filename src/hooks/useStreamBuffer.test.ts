@@ -55,6 +55,34 @@ describe("useStreamBuffer", () => {
     expect(state.responseHistory[0]?.content).toBe("Hello");
   });
 
+  it("carries the start details into the store and records the click time per mode", async () => {
+    useStreamStore.getState().resetForMeeting();
+    renderHook(() => useStreamBuffer());
+    await waitFor(() => expect(handlers.end).toBeDefined());
+
+    act(() => {
+      useStreamStore.getState().setPending("FollowUp", "r1");
+    });
+    const clickedAt = useStreamStore.getState().requestStartedAt;
+    act(() => {
+      handlers.start({
+        mode: "FollowUp",
+        model: "haiku",
+        provider: "Claude CLI",
+        request_id: "r1",
+        scope_label: "Last 5 min",
+        transcript_segments_count: 0,
+        session_key: "live:m:fast",
+      });
+    });
+
+    const state = useStreamStore.getState();
+    expect(state.phase).toBe("waiting");
+    expect(state.streamMeta).toMatchObject({ scopeLabel: "Last 5 min", newLines: 0, sessionKey: "live:m:fast" });
+    expect(state.lastUserRequest.byMode.FollowUp).toBe(clickedAt);
+    expect(state.lastUserRequest.anyAt).toBe(clickedAt);
+  });
+
   it("ignores past-meeting generations and their errors", async () => {
     renderHook(() => useStreamBuffer());
     await waitFor(() => expect(handlers.end).toBeDefined());
@@ -69,5 +97,6 @@ describe("useStreamBuffer", () => {
     expect(state.isStreaming).toBe(false);
     expect(state.currentContent).toBe("");
     expect(state.error).toBeNull();
+    expect(state.lastUserRequest.byMode.MeetingSummary).toBeUndefined();
   });
 });
