@@ -23,6 +23,12 @@ You choose a model and an effort level for two kinds of work:
 
 Haiku is the quickest and lightest on your usage limits. Sonnet reasons more carefully. You can pick any available model (Haiku, Sonnet, Opus, Fable) and a higher effort level for either tier, at the cost of slower answers and more usage. Changes apply to the next session; a running session shows "applies to next session".
 
+Each tier also has an **Extended thinking** switch. With thinking off (the default for Fast), Claude answers right away: the first words usually arrive in under a second. With thinking on (the default for Deep), it reasons before answering, which helps with harder requests but takes longer and uses more of your limits.
+
+## Choosing what the AI looks at
+
+The **context chip** next to the action buttons in the meeting view sets which part of the transcript an action works on: the action's own default, everything since the last answer, since the last answer of the same action, the last 2, 5, 10 or 15 minutes (or a custom number), or the whole meeting. Turn on **Keep for next actions** to keep your choice; otherwise it goes back to the default after one action. A Claude session already holds the whole meeting, so each request only sends the transcript that is new since the previous one, plus a note about the scope you picked.
+
 ## How sessions work
 
 NexQ keeps a Claude session open and sends it only what is new, so answers stay fast and you do not pay to re-send the whole meeting every time.
@@ -40,7 +46,7 @@ If Claude cannot answer (not installed, logged out, rate limited, or it keeps cr
 
 ## Usage indicator
 
-The footer tooltip and AI Log header show the tokens used in the current meeting and the cost reported by Claude. Treat this as an **estimate**: with a subscription login it is included in your plan, and Claude does not expose your real remaining quota, so NexQ cannot show it. If Claude reports a rate or usage limit, NexQ warns you and uses the fallback provider.
+Hovering the Claude chip in the footer shows the models, the number of requests in this meeting, when the last one ran and how long it took, the average response time and time to first words, the tokens in (including cached input) and out (including thinking), and the cost reported by Claude. The AI Log header shows the same totals, and each log entry shows the actual tokens and cost of that request. Treat this as an **estimate**: with a subscription login it is included in your plan, and Claude does not expose your real remaining quota, so NexQ cannot show it. If Claude reports a rate or usage limit, NexQ warns you and uses the fallback provider.
 
 ## Privacy
 
