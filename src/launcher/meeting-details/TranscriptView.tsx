@@ -17,6 +17,7 @@ import { showToast } from "../../stores/toastStore";
 import { useConfigStore } from "../../stores/configStore";
 import { ColorPickerButton } from "../../components/ColorPickerButton";
 import { TranscriptRow } from "./TranscriptRow";
+import { defaultRemoteSpeakerName, remoteKeyOf, remoteSpeakerColor } from "../../lib/speakerLabels";
 
 interface TranscriptViewProps {
   segments: TranscriptSegment[];
@@ -64,6 +65,8 @@ interface TranscriptViewProps {
   onRetranslateAll?: () => void;
   onToggleTranslationVisibility?: () => void;
   retranslating?: boolean;
+  /** Rename a remote speaker (`them:<tag>`); every line with that tag follows. */
+  onRenameSpeaker?: (speakerKey: string, name: string) => void;
 }
 
 // Speaker colors for timeline blocks
@@ -80,7 +83,7 @@ const ESTIMATED_ROW_HEIGHT = 48;
 const LIST_PADDING_Y = 8; // matches the former `py-2` wrapper
 const OVERSCAN_ROWS = 8;
 
-export function TranscriptView({ segments, mergedSegments, isVisible = true, search, meetingStartTime, recordingOffsetMs = 0, speakers, searchInputRef, bookmarks, meetingId, onBookmarksChanged, initialScrollToIndex, onScrollHandled, translations, translatingSegments, translationDisplayMode, currentTargetLang, showTranslations = true, onTranslateSegment, onRetranslateSegment, showToolbar, translatedCount = 0, totalSegments = 0, mismatchedCount = 0, onDisplayModeChange, onRetranslateAll, onToggleTranslationVisibility, retranslating }: TranscriptViewProps) {
+export function TranscriptView({ segments, mergedSegments, isVisible = true, search, meetingStartTime, recordingOffsetMs = 0, speakers, searchInputRef, bookmarks, meetingId, onBookmarksChanged, initialScrollToIndex, onScrollHandled, translations, translatingSegments, translationDisplayMode, currentTargetLang, showTranslations = true, onTranslateSegment, onRetranslateSegment, showToolbar, translatedCount = 0, totalSegments = 0, mismatchedCount = 0, onDisplayModeChange, onRetranslateAll, onToggleTranslationVisibility, retranslating, onRenameSpeaker }: TranscriptViewProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const localSearchInputRef = useRef<HTMLInputElement | null>(null);
   const setInputRef = useCallback((el: HTMLInputElement | null) => {
@@ -203,7 +206,13 @@ export function TranscriptView({ segments, mergedSegments, isVisible = true, sea
     return map;
   }, [mergedSegments]);
 
+  // A tagged line from the other side of an online call goes by its person
+  // (named via the `them:<tag>` speaker, else "Speaker N").
   const resolveSpeakerLabel = (seg: TranscriptSegment): string => {
+    const remoteKey = remoteKeyOf(seg);
+    if (remoteKey && seg.speaker_tag) {
+      return speakerMap?.get(remoteKey)?.display_name ?? defaultRemoteSpeakerName(seg.speaker_tag);
+    }
     if (speakerMap && seg.speaker_id) {
       const s = speakerMap.get(seg.speaker_id);
       if (s) return s.display_name;
@@ -212,6 +221,7 @@ export function TranscriptView({ segments, mergedSegments, isVisible = true, sea
   };
 
   const resolveSpeakerColorClass = (seg: TranscriptSegment): string => {
+    if (remoteKeyOf(seg)) return ""; // per-person inline color
     if (speakerMap && seg.speaker_id) {
       const s = speakerMap.get(seg.speaker_id);
       if (s?.color) return ""; // use inline style instead
@@ -220,6 +230,10 @@ export function TranscriptView({ segments, mergedSegments, isVisible = true, sea
   };
 
   const resolveSpeakerColorHex = (seg: TranscriptSegment): string | undefined => {
+    const remoteKey = remoteKeyOf(seg);
+    if (remoteKey && seg.speaker_tag) {
+      return speakerMap?.get(remoteKey)?.color ?? remoteSpeakerColor(seg.speaker_tag);
+    }
     if (speakerMap && seg.speaker_id) {
       const s = speakerMap.get(seg.speaker_id);
       if (s?.color) return s.color;
@@ -484,6 +498,8 @@ export function TranscriptView({ segments, mergedSegments, isVisible = true, sea
                   speakerLabel={resolveSpeakerLabel(segment)}
                   speakerColorClass={resolveSpeakerColorClass(segment)}
                   speakerColorHex={resolveSpeakerColorHex(segment)}
+                  renameKey={onRenameSpeaker ? remoteKeyOf(segment) ?? undefined : undefined}
+                  onRenameSpeaker={onRenameSpeaker}
                   transcriptFontSize={transcriptFontSize}
                   transcriptTextColor={transcriptTextColor}
                   translationFontSize={translationFontSize}

@@ -27,6 +27,9 @@ export interface TranscriptRowProps {
   speakerLabel: string;
   speakerColorClass: string;
   speakerColorHex?: string;
+  /** Remote speaker key (`them:S1`) when the speaker label can be renamed. */
+  renameKey?: string;
+  onRenameSpeaker?: (speakerKey: string, name: string) => void;
   transcriptFontSize: number;
   transcriptTextColor: string;
   translationFontSize: number;
@@ -60,6 +63,8 @@ function TranscriptRowImpl({
   speakerLabel,
   speakerColorClass,
   speakerColorHex,
+  renameKey,
+  onRenameSpeaker,
   transcriptFontSize,
   transcriptTextColor,
   translationFontSize,
@@ -117,13 +122,23 @@ function TranscriptRowImpl({
         <BookmarkIcon className="mt-1 h-2.5 w-2.5 shrink-0 fill-primary text-primary opacity-60" />
       )}
 
-      {/* Speaker */}
-      <span
-        className={`shrink-0 pt-0.5 text-xs font-bold ${speakerColorClass}`}
-        style={speakerColorHex ? { color: speakerColorHex } : undefined}
-      >
-        {speakerLabel}
-      </span>
+      {/* Speaker — a remote person's name can be set (click) */}
+      {renameKey && onRenameSpeaker ? (
+        <SpeakerNameEditor
+          speakerKey={renameKey}
+          label={speakerLabel}
+          colorClass={speakerColorClass}
+          colorHex={speakerColorHex}
+          onRename={onRenameSpeaker}
+        />
+      ) : (
+        <span
+          className={`shrink-0 pt-0.5 text-xs font-bold ${speakerColorClass}`}
+          style={speakerColorHex ? { color: speakerColorHex } : undefined}
+        >
+          {speakerLabel}
+        </span>
+      )}
 
       {/* Text content + bookmark note */}
       <div className="flex-1 min-w-0">
@@ -217,6 +232,78 @@ function TranscriptRowImpl({
 }
 
 export const TranscriptRow = memo(TranscriptRowImpl);
+
+// ── Remote speaker name (click to rename) ──
+
+function SpeakerNameEditor({
+  speakerKey,
+  label,
+  colorClass,
+  colorHex,
+  onRename,
+}: {
+  speakerKey: string;
+  label: string;
+  colorClass: string;
+  colorHex?: string;
+  onRename: (speakerKey: string, name: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(label);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const cancelledRef = useRef(false);
+
+  useEffect(() => {
+    if (editing) inputRef.current?.select();
+  }, [editing]);
+
+  const commit = () => {
+    const trimmed = value.trim();
+    if (!cancelledRef.current && trimmed && trimmed !== label) onRename(speakerKey, trimmed);
+    cancelledRef.current = false;
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        value={value}
+        aria-label="Speaker name"
+        maxLength={40}
+        onClick={(e) => e.stopPropagation()}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+          if (e.key === "Escape") {
+            cancelledRef.current = true;
+            setEditing(false);
+          }
+        }}
+        className="shrink-0 w-24 rounded bg-white/5 border border-border/40 px-1 py-0 text-xs font-bold outline-none focus:border-primary/40"
+        style={colorHex ? { color: colorHex } : undefined}
+      />
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        cancelledRef.current = false;
+        setValue(label);
+        setEditing(true);
+      }}
+      className={`shrink-0 pt-0.5 text-xs font-bold cursor-text decoration-dotted underline-offset-2 hover:underline ${colorClass}`}
+      style={colorHex ? { color: colorHex } : undefined}
+      title="Rename this speaker"
+    >
+      {label}
+    </button>
+  );
+}
 
 // ── Hover translation tooltip ──
 

@@ -11,7 +11,8 @@ export type AudioSource = "Mic" | "System" | "Room";
 
 export type AudioMode = "online" | "in_person";
 export type AIScenario = "team_meeting" | "lecture" | "interview" | "webinar" | "oral_exam" | "custom";
-export type SpeakerSource = "fixed" | "diarization" | "room";
+/** "remote_tag": a person on the other side of an online call (id `them:S1`). */
+export type SpeakerSource = "fixed" | "diarization" | "room" | "remote_tag";
 
 export interface AudioDevice {
   id: string;
@@ -44,9 +45,21 @@ export interface TranscriptSegment {
   text: string;
   speaker: Speaker;
   speaker_id?: string;
+  /**
+   * Diarization tag of the line's speaker ("S1", "S2"...). On a remote-party
+   * line of an online meeting, `speaker` stays "Them" and the tag tells the
+   * people on the other side apart (named via `them:<tag>` speakers).
+   */
+  speaker_tag?: string;
   timestamp_ms: number;
   is_final: boolean;
   confidence: number;
+  /**
+   * Frontend only (never sent over IPC or saved): while interim words extend
+   * a final line, the line's display text including them. `text` keeps the
+   * final words, so the line stays final for the AI and persistence.
+   */
+  pending_text?: string;
 }
 
 export type Speaker = "User" | "Interviewer" | "Them" | "Unknown";
@@ -387,6 +400,7 @@ export interface DeepgramConfig {
   /** Endpointing silence threshold in ms (10–5000). null = disabled. */
   endpointing: number | null;
   punctuate: boolean;
+  /** Tell remote speakers apart (diarization; only on the remote party / room audio, never the You mic). */
   diarize: boolean;
   profanity_filter: boolean;
   numerals: boolean;

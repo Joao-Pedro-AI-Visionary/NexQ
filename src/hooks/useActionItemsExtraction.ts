@@ -212,7 +212,7 @@ export function useActionItemsExtraction(
       // Merge consecutive same-speaker segments to reduce prompt size, except
       // for a Claude session, which needs every segment under its own id.
       const finals = meeting.transcript.filter((s) => s.is_final);
-      const segments = assistSegments(finals, useConfigStore.getState().llmProvider !== "claude_cli");
+      const segments = assistSegments(finals, useConfigStore.getState().llmProvider !== "claude_cli", meeting.speakers);
 
       await generateAssist("ActionItemsExtraction", customQuestion, {
         requestId,

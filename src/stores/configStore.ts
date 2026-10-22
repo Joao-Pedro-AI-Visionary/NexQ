@@ -22,7 +22,7 @@ const DEFAULT_DEEPGRAM_CONFIG: DeepgramConfig = {
   interim_results: true,
   endpointing: 300,
   punctuate: true,
-  diarize: false,
+  diarize: true,
   profanity_filter: false,
   numerals: false,
   dictation: false,

@@ -9,7 +9,8 @@ const MERGE_GAP_MS = 3000;
 const MERGE_MAX_CHARS = 300;
 
 function speakerKey(seg: TranscriptSegment): string {
-  return seg.speaker_id ?? seg.speaker;
+  // Remote people share speaker "them" but differ by speaker tag.
+  return `${seg.speaker_id ?? seg.speaker}|${seg.speaker_tag ?? ""}`;
 }
 
 export function mergeConsecutiveSegments(segments: TranscriptSegment[]): MergedSegment[] {
@@ -28,7 +29,10 @@ export function mergeConsecutiveSegments(segments: TranscriptSegment[]): MergedS
     const sameKey = speakerKey(seg) === speakerKey(current);
     const wouldExceedLength = (current.text + " " + seg.text.trim()).length > MERGE_MAX_CHARS;
 
-    if (sameKey && gap <= MERGE_GAP_MS && !wouldExceedLength && seg.is_final) {
+    // A line still growing (interim words pending) stays on its own.
+    const growing = current.pending_text !== undefined || seg.pending_text !== undefined;
+
+    if (sameKey && gap <= MERGE_GAP_MS && !wouldExceedLength && seg.is_final && !growing) {
       current = {
         ...current,
         text: current.text + " " + seg.text.trim(),

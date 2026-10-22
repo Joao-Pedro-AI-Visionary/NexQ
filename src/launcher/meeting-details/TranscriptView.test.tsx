@@ -154,3 +154,32 @@ describe("TranscriptView virtualization", () => {
     expect(screen.getAllByTestId("transcript-row").find((r) => r.dataset.active === "true")?.dataset.segmentId).toBe("seg-5");
   });
 });
+
+describe("TranscriptView remote speakers", () => {
+  it("labels tagged lines by person, renamed or Speaker N", () => {
+    const tagged: TranscriptSegment[] = [
+      { id: "t1", text: "We ship Friday", speaker: "Them", speaker_id: "them", speaker_tag: "S1", timestamp_ms: MEETING_START, is_final: true, confidence: 1 },
+      { id: "t2", text: "Not sure", speaker: "Them", speaker_id: "them", speaker_tag: "S2", timestamp_ms: MEETING_START + 10_000, is_final: true, confidence: 1 },
+      { id: "t3", text: "Plain", speaker: "Them", speaker_id: "them", timestamp_ms: MEETING_START + 20_000, is_final: true, confidence: 1 },
+    ];
+    const onRenameSpeaker = vi.fn();
+    render(
+      <div style={{ height: VIEWPORT_HEIGHT }}>
+        <TranscriptView
+          segments={tagged}
+          mergedSegments={mergeConsecutiveSegments(tagged)}
+          search={search}
+          meetingStartTime={MEETING_START}
+          speakers={[
+            { id: "them:S1", display_name: "Erin", source: "remote_tag", stats: { segment_count: 0, word_count: 0, talk_time_ms: 0, last_spoke_ms: 0 } },
+          ]}
+          onRenameSpeaker={onRenameSpeaker}
+        />
+      </div>
+    );
+    expect(screen.getByRole("button", { name: "Erin" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Speaker 2" })).toBeTruthy();
+    expect(screen.getByText("Them")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Them" })).toBeNull();
+  });
+});

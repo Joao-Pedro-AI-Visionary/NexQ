@@ -209,9 +209,14 @@ export async function generateAssist(
   let segments = opts.transcriptSegments;
   if (!segments) {
     const { useTranscriptStore } = await import("../stores/transcriptStore");
+    const { useSpeakerStore } = await import("../stores/speakerStore");
+    const { assistSpeakerLabel } = await import("./speakerLabels");
+    // A diarized line goes by its person's name ("Erin" / "Speaker 2").
+    const { speakers } = useSpeakerStore.getState();
+    const nameOf = (key: string) => speakers[key]?.display_name;
     segments = useTranscriptStore.getState().segments
       .filter(s => s.is_final)
-      .map(s => ({ id: s.id, text: s.text, speaker: s.speaker, timestamp_ms: s.timestamp_ms }));
+      .map(s => ({ id: s.id, text: s.text, speaker: assistSpeakerLabel(s, nameOf), timestamp_ms: s.timestamp_ms }));
   }
 
   return invoke("generate_assist", {

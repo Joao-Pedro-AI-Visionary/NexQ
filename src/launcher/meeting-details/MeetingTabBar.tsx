@@ -23,7 +23,8 @@ interface MeetingTabBarProps {
 export function MeetingTabBar({ activeTab, setActiveTab, meeting, onGenerateSummary, onSuggestBookmarks, onExtractActions, isSummaryGenerating, isBookmarksSuggesting, isActionsExtracting, showAsk, aiLogCount }: MeetingTabBarProps) {
   const actionCount = meeting.action_items?.length ?? 0;
   const bookmarkCount = meeting.bookmarks?.length ?? 0;
-  const speakerCount = meeting.speakers?.length ?? 0;
+  // Named remote speaker tags are labels for "Them" lines, not tab entries.
+  const speakerCount = meeting.speakers?.filter((s) => s.source !== "remote_tag").length ?? 0;
 
   return (
     <div className="relative flex items-center border-b border-border/20 px-3 py-1.5" role="tablist">
