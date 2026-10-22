@@ -1,3 +1,29 @@
+# [2.24.0](https://github.com/naxhq/NexQ/compare/v2.23.0...v2.24.0) (2026-10-22)
+
+
+### Bug Fixes
+
+* **ai:** review fixes for transcript time bases, grown questions and double presses ([f1d0e93](https://github.com/naxhq/NexQ/commit/f1d0e933fab09fd416b62e6cbe9434e75b33214f))
+* **calllog:** stop failing slow answers and show actual usage and timing ([22ce035](https://github.com/naxhq/NexQ/commit/22ce03525c3752a8bd4bd3e9c0fa11e9d46a04d1))
+* **claude:** send the new words of a transcript line that grew after it was sent ([f155660](https://github.com/naxhq/NexQ/commit/f15566055b370b120132400da8f7a69f2988d71d))
+* **intelligence:** replace a grown paragraph in the transcript buffer ([54723ab](https://github.com/naxhq/NexQ/commit/54723ab467704f867efaef9fefa40289542fc19a))
+* **overlay:** fall back to the backend latency when no UI timing exists ([e28efd1](https://github.com/naxhq/NexQ/commit/e28efd16621895ab1d2cbdf90f3dd3e6345026c1))
+* **stt:** merge continuous speech into paragraphs and tag remote speakers ([53c254a](https://github.com/naxhq/NexQ/commit/53c254ab132515e790ca7023d1936f7f4f3168de))
+
+
+### Features
+
+* **ai:** show the thinking phase and transcript scope in the panel and AI log ([1edaf0f](https://github.com/naxhq/NexQ/commit/1edaf0fdf81a4f5d1834cd10216d4c7d69f7baac))
+* **claude:** extended thinking setting and accurate per-turn usage ([dd16d99](https://github.com/naxhq/NexQ/commit/dd16d994015b7bf5b1bd55a0c1d739a7958d7819))
+* **claude:** per-tier extended thinking toggle and full usage types ([08a3600](https://github.com/naxhq/NexQ/commit/08a3600a1194a485d1f973571ca2c1bc9b59b4d1))
+* **footer:** live answer timer and Claude hover card ([47db166](https://github.com/naxhq/NexQ/commit/47db166adb4b1d76ee83a547616342c7a44d11d3))
+* **intelligence:** transcript scope for user actions ([3df3000](https://github.com/naxhq/NexQ/commit/3df30005e6bc9eadb9120f09ace50483788e887b))
+* **meetings:** store the remote speaker tag of transcript segments ([c30f158](https://github.com/naxhq/NexQ/commit/c30f1588a5e76ea5af5f4cda47d082e7522b95c5))
+* **overlay:** context scope setting and request-time resolution ([9f4b231](https://github.com/naxhq/NexQ/commit/9f4b2317cec454af4b8a4e9d1a6ffa9522fb94be))
+* **overlay:** stream progress phases and full response history ([6884dcf](https://github.com/naxhq/NexQ/commit/6884dcf3f6eb3498d51d221be76cbe4e389d0493))
+* **overlay:** transcript scope picker, answer history and progress block ([476b453](https://github.com/naxhq/NexQ/commit/476b4530606d58d1b85aa7f2d2112af565da4a6a))
+* **overlay:** user actions send the picked transcript scope ([e6a78e4](https://github.com/naxhq/NexQ/commit/e6a78e44329d697d5ea3eae2b3b5ce00cc620301))
+* **transcript:** show remote speakers apart and keep growing lines final ([58b32bc](https://github.com/naxhq/NexQ/commit/58b32bc89c538b2c2817452ed229830ae91d42d2))
 # [2.23.0](https://github.com/naxhq/NexQ/compare/v2.22.0...v2.23.0) (2026-10-21)
 
 
