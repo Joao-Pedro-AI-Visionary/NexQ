@@ -102,6 +102,7 @@ export function useCallLogCapture() {
           latencyMs: null,
           usage: null,
           sessionKey: event.session_key ?? null,
+          scopeLabel: event.scope_label ?? null,
           responseContent: "",
           responseContentClean: "",
           // Actual prompt data from backend

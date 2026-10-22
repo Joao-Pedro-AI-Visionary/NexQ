@@ -87,6 +87,12 @@ function TokenBudget({ entry }: { entry: LogEntry }) {
     </div>
   ) : null;
 
+  const scope = entry.scopeLabel ? (
+    <div data-testid="token-scope">
+      <span className="font-medium">Scope:</span> <span className="text-foreground/70">{entry.scopeLabel}</span>
+    </div>
+  ) : null;
+
   // A session keeps its system prompt: it was sent once, when the session started.
   if (entry.sessionKey) {
     return (
@@ -102,6 +108,7 @@ function TokenBudget({ entry }: { entry: LogEntry }) {
           <span className="font-medium">Sent this request</span>{" "}
           <span className="tabular-nums">≈ {estimateTokens(entry.actualUserPrompt).toLocaleString()}</span>
         </div>
+        {scope}
         {actual}
       </div>
     );
@@ -133,6 +140,7 @@ function TokenBudget({ entry }: { entry: LogEntry }) {
         <span className="font-semibold tabular-nums">~{total.toLocaleString()}</span>
         <span>≈ estimate</span>
       </div>
+      {scope}
       {actual}
     </div>
   );

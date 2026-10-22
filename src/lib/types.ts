@@ -776,6 +776,8 @@ export interface LogEntry {
   usage?: StreamUsage | null;
   /** The Claude session that answered ("live:<meeting>:fast"...); null on the stateless path. */
   sessionKey?: string | null;
+  /** The transcript scope the user picked ("Last 5 min"...); null for the action default. */
+  scopeLabel?: string | null;
   /** Nothing has arrived for a long time; late tokens or the end still revive the entry. */
   stalled?: boolean;
   // Content

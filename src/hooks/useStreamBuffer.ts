@@ -9,6 +9,7 @@ import {
   onStreamEnd,
   onStreamSources,
   onStreamError,
+  onStreamThinking,
 } from "../lib/events";
 import type { IntelligenceMode } from "../lib/types";
 
@@ -118,6 +119,15 @@ export function useStreamBuffer() {
           rafId.current = null;
         }
         endStream(event.latency_ms);
+      })
+    );
+
+    // The model is reasoning before it answers (Claude extended thinking).
+    unlisteners.push(
+      onStreamThinking((event) => {
+        if (!isActive(event.request_id)) return;
+        const store = useStreamStore.getState();
+        if (store.firstTokenAt === null) store.setPhase("thinking");
       })
     );
 

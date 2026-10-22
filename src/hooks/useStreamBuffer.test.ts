@@ -19,6 +19,7 @@ vi.mock("../lib/events", () => ({
   onStreamEnd: register("end"),
   onStreamSources: register("sources"),
   onStreamError: register("error"),
+  onStreamThinking: register("thinking"),
 }));
 
 import { useStreamBuffer } from "./useStreamBuffer";
@@ -53,6 +54,21 @@ describe("useStreamBuffer", () => {
     const state = useStreamStore.getState();
     expect(state.isStreaming).toBe(false);
     expect(state.responseHistory[0]?.content).toBe("Hello");
+  });
+
+  it("shows thinking until the first words of its own stream", async () => {
+    useStreamStore.getState().resetForMeeting();
+    renderHook(() => useStreamBuffer());
+    await waitFor(() => expect(handlers.thinking).toBeDefined());
+
+    act(() => {
+      start("Assist", "live");
+      handlers.thinking({ request_id: "someone-else" });
+    });
+    expect(useStreamStore.getState().phase).toBe("waiting");
+
+    act(() => handlers.thinking({ request_id: "live" }));
+    expect(useStreamStore.getState().phase).toBe("thinking");
   });
 
   it("carries the start details into the store and records the click time per mode", async () => {

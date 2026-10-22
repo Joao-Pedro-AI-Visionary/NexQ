@@ -4,6 +4,7 @@ import { useMeetingStore } from "../stores/meetingStore";
 import { useAudioLevel } from "../hooks/useAudioLevel";
 import { showToast } from "../stores/toastStore";
 import { useCallLogStore } from "../stores/callLogStore";
+import { formatDuration } from "../lib/agentUsage";
 import {
   Settings,
   Square,
@@ -118,7 +119,7 @@ export function StatusBar() {
                 {isStreaming ? (
                   <span className="animate-pulse text-primary/80">streaming</span>
                 ) : (
-                  `${latencyMs}ms`
+                  formatDuration(latencyMs ?? 0)
                 )}
               </span>
             </>
