@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useStreamStore } from "../stores/streamStore";
-import { generateAssist } from "../lib/ipc";
+import { runUserAction } from "../lib/userAction";
 import { showToast } from "../stores/toastStore";
 import { Send, X } from "lucide-react";
 
@@ -26,8 +26,8 @@ export function AskInput({ visible, onClose }: AskInputProps) {
     const text = inputText.trim();
     if (!text || isStreaming) return;
 
-    // Send question via generateAssist in AskQuestion mode
-    generateAssist("AskQuestion", text).catch((err) => {
+    // Send question in AskQuestion mode (with the picked transcript scope)
+    runUserAction("AskQuestion", text).catch((err) => {
       const msg = err instanceof Error ? err.message : "Failed to send question";
       showToast(msg, "error");
     });

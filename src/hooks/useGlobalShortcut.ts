@@ -5,7 +5,8 @@ import {
 } from "@tauri-apps/plugin-global-shortcut";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useAIActionsStore } from "../stores/aiActionsStore";
-import { generateAssist, isQuitPending } from "../lib/ipc";
+import { isQuitPending } from "../lib/ipc";
+import { runUserAction } from "../lib/userAction";
 import { meetingShortcutAction, showLauncherWindow, showOverlayWindow } from "../lib/windows";
 import { endMeetingFromThisWindow } from "./useUpdater";
 import { showToast } from "../stores/toastStore";
@@ -109,35 +110,35 @@ export function useGlobalShortcut() {
         case "Space":
           if (isVisible("Assist")) {
             e.preventDefault();
-            generateAssist("Assist").catch(() => {});
+            runUserAction("Assist").catch(() => {});
           }
           break;
         case "Numpad1":
         case "Digit1":
           if (!e.ctrlKey && !e.metaKey && !e.altKey && isVisible("WhatToSay")) {
             e.preventDefault();
-            generateAssist("WhatToSay").catch(() => {});
+            runUserAction("WhatToSay").catch(() => {});
           }
           break;
         case "Numpad2":
         case "Digit2":
           if (!e.ctrlKey && !e.metaKey && !e.altKey && isVisible("Shorten")) {
             e.preventDefault();
-            generateAssist("Shorten").catch(() => {});
+            runUserAction("Shorten").catch(() => {});
           }
           break;
         case "Numpad3":
         case "Digit3":
           if (!e.ctrlKey && !e.metaKey && !e.altKey && isVisible("FollowUp")) {
             e.preventDefault();
-            generateAssist("FollowUp").catch(() => {});
+            runUserAction("FollowUp").catch(() => {});
           }
           break;
         case "Numpad4":
         case "Digit4":
           if (!e.ctrlKey && !e.metaKey && !e.altKey && isVisible("Recap")) {
             e.preventDefault();
-            generateAssist("Recap").catch(() => {});
+            runUserAction("Recap").catch(() => {});
           }
           break;
         case "Numpad5":
