@@ -1,5 +1,6 @@
 import { useState, useCallback, useMemo } from "react";
 import { showToast } from "../stores/toastStore";
+import { formatActualUsage } from "./stats";
 import type { LogEntry } from "../lib/types";
 import {
   ChevronDown,
@@ -75,11 +76,40 @@ export function PromptViewer({ entry }: PromptViewerProps) {
 
 // -- Token Budget ------------------------------------------------------------
 
+/** Rough token count of text (~4 characters per token). */
+const estimateTokens = (text: string) => Math.ceil((text || "").length / 4);
+
 function TokenBudget({ entry }: { entry: LogEntry }) {
-  const est = (text: string) => Math.ceil((text || "").length / 4);
-  const system = est(entry.actualSystemPrompt);
-  const userTotal = est(entry.actualUserPrompt);
-  const rag = entry.ragChunks?.reduce((sum, c) => sum + est(c.text), 0) ?? 0;
+  const actual = entry.usage ? (
+    <div data-testid="token-actual">
+      <span className="font-medium">Actual:</span>{" "}
+      <span className="tabular-nums text-foreground/70">{formatActualUsage(entry.usage)}</span>
+    </div>
+  ) : null;
+
+  // A session keeps its system prompt: it was sent once, when the session started.
+  if (entry.sessionKey) {
+    return (
+      <div
+        className="space-y-0.5 px-3 py-1.5 border-b border-border/20 text-meta text-muted-foreground/60"
+        data-testid="token-budget"
+      >
+        <div>
+          <span className="font-medium">Session prompt</span> (sent once when the session started){" "}
+          <span className="tabular-nums">≈ {estimateTokens(entry.actualSystemPrompt).toLocaleString()}</span>
+        </div>
+        <div>
+          <span className="font-medium">Sent this request</span>{" "}
+          <span className="tabular-nums">≈ {estimateTokens(entry.actualUserPrompt).toLocaleString()}</span>
+        </div>
+        {actual}
+      </div>
+    );
+  }
+
+  const system = estimateTokens(entry.actualSystemPrompt);
+  const userTotal = estimateTokens(entry.actualUserPrompt);
+  const rag = entry.ragChunks?.reduce((sum, c) => sum + estimateTokens(c.text), 0) ?? 0;
   const total = system + userTotal;
 
   const items = [
@@ -89,17 +119,21 @@ function TokenBudget({ entry }: { entry: LogEntry }) {
   ].filter((i) => i.tokens > 0);
 
   return (
-    <div className="flex items-center flex-wrap gap-x-1.5 gap-y-0.5 px-3 py-1.5 border-b border-border/20 text-meta text-muted-foreground/60">
-      <span className="font-medium">Tokens:</span>
-      {items.map((item, i) => (
-        <span key={item.label}>
-          {i > 0 && <span className="mx-0.5">&middot;</span>}
-          <span className={item.color}>{item.label}</span>{" "}
-          <span className="tabular-nums">{item.tokens.toLocaleString()}</span>
-        </span>
-      ))}
-      <span className="mx-0.5">&rarr;</span>
-      <span className="font-semibold tabular-nums">~{total.toLocaleString()}</span>
+    <div className="space-y-0.5 px-3 py-1.5 border-b border-border/20 text-meta text-muted-foreground/60" data-testid="token-budget">
+      <div className="flex items-center flex-wrap gap-x-1.5 gap-y-0.5">
+        <span className="font-medium">Tokens:</span>
+        {items.map((item, i) => (
+          <span key={item.label}>
+            {i > 0 && <span className="mx-0.5">&middot;</span>}
+            <span className={item.color}>{item.label}</span>{" "}
+            <span className="tabular-nums">{item.tokens.toLocaleString()}</span>
+          </span>
+        ))}
+        <span className="mx-0.5">&rarr;</span>
+        <span className="font-semibold tabular-nums">~{total.toLocaleString()}</span>
+        <span>≈ estimate</span>
+      </div>
+      {actual}
     </div>
   );
 }

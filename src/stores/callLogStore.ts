@@ -1,8 +1,16 @@
 import { create } from "zustand";
-import type { LogEntry, LogEntryStatus, LogFilterKind } from "../lib/types";
+import type { LogEntry, LogEntryStatus, LogFilterKind, StreamUsage } from "../lib/types";
 import { stripThinkTags } from "../lib/utils";
 
 const MAX_ENTRIES = 100;
+
+/** Shown on an entry that has received nothing for a long time (it can still recover). */
+export const STALLED_MESSAGE = "No response yet";
+
+/** A stalled entry's placeholder error, cleared once anything arrives. */
+function clearStall(e: LogEntry): Pick<LogEntry, "stalled" | "errorMessage"> {
+  return e.stalled ? { stalled: false, errorMessage: null } : { stalled: e.stalled, errorMessage: e.errorMessage };
+}
 
 interface CallLogState {
   entries: LogEntry[];
@@ -13,8 +21,12 @@ interface CallLogState {
   // Lifecycle actions (called by useCallLogCapture)
   beginEntry: (entry: LogEntry) => void;
   appendToken: (id: string, token: string) => void;
-  completeEntry: (id: string, totalTokens: number, latencyMs: number) => void;
+  completeEntry: (id: string, totalTokens: number, latencyMs: number, usage?: StreamUsage | null) => void;
+  /** The stream was stopped (by the user, or its meeting closed): not an error. */
+  cancelEntry: (id: string, latencyMs: number) => void;
   failEntry: (id: string, message: string) => void;
+  /** Nothing arrived for a long time: error-styled, but late tokens or the end revive it. */
+  markStalled: (id: string) => void;
 
   // UI actions
   setOpen: (open: boolean) => void;
@@ -42,6 +54,7 @@ export const useCallLogStore = create<CallLogState>((set, get) => ({
         const raw = e.responseContent + token;
         return {
           ...e,
+          ...clearStall(e),
           status: "streaming" as LogEntryStatus,
           responseContent: raw,
           responseContentClean: stripThinkTags(raw),
@@ -50,19 +63,46 @@ export const useCallLogStore = create<CallLogState>((set, get) => ({
       }),
     })),
 
-  completeEntry: (id, totalTokens, latencyMs) =>
+  completeEntry: (id, totalTokens, latencyMs, usage = null) =>
     set((state) => ({
       entries: state.entries.map((e) => {
         if (e.id !== id) return e;
         return {
           ...e,
+          ...clearStall(e),
           status: "complete" as LogEntryStatus,
           completedAt: Date.now(),
           totalTokens,
           latencyMs,
+          usage,
           responseContentClean: stripThinkTags(e.responseContent),
         };
       }),
+    })),
+
+  cancelEntry: (id, latencyMs) =>
+    set((state) => ({
+      entries: state.entries.map((e) =>
+        e.id !== id
+          ? e
+          : {
+              ...e,
+              ...clearStall(e),
+              status: "cancelled" as LogEntryStatus,
+              completedAt: Date.now(),
+              latencyMs,
+              responseContentClean: stripThinkTags(e.responseContent),
+            }
+      ),
+    })),
+
+  markStalled: (id) =>
+    set((state) => ({
+      entries: state.entries.map((e) =>
+        e.id !== id || e.status !== "sending"
+          ? e
+          : { ...e, status: "error" as LogEntryStatus, stalled: true, errorMessage: STALLED_MESSAGE }
+      ),
     })),
 
   failEntry: (id, message) =>
@@ -72,6 +112,7 @@ export const useCallLogStore = create<CallLogState>((set, get) => ({
         return {
           ...e,
           status: "error" as LogEntryStatus,
+          stalled: false,
           completedAt: Date.now(),
           errorMessage: message,
         };

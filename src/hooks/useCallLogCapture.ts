@@ -8,6 +8,7 @@ import { useEffect } from "react";
 import {
   onStreamStart,
   onStreamToken,
+  onStreamThinking,
   onStreamEnd,
   onStreamError,
 } from "../lib/events";
@@ -16,22 +17,65 @@ import { useMeetingStore } from "../stores/meetingStore";
 import { saveMeetingAiInteractions } from "../lib/ipc";
 import type { IntelligenceMode, LogEntry } from "../lib/types";
 
-/** Timeout (ms) for stale "sending" entries — auto-transition to error */
-const SENDING_TIMEOUT_MS = 10_000;
+/**
+ * With nothing at all arriving for this long, an entry shows "No response
+ * yet". It is not failed: a slow answer's late tokens and end still land.
+ */
+export const STALL_TIMEOUT_MS = 120_000;
+
+/** Entries worth keeping with the meeting: answered, or stopped part-way. */
+function isPersistable(e: LogEntry): boolean {
+  return e.status === "complete" || (e.status === "cancelled" && !!(e.responseContentClean || e.responseContent));
+}
 
 export function useCallLogCapture() {
   useEffect(() => {
     const unlisteners: Array<Promise<() => void>> = [];
-    // request_id → log entry id, for streams whose start event we saw.
+    // request_id → log entry id, kept until the stream's end or error.
     const entryIds = new Map<string, string>();
-    // request_id → "sending" safety timeout
+    // request_id → "no response yet" timer
     const timers = new Map<string, ReturnType<typeof setTimeout>>();
 
-    const clearSendingTimeout = (requestId: string) => {
+    const clearStallTimer = (requestId: string) => {
       const timer = timers.get(requestId);
       if (timer) {
         clearTimeout(timer);
         timers.delete(requestId);
+      }
+    };
+
+    const armStallTimer = (requestId: string, entryId: string) => {
+      clearStallTimer(requestId);
+      timers.set(
+        requestId,
+        setTimeout(() => {
+          timers.delete(requestId);
+          useCallLogStore.getState().markStalled(entryId);
+        }, STALL_TIMEOUT_MS)
+      );
+    };
+
+    const persist = () => {
+      const meetingId = useMeetingStore.getState().activeMeeting?.id;
+      if (!meetingId) return;
+      const interactions = useCallLogStore
+        .getState()
+        .entries.filter(isPersistable)
+        .map((e) => ({
+          id: e.id,
+          meeting_id: meetingId,
+          mode: e.mode,
+          question_context: e.actualUserPrompt || "",
+          response: e.responseContentClean || e.responseContent,
+          model: e.model,
+          provider: e.provider,
+          latency_ms: e.latencyMs ?? 0,
+          timestamp: new Date(e.timestamp).toISOString(),
+        }));
+      if (interactions.length > 0) {
+        saveMeetingAiInteractions(meetingId, JSON.stringify(interactions)).catch((err) =>
+          console.error("[callLogCapture] Failed to persist AI interactions:", err)
+        );
       }
     };
 
@@ -56,6 +100,8 @@ export function useCallLogCapture() {
           completedAt: null,
           totalTokens: null,
           latencyMs: null,
+          usage: null,
+          sessionKey: event.session_key ?? null,
           responseContent: "",
           responseContentClean: "",
           // Actual prompt data from backend
@@ -83,23 +129,7 @@ export function useCallLogCapture() {
         };
 
         useCallLogStore.getState().beginEntry(entry);
-
-        // Safety timeout: if entry stays in "sending" for >10s, mark as error
-        clearSendingTimeout(requestId);
-        timers.set(
-          requestId,
-          setTimeout(() => {
-            timers.delete(requestId);
-            const entries = useCallLogStore.getState().entries;
-            const e = entries.find((x) => x.id === id);
-            if (e && e.status === "sending") {
-              useCallLogStore
-                .getState()
-                .failEntry(id, "Timed out waiting for response");
-              entryIds.delete(requestId);
-            }
-          }, SENDING_TIMEOUT_MS)
-        );
+        armStallTimer(requestId, id);
       })
     );
 
@@ -108,58 +138,43 @@ export function useCallLogCapture() {
         if (!event.request_id) return;
         const entryId = entryIds.get(event.request_id);
         if (entryId) {
-          // Clear sending timeout on first token
-          clearSendingTimeout(event.request_id);
+          clearStallTimer(event.request_id);
           useCallLogStore.getState().appendToken(entryId, event.token);
         }
+      })
+    );
+
+    // Thinking proves the model is working: the stall clock starts over.
+    unlisteners.push(
+      onStreamThinking((event) => {
+        if (!event.request_id) return;
+        const entryId = entryIds.get(event.request_id);
+        if (entryId && timers.has(event.request_id)) armStallTimer(event.request_id, entryId);
       })
     );
 
     unlisteners.push(
       onStreamEnd((event) => {
         if (!event.request_id) return;
-        clearSendingTimeout(event.request_id);
+        clearStallTimer(event.request_id);
         const entryId = entryIds.get(event.request_id);
-        if (entryId) {
-          entryIds.delete(event.request_id);
-          useCallLogStore
-            .getState()
-            .completeEntry(entryId, event.total_tokens, event.latency_ms);
-
-          // Immediately persist all completed AI interactions to DB (crash protection)
-          const meetingId = useMeetingStore.getState().activeMeeting?.id;
-          if (meetingId) {
-            const entries = useCallLogStore.getState().entries;
-            const interactions = entries
-              .filter((e) => e.status === "complete")
-              .map((e) => ({
-                id: e.id,
-                meeting_id: meetingId,
-                mode: e.mode,
-                question_context: e.actualUserPrompt || "",
-                response: e.responseContentClean || e.responseContent,
-                model: e.model,
-                provider: e.provider,
-                latency_ms: e.latencyMs ?? 0,
-                timestamp: new Date(e.timestamp).toISOString(),
-              }));
-            if (interactions.length > 0) {
-              saveMeetingAiInteractions(
-                meetingId,
-                JSON.stringify(interactions)
-              ).catch((err) =>
-                console.error("[callLogCapture] Failed to persist AI interactions:", err)
-              );
-            }
-          }
+        if (!entryId) return;
+        entryIds.delete(event.request_id);
+        const store = useCallLogStore.getState();
+        if (event.cancelled) {
+          store.cancelEntry(entryId, event.latency_ms);
+        } else {
+          store.completeEntry(entryId, event.total_tokens, event.latency_ms, event.usage ?? null);
         }
+        // Immediately persist all answered AI interactions to DB (crash protection)
+        persist();
       })
     );
 
     unlisteners.push(
       onStreamError((event) => {
         if (!event.request_id) return;
-        clearSendingTimeout(event.request_id);
+        clearStallTimer(event.request_id);
         const entryId = entryIds.get(event.request_id);
         if (entryId) {
           entryIds.delete(event.request_id);
