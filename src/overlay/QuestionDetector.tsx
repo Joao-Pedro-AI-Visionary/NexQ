@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { HelpCircle, Sparkles, Check, Clock, X } from "lucide-react";
 import { onQuestionDetected } from "../lib/events";
-import { generateAssist } from "../lib/ipc";
+import { runUserAction } from "../lib/userAction";
 import { useTranscriptStore } from "../stores/transcriptStore";
 import type { DetectedQuestion } from "../lib/types";
 
@@ -57,7 +57,7 @@ export function QuestionDetector() {
     setQuestions((prev) =>
       prev.map((q, i) => i === index ? { ...q, assisted: true } : q)
     );
-    generateAssist("Assist", questionText).catch(() => {});
+    runUserAction("Assist", questionText).catch(() => {});
   }, [questions]);
 
   const handleDismiss = useCallback((index: number, e: React.MouseEvent) => {

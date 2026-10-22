@@ -412,6 +412,7 @@ pub async fn test_rag_answer(
         0,                          // transcript_window_seconds (no transcript)
         0,                          // transcript_segments_count
         0,                          // transcript_segments_total
+        None,                       // scope_label
         app_handle,
         cancel_flag,
     ).await

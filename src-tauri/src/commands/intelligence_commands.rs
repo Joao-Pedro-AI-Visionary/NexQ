@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tauri::{command, AppHandle, Emitter, State};
 
 use crate::intelligence::action_config::{AllActionConfigs, InstructionPresets};
+use crate::intelligence::context_scope::{self, ResolvedScope, TranscriptWindow};
 use crate::intelligence::IntelligenceEngine;
 use crate::llm::cli_agent::context::Seg;
 use crate::llm::cli_agent::manager::{OnDelta, SessionKey, SessionScope};
@@ -57,10 +58,13 @@ pub(crate) fn compose_instructions(presets: &InstructionPresets, custom: &str) -
     }
 }
 
-/// Build transcript text from frontend-provided segments, applying the per-action window.
+/// Build transcript text from frontend-provided segments, applying the window
+/// (the per-action window or the user's scope), and the window that applied
+/// in seconds (0 = all). Segments whose span overlaps the window are kept
+/// (see `context_scope::overlapping`).
 /// The frontend transcript store is the single source of truth for ALL STT engines.
 /// When `include_segment_ids` is true, each line includes the segment ID for LLM reference.
-fn build_transcript_from_segments(segments_json: &str, window_seconds: u64, include_segment_ids: bool) -> String {
+fn build_transcript_from_segments(segments_json: &str, window: TranscriptWindow, include_segment_ids: bool) -> (String, u64) {
     #[derive(serde::Deserialize)]
     struct Seg {
         #[serde(default)]
@@ -73,26 +77,16 @@ fn build_transcript_from_segments(segments_json: &str, window_seconds: u64, incl
         Ok(s) => s,
         Err(e) => {
             log::warn!("Failed to parse frontend transcript segments: {}", e);
-            return String::new();
+            return (String::new(), context_scope::effective_window_seconds(window, &[]));
         }
     };
 
-    if segments.is_empty() {
-        return String::new();
-    }
+    let starts: Vec<u64> = segments.iter().map(|s| s.timestamp_ms).collect();
+    let effective_window = context_scope::effective_window_seconds(window, &starts);
 
-    // Find the latest timestamp for windowing
-    let latest_ts = segments.iter().map(|s| s.timestamp_ms).max().unwrap_or(0);
-
-    // Apply window: 0 = all segments, otherwise filter by time window
-    let cutoff_ms = if window_seconds == 0 {
-        0
-    } else {
-        latest_ts.saturating_sub(window_seconds * 1000)
-    };
-
-    segments.iter()
-        .filter(|s| s.timestamp_ms >= cutoff_ms)
+    let text = context_scope::overlapping(&starts, window)
+        .into_iter()
+        .map(|i| &segments[i])
         .map(|s| {
             let label = match s.speaker.as_str() {
                 "User" => "You",
@@ -106,7 +100,8 @@ fn build_transcript_from_segments(segments_json: &str, window_seconds: u64, incl
             }
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    (text, effective_window)
 }
 
 /// Count total segments in the JSON, regardless of window filtering.
@@ -346,6 +341,8 @@ pub(crate) struct SessionAssist<'a> {
     pub custom_question: Option<&'a str>,
     pub detected_question: Option<String>,
     pub transcript_segments: Option<&'a str>,
+    /// The transcript scope the user picked (`None` = the action's default).
+    pub scope: Option<&'a ResolvedScope>,
     pub task_instructions: String,
     pub include_rag: bool,
     pub include_instructions: bool,
@@ -382,11 +379,14 @@ pub(crate) async fn session_assist(state: &AppState, app: &AppHandle, req: Sessi
     let start = std::time::Instant::now();
     let SessionAssist { key, mode, params, cancel, .. } = &req;
 
+    let live_start_ms = match &key.scope {
+        SessionScope::Live(_) => state.live_meeting.lock().ok().and_then(|m| m.clone()).map(|m| m.start_ms).unwrap_or(0),
+        _ => 0,
+    };
     let finals = match &key.scope {
         SessionScope::Live(_) => {
-            let start_ms = state.live_meeting.lock().ok().and_then(|m| m.clone()).map(|m| m.start_ms).unwrap_or(0);
             req.transcript_segments
-                .map(|json| routing::segments_from_json(json, start_ms))
+                .map(|json| routing::segments_from_json(json, live_start_ms))
                 .unwrap_or_default()
         }
         // The whole transcript is preloaded into a past-meeting session.
@@ -432,10 +432,16 @@ pub(crate) async fn session_assist(state: &AppState, app: &AppHandle, req: Sessi
 
     let session_key = routing::session_key_label(key);
     let rag_context = rag.context_text.clone();
+    // The user's scope rides along as a short note (no section for the default).
+    let scope_note = context_scope::session_scope_note(req.scope, live_start_ms).unwrap_or_default();
+    let scope_label = ResolvedScope::label_of(req.scope);
     let compose = |new: &[Seg]| {
         routing::compose_delta(
             new,
-            &[("## Relevant document excerpts", rag_context.as_str())],
+            &[
+                ("## Relevant document excerpts", rag_context.as_str()),
+                (context_scope::SCOPE_HEADER, scope_note.as_str()),
+            ],
             &req.task_instructions,
             req.custom_question,
             req.detected_question.as_deref(),
@@ -469,6 +475,7 @@ pub(crate) async fn session_assist(state: &AppState, app: &AppHandle, req: Sessi
                 transcript_segments_total: finals.len(),
                 request_id: params.request_id.clone(),
                 session_key: Some(session_key.clone()),
+                scope_label: scope_label.clone(),
             },
         );
     };
@@ -658,9 +665,12 @@ pub async fn generate_assist(
     transcript_segments: Option<String>,
     request_id: Option<String>,
     past_meeting_id: Option<String>,
+    scope: Option<ResolvedScope>,
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    // The user's transcript scope (`scope` names the session scope below).
+    let user_scope = scope;
     // Every stream carries a request id so listeners can tell streams apart.
     let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
@@ -773,6 +783,7 @@ pub async fn generate_assist(
                 None
             },
             transcript_segments: transcript_segments.as_deref(),
+            scope: user_scope.as_ref(),
             task_instructions,
             include_rag,
             include_instructions,
@@ -810,18 +821,27 @@ pub async fn generate_assist(
 
     // ── Today's stateless full-prompt path (active or fallback provider) ──
 
-    // Determine transcript window: per-action override or global default
-    let window_seconds = action_cfg
+    // Determine transcript window: per-action override or global default,
+    // unless the user picked a scope for this request.
+    let action_window_seconds = action_cfg
         .as_ref()
         .and_then(|c| c.transcript_window_seconds)
         .unwrap_or(global_defaults.transcript_window_seconds);
+    let window = context_scope::stateless_window(user_scope.as_ref(), action_window_seconds);
+    let mut window_seconds = match window {
+        TranscriptWindow::Seconds(secs) => secs,
+        // No frontend segments to measure from (legacy buffer): the whole meeting.
+        TranscriptWindow::Since(_) => 0,
+    };
 
     // Build transcript from frontend segments (universal — works with any STT engine).
     // The frontend transcript store is the single source of truth.
     // Falls back to engine buffer only if frontend didn't send segments.
     let include_segment_ids = mode == "BookmarkSuggestions";
     let mut transcript_text = if let Some(ref segs) = transcript_segments {
-        build_transcript_from_segments(segs, window_seconds, include_segment_ids)
+        let (text, effective) = build_transcript_from_segments(segs, window, include_segment_ids);
+        window_seconds = effective;
+        text
     } else {
         // Legacy fallback: read from backend buffer
         let intel = state.intelligence.as_ref()
@@ -952,6 +972,7 @@ pub async fn generate_assist(
         window_seconds,
         included_segments,
         total_segments,
+        ResolvedScope::label_of(user_scope.as_ref()),
         app_handle,
         cancel_token,
     )
@@ -1169,4 +1190,36 @@ pub async fn get_action_configs(
     let configs = engine.get_action_configs();
     serde_json::to_string(configs)
         .map_err(|e| format!("Failed to serialize action configs: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SEGS: &str = r#"[
+        {"id":"a","text":"Intro","speaker":"User","timestamp_ms":1000},
+        {"id":"b","text":"A long merged answer","speaker":"Them","timestamp_ms":100000},
+        {"id":"c","text":"Next","speaker":"User","timestamp_ms":290000}
+    ]"#;
+
+    #[test]
+    fn stateless_transcript_keeps_segments_overlapping_the_window() {
+        // 60 s before the newest segment = 230 s: "b" began earlier but ran until 290 s.
+        let (text, window) = build_transcript_from_segments(SEGS, TranscriptWindow::Seconds(60), false);
+        assert_eq!(text, "[Them]: A long merged answer\n[You]: Next");
+        assert_eq!(window, 60);
+        let (text, window) = build_transcript_from_segments(SEGS, TranscriptWindow::Seconds(0), true);
+        assert_eq!(text.lines().count(), 3);
+        assert!(text.starts_with("[a] You: Intro"));
+        assert_eq!(window, 0);
+    }
+
+    #[test]
+    fn stateless_transcript_since_a_time_reports_the_effective_window() {
+        let (text, window) = build_transcript_from_segments(SEGS, TranscriptWindow::Since(200_000), false);
+        assert_eq!(text, "[Them]: A long merged answer\n[You]: Next");
+        assert_eq!(window, 90);
+        let (text, _) = build_transcript_from_segments("not json", TranscriptWindow::Since(0), false);
+        assert!(text.is_empty());
+    }
 }

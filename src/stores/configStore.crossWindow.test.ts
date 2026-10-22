@@ -80,6 +80,28 @@ describe("configStore: active LLM across windows", () => {
     expect(nextStart.getState().claudeModels).toEqual(catalog);
   });
 
+  it("the transcript scope picked in the overlay reaches the launcher and the next start", async () => {
+    const launcher = await openWindow();
+    const overlay = await openWindow();
+    expect(overlay.getState().contextScope).toEqual({ kind: "default", minutes: 5 });
+    expect(overlay.getState().contextScopeSticky).toBe(true);
+
+    overlay.getState().setContextScope({ kind: "minutes", minutes: 10 });
+    overlay.getState().setContextScopeSticky(false);
+    await vi.waitFor(() => expect(launcher.getState().contextScope).toEqual({ kind: "minutes", minutes: 10 }));
+    expect(launcher.getState().contextScopeSticky).toBe(false);
+
+    const nextStart = await openWindow();
+    expect(nextStart.getState().contextScope).toEqual({ kind: "minutes", minutes: 10 });
+    expect(nextStart.getState().contextScopeSticky).toBe(false);
+  });
+
+  it("a malformed saved scope falls back to the default", async () => {
+    saved.set("contextScope", { kind: "bogus", minutes: 3 });
+    const w = await openWindow();
+    expect(w.getState().contextScope).toEqual({ kind: "default", minutes: 5 });
+  });
+
   it("activating in either window updates the backend and both windows", async () => {
     const launcher = await openWindow();
     const overlay = await openWindow();

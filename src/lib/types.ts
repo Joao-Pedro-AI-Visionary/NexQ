@@ -224,6 +224,12 @@ export interface AIResponse {
   provider: string;
   latency_ms: number;
   sources?: StreamSource[];
+  /** Click → last token, measured in the UI (ms). */
+  total_ms?: number;
+  /** Click → first visible words (ms). */
+  first_token_ms?: number;
+  /** The transcript scope the answer was asked with, when not the default. */
+  scope_label?: string | null;
 }
 
 export interface ModelInfo {
@@ -645,6 +651,8 @@ export interface StreamStartEvent {
   request_id: string | null;
   /** The Claude session that answered ("live:<meeting>:fast"...); null on the stateless path. */
   session_key: string | null;
+  /** The transcript scope the user picked ("Last 5 min"...); null for the action's default. */
+  scope_label: string | null;
 }
 
 export interface StreamEndEvent {
@@ -706,6 +714,29 @@ export interface GenerateAssistOptions {
   transcriptSegments?: AssistTranscriptSegment[];
   /** Past meeting this generation belongs to: routes it to that meeting's Claude session. */
   pastMeetingId?: string;
+  /** Transcript scope picked by the user; omitted (or `default`) keeps the action's own window. */
+  scope?: ResolvedScope | null;
+}
+
+// == CONTEXT SCOPE (which part of the meeting a user action focuses on) ==
+
+/** Mirrors Rust `context_scope::ScopeKind`. */
+export type ContextScopeKind = "default" | "since_last_any" | "since_last_same" | "minutes" | "all";
+
+/** The scope selected in the overlay picker (persisted in configStore). */
+export interface ContextScopeSetting {
+  kind: ContextScopeKind;
+  /** Minutes for `minutes` (1–120); kept while another kind is selected. */
+  minutes: number;
+}
+
+/** A scope resolved at request time. Mirrors Rust `context_scope::ResolvedScope`. */
+export interface ResolvedScope {
+  kind: ContextScopeKind;
+  /** Epoch ms of the first segment to focus on (`since_*`, `minutes`). */
+  since_ms: number | null;
+  minutes?: number;
+  label: string;
 }
 
 export type QuestionDetectedEvent = DetectedQuestion;
