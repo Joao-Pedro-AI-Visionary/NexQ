@@ -126,7 +126,9 @@ export const useStreamStore = create<StreamState>((set, get) => ({
     }),
 
   setPending: (mode, requestId) => {
-    if (get().isStreaming) return;
+    // A second press while one is running or still sending is refused by the
+    // backend; it must not take over the first request's progress.
+    if (get().isStreaming || get().phase === "sending") return;
     set({
       phase: "sending",
       pendingRequestId: requestId,

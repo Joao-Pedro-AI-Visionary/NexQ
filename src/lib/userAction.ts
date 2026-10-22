@@ -25,11 +25,13 @@ export async function runUserAction(mode: string, customQuestion?: string): Prom
   const stream = useStreamStore.getState();
   const scope = resolveScope(setting, mode, actionLabel(mode), stream.lastUserRequest, Date.now());
   const requestId = crypto.randomUUID();
+  // Another action is already on its way: the backend will refuse this one.
+  const busy = stream.isStreaming || stream.phase === "sending";
 
   stream.setPending(mode, requestId);
   // A one-off scope is used up by this action (not by a click the running
   // stream will refuse).
-  if (!config.contextScopeSticky && setting.kind !== "default" && !stream.isStreaming) {
+  if (!config.contextScopeSticky && setting.kind !== "default" && !busy) {
     config.setContextScope({ ...setting, kind: "default" });
   }
 

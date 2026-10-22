@@ -17,6 +17,15 @@ use super::provider::TranscriptResult;
 /// A paragraph that already spans this long ends at the next final.
 pub const MAX_PARAGRAPH_MS: u64 = 60_000;
 
+/// Timestamps at or above this are epoch ms (2001+); smaller ones are
+/// relative to the STT stream's start.
+const EPOCH_MS_FLOOR: u64 = 1_000_000_000_000;
+
+/// Rough speaking time of `text` (~150 words per minute).
+fn estimated_speech_ms(text: &str) -> u64 {
+    text.split_whitespace().count() as u64 * 400
+}
+
 /// Wall-clock time in epoch milliseconds (injectable for tests).
 pub type Clock = Box<dyn Fn() -> u64 + Send>;
 
@@ -127,7 +136,12 @@ impl SegmentAccumulator {
 
         let end_ms = match result.duration_ms {
             Some(duration) => result.timestamp_ms + duration,
-            None => (self.clock)().max(result.timestamp_ms),
+            // Epoch-stamped final: it arrives about when the speech ends.
+            None if result.timestamp_ms >= EPOCH_MS_FLOOR => (self.clock)().max(result.timestamp_ms),
+            // Stamped relative to its stream (whisper.cpp, Groq, Azure...):
+            // the wall clock is another time base, so estimate the end
+            // from the words spoken.
+            None => result.timestamp_ms + estimated_speech_ms(&result.text),
         };
 
         let mut outputs = Vec::new();
@@ -304,6 +318,18 @@ mod tests {
         // Next starts 4 s after the previous arrival: new paragraph.
         now.store(T0 + 11_000, Ordering::SeqCst);
         let outs = a.feed_result(fin("three", T0 + 10_000, None, None));
+        assert_eq!(outs.last().unwrap().id, "acc_2");
+    }
+
+    #[test]
+    fn stream_relative_timestamps_without_duration_stay_in_their_time_base() {
+        // whisper.cpp / Groq style: ms since the stream started, no duration.
+        let mut a = SegmentAccumulator::with_clock(3000, Box::new(|| panic!("clock not expected")));
+        a.feed_result(fin("so we start to fine tune this", 1_200, None, None)); // ~2.4 s of speech
+        let outs = a.feed_result(fin("almost cell by cell", 4_000, None, None));
+        assert_eq!((outs[0].id.as_str(), outs[0].text.as_str()), ("acc_1", "so we start to fine tune this almost cell by cell"));
+        // 5 s of silence after the estimated end: new paragraph.
+        let outs = a.feed_result(fin("Next point", 10_600, None, None));
         assert_eq!(outs.last().unwrap().id, "acc_2");
     }
 

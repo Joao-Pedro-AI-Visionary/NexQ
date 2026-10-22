@@ -5,7 +5,7 @@ import { runUserAction } from "../lib/userAction";
 import { useTranscriptStore } from "../stores/transcriptStore";
 import type { DetectedQuestion } from "../lib/types";
 
-function looksLikeQuestion(text: string): boolean {
+export function looksLikeQuestion(text: string): boolean {
   const trimmed = text.trim();
   if (trimmed.endsWith("?")) return true;
   const lower = trimmed.toLowerCase();
@@ -17,19 +17,39 @@ function looksLikeQuestion(text: string): boolean {
   return qWords.some((w) => lower.startsWith(w));
 }
 
+/**
+ * The newest sentence of a transcript line. Lines grow into paragraphs, so a
+ * question is usually the last sentence, not the whole line.
+ */
+export function lastSentence(text: string): string {
+  const sentences = text.trim().match(/[^.?!]+[.?!]*/g) ?? [];
+  return (sentences[sentences.length - 1] ?? "").trim();
+}
+
 interface TrackedQuestion extends DetectedQuestion {
   assisted: boolean;
+  /** Transcript line the question came from (lines grow while someone talks). */
+  segmentId?: string;
 }
 
 export function QuestionDetector() {
   const [questions, setQuestions] = useState<TrackedQuestion[]>([]);
-  const processedIdsRef = useRef<Set<string>>(new Set());
+  // Text of each final line when it was last checked for a question.
+  const checkedTextRef = useRef<Map<string, string>>(new Map());
   const segments = useTranscriptStore((s) => s.segments);
 
-  const addQuestion = useCallback((q: DetectedQuestion) => {
+  const addQuestion = useCallback((q: DetectedQuestion, segmentId?: string) => {
     setQuestions((prev) => {
+      // The same line grew: update its question in place (unless already answered).
+      if (segmentId) {
+        const i = prev.findIndex((p) => p.segmentId === segmentId);
+        if (i >= 0) {
+          if (prev[i].assisted || prev[i].text === q.text) return prev;
+          return prev.map((p, j) => (j === i ? { ...p, text: q.text } : p));
+        }
+      }
       if (prev.length > 0 && prev[0].text === q.text) return prev;
-      return [{ ...q, assisted: false }, ...prev].slice(0, 10);
+      return [{ ...q, assisted: false, segmentId }, ...prev].slice(0, 10);
     });
   }, []);
 
@@ -43,12 +63,15 @@ export function QuestionDetector() {
   }, [addQuestion]);
 
   useEffect(() => {
+    const checked = checkedTextRef.current;
     for (const seg of segments) {
-      if (seg.is_final && !processedIdsRef.current.has(seg.id) && (seg.speaker === "Them" || seg.speaker === "Interviewer") && looksLikeQuestion(seg.text)) {
-        processedIdsRef.current.add(seg.id);
-        addQuestion({ text: seg.text, confidence: 0.8, timestamp_ms: seg.timestamp_ms, source: seg.speaker });
+      if (!seg.is_final || checked.get(seg.id) === seg.text) continue;
+      checked.set(seg.id, seg.text);
+      if (seg.speaker !== "Them" && seg.speaker !== "Interviewer") continue;
+      const sentence = lastSentence(seg.text);
+      if (sentence && looksLikeQuestion(sentence)) {
+        addQuestion({ text: sentence, confidence: 0.8, timestamp_ms: seg.timestamp_ms, source: seg.speaker }, seg.id);
       }
-      if (seg.is_final) processedIdsRef.current.add(seg.id);
     }
   }, [segments, addQuestion]);
 

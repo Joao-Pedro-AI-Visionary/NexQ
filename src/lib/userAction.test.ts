@@ -50,16 +50,31 @@ describe("runUserAction", () => {
   });
 
   it("a sticky scope stays; a non-sticky one reverts to the default after one action", async () => {
+    // generate_assist resolves once its stream ended (no events in this test).
+    const finished = () => useStreamStore.setState({ phase: "idle", pendingRequestId: null });
     useConfigStore.setState({ contextScope: { kind: "minutes", minutes: 10 }, contextScopeSticky: true });
     await runUserAction("Recap");
+    finished();
     expect(useConfigStore.getState().contextScope).toEqual({ kind: "minutes", minutes: 10 });
 
     useConfigStore.setState({ contextScopeSticky: false });
     await runUserAction("Recap");
+    finished();
     expect((generateAssist.mock.calls[1][2] as { scope: { label: string } }).scope.label).toBe("Last 10 min");
     expect(useConfigStore.getState().contextScope).toEqual({ kind: "default", minutes: 10 });
     await runUserAction("Recap");
     expect((generateAssist.mock.calls[2][2] as { scope: unknown }).scope).toBeNull();
+  });
+
+  it("a second press while the first is still sending keeps the first's progress and scope", async () => {
+    useConfigStore.setState({ contextScope: { kind: "minutes", minutes: 5 }, contextScopeSticky: false });
+    useStreamStore.setState({ phase: "sending", pendingRequestId: "first", isStreaming: false });
+    generateAssist.mockRejectedValueOnce(new Error("Generation already in progress"));
+    await expect(runUserAction("Assist")).rejects.toThrow("already in progress");
+    expect(useStreamStore.getState().pendingRequestId).toBe("first");
+    expect(useStreamStore.getState().phase).toBe("sending");
+    expect(useConfigStore.getState().contextScope).toEqual({ kind: "minutes", minutes: 5 });
+    useStreamStore.setState({ phase: "idle", pendingRequestId: null });
   });
 
   it("a failed request clears its Sending… state", async () => {

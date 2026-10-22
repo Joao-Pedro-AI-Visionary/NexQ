@@ -64,7 +64,15 @@ pub(crate) fn compose_instructions(presets: &InstructionPresets, custom: &str) -
 /// (see `context_scope::overlapping`).
 /// The frontend transcript store is the single source of truth for ALL STT engines.
 /// When `include_segment_ids` is true, each line includes the segment ID for LLM reference.
-fn build_transcript_from_segments(segments_json: &str, window: TranscriptWindow, include_segment_ids: bool) -> (String, u64) {
+/// STT engines stamp segments either in epoch ms or relative to their stream
+/// start, so segment times and a `Since` cutoff are compared relative to the
+/// live meeting's `start_ms` (0 when there is none), like the session path.
+fn build_transcript_from_segments(
+    segments_json: &str,
+    window: TranscriptWindow,
+    include_segment_ids: bool,
+    start_ms: i64,
+) -> (String, u64) {
     #[derive(serde::Deserialize)]
     struct Seg {
         #[serde(default)]
@@ -81,7 +89,14 @@ fn build_transcript_from_segments(segments_json: &str, window: TranscriptWindow,
         }
     };
 
-    let starts: Vec<u64> = segments.iter().map(|s| s.timestamp_ms).collect();
+    let starts: Vec<u64> = segments
+        .iter()
+        .map(|s| routing::relative_ms(s.timestamp_ms as i64, start_ms))
+        .collect();
+    let window = match window {
+        TranscriptWindow::Since(ms) => TranscriptWindow::Since(routing::relative_ms(ms, start_ms) as i64),
+        other => other,
+    };
     let effective_window = context_scope::effective_window_seconds(window, &starts);
 
     let text = context_scope::overlapping(&starts, window)
@@ -839,7 +854,13 @@ pub async fn generate_assist(
     // Falls back to engine buffer only if frontend didn't send segments.
     let include_segment_ids = mode == "BookmarkSuggestions";
     let mut transcript_text = if let Some(ref segs) = transcript_segments {
-        let (text, effective) = build_transcript_from_segments(segs, window, include_segment_ids);
+        let start_ms = state
+            .live_meeting
+            .lock()
+            .ok()
+            .and_then(|m| m.as_ref().map(|m| m.start_ms))
+            .unwrap_or(0);
+        let (text, effective) = build_transcript_from_segments(segs, window, include_segment_ids, start_ms);
         window_seconds = effective;
         text
     } else {
@@ -1205,10 +1226,10 @@ mod tests {
     #[test]
     fn stateless_transcript_keeps_segments_overlapping_the_window() {
         // 60 s before the newest segment = 230 s: "b" began earlier but ran until 290 s.
-        let (text, window) = build_transcript_from_segments(SEGS, TranscriptWindow::Seconds(60), false);
+        let (text, window) = build_transcript_from_segments(SEGS, TranscriptWindow::Seconds(60), false, 0);
         assert_eq!(text, "[Them]: A long merged answer\n[You]: Next");
         assert_eq!(window, 60);
-        let (text, window) = build_transcript_from_segments(SEGS, TranscriptWindow::Seconds(0), true);
+        let (text, window) = build_transcript_from_segments(SEGS, TranscriptWindow::Seconds(0), true, 0);
         assert_eq!(text.lines().count(), 3);
         assert!(text.starts_with("[a] You: Intro"));
         assert_eq!(window, 0);
@@ -1216,10 +1237,33 @@ mod tests {
 
     #[test]
     fn stateless_transcript_since_a_time_reports_the_effective_window() {
-        let (text, window) = build_transcript_from_segments(SEGS, TranscriptWindow::Since(200_000), false);
+        let (text, window) = build_transcript_from_segments(SEGS, TranscriptWindow::Since(200_000), false, 0);
         assert_eq!(text, "[Them]: A long merged answer\n[You]: Next");
         assert_eq!(window, 90);
-        let (text, _) = build_transcript_from_segments("not json", TranscriptWindow::Since(0), false);
+        let (text, _) = build_transcript_from_segments("not json", TranscriptWindow::Since(0), false, 0);
         assert!(text.is_empty());
+    }
+
+    #[test]
+    fn stateless_since_cutoff_matches_stream_relative_and_epoch_segments() {
+        // Meeting started at epoch START; "Them" is stamped relative to its
+        // stream (whisper.cpp, Groq...), "You" in epoch ms (Web Speech).
+        const START: i64 = 1_700_000_000_000;
+        let segs = format!(
+            r#"[
+            {{"id":"a","text":"Early","speaker":"Them","timestamp_ms":10000}},
+            {{"id":"a2","text":"Before","speaker":"Them","timestamp_ms":60000}},
+            {{"id":"b","text":"Mine","speaker":"User","timestamp_ms":{}}},
+            {{"id":"c","text":"Late","speaker":"Them","timestamp_ms":200000}}
+        ]"#,
+            START + 150_000
+        );
+        let (text, window) =
+            build_transcript_from_segments(&segs, TranscriptWindow::Since(START + 120_000), false, START);
+        // "Before" (60 s) runs until "Mine" (150 s), past the 120 s cutoff.
+        assert_eq!(text, "[Them]: Before
+[You]: Mine
+[Them]: Late");
+        assert_eq!(window, 80);
     }
 }

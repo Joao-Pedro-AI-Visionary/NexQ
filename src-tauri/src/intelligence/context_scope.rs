@@ -72,11 +72,12 @@ pub fn stateless_window(scope: Option<&ResolvedScope>, action_window_seconds: u6
     match scope.kind {
         ScopeKind::Default => TranscriptWindow::Seconds(action_window_seconds),
         ScopeKind::All => TranscriptWindow::Seconds(0),
-        ScopeKind::Minutes => match scope.minutes.filter(|m| *m > 0) {
-            Some(m) => TranscriptWindow::Seconds(u64::from(m) * 60),
-            None => scope
-                .since_ms
-                .map_or(TranscriptWindow::Seconds(action_window_seconds), TranscriptWindow::Since),
+        // The exact cutoff the session path also uses; the minutes count
+        // back from the newest segment only when no cutoff was sent.
+        ScopeKind::Minutes => match (scope.since_ms, scope.minutes.filter(|m| *m > 0)) {
+            (Some(since), _) => TranscriptWindow::Since(since),
+            (None, Some(m)) => TranscriptWindow::Seconds(u64::from(m) * 60),
+            (None, None) => TranscriptWindow::Seconds(action_window_seconds),
         },
         ScopeKind::SinceLastAny | ScopeKind::SinceLastSame => scope
             .since_ms
@@ -125,7 +126,9 @@ fn clock(ms: i64, start_ms: i64) -> String {
 /// default scope (the session decides, as today).
 pub fn session_scope_note(scope: Option<&ResolvedScope>, start_ms: i64) -> Option<String> {
     let scope = scope?;
-    const BACKGROUND: &str = "earlier lines are background only.";
+    // Continuation lines keep their paragraph's start time, so a "…" line
+    // stamped before the cutoff can still carry words spoken after it.
+    const BACKGROUND: &str = "earlier lines are background only. A line whose text starts with \"…\" adds newly spoken words to an earlier line, so its new words count as in scope.";
     match scope.kind {
         ScopeKind::Default => None,
         ScopeKind::All => Some("Base your answer on the whole meeting so far.".to_string()),
@@ -200,7 +203,11 @@ mod tests {
     #[test]
     fn stateless_window_per_kind() {
         assert_eq!(stateless_window(Some(&scope(ScopeKind::All, None, None)), 300), TranscriptWindow::Seconds(0));
-        assert_eq!(stateless_window(Some(&scope(ScopeKind::Minutes, Some(5), Some(10))), 300), TranscriptWindow::Seconds(600));
+        assert_eq!(stateless_window(Some(&scope(ScopeKind::Minutes, None, Some(10))), 300), TranscriptWindow::Seconds(600));
+        assert_eq!(
+            stateless_window(Some(&scope(ScopeKind::Minutes, Some(START), Some(10))), 300),
+            TranscriptWindow::Since(START)
+        );
         assert_eq!(
             stateless_window(Some(&scope(ScopeKind::SinceLastAny, Some(START), None)), 300),
             TranscriptWindow::Since(START)
@@ -243,11 +250,11 @@ mod tests {
         );
         assert_eq!(
             session_scope_note(Some(&scope(ScopeKind::Minutes, Some(START + 750_000), Some(5))), START).unwrap(),
-            "Base your answer only on the transcript from [12:30] onward (the last 5 minutes); earlier lines are background only."
+            "Base your answer only on the transcript from [12:30] onward (the last 5 minutes); earlier lines are background only. A line whose text starts with \"…\" adds newly spoken words to an earlier line, so its new words count as in scope."
         );
         assert_eq!(
             session_scope_note(Some(&scope(ScopeKind::SinceLastAny, Some(START + 842_000), None)), START).unwrap(),
-            "Base your answer only on the transcript since your previous answer, from [14:02] onward; earlier lines are background only."
+            "Base your answer only on the transcript since your previous answer, from [14:02] onward; earlier lines are background only. A line whose text starts with \"…\" adds newly spoken words to an earlier line, so its new words count as in scope."
         );
         assert!(session_scope_note(Some(&scope(ScopeKind::SinceLastSame, Some(START + 3_725_000), None)), START)
             .unwrap()
