@@ -135,14 +135,24 @@ fn past_transcript(transcript: &serde_json::Value, names: &HashMap<String, Strin
                 return None;
             }
             let speaker = item.get("speaker").and_then(|v| v.as_str()).unwrap_or("Unknown");
-            let named = item
-                .get("speaker_id")
-                .and_then(|v| v.as_str())
-                .and_then(|id| names.get(id))
-                .or_else(|| names.get(speaker));
-            let label = named
-                .map(String::as_str)
-                .unwrap_or_else(|| routing::speaker_label(speaker));
+            // A diarized remote line ("Them" + tag "S1") is labelled with the
+            // tag's name ("Erin", else "Speaker 1"); its speaker_id ("them")
+            // would only say "Them". In-person lines keep their speaker_id name.
+            let tag = item.get("speaker_tag").and_then(|v| v.as_str()).filter(|t| !t.is_empty());
+            let speaker_id = item.get("speaker_id").and_then(|v| v.as_str());
+            let named = tag
+                .and_then(|t| names.get(&meetings::remote_speaker_id(t)))
+                .or_else(|| {
+                    speaker_id
+                        .filter(|id| tag.is_none() || *id != "them")
+                        .and_then(|id| names.get(id))
+                })
+                .or_else(|| if tag.is_none() { names.get(speaker) } else { None });
+            let label = match (named, tag) {
+                (Some(name), _) => name.clone(),
+                (None, Some(t)) => meetings::default_remote_speaker_name(t),
+                (None, None) => routing::speaker_label(speaker).to_string(),
+            };
             let timestamp_ms = item.get("timestamp_ms").and_then(|v| v.as_i64()).unwrap_or(0);
             let id = item
                 .get("id")
@@ -153,7 +163,7 @@ fn past_transcript(transcript: &serde_json::Value, names: &HashMap<String, Strin
             Some(Seg {
                 id,
                 text: text.to_string(),
-                speaker: label.to_string(),
+                speaker: label,
                 timestamp_ms: routing::relative_ms(timestamp_ms, start_ms),
             })
         })
@@ -662,6 +672,7 @@ pub async fn append_transcript_segment(
         text: partial["text"].as_str().unwrap_or("").to_string(),
         speaker: partial["speaker"].as_str().unwrap_or("Unknown").to_string(),
         speaker_id: partial["speaker_id"].as_str().map(|s| s.to_string()),
+        speaker_tag: partial["speaker_tag"].as_str().map(|s| s.to_string()),
         timestamp_ms: partial["timestamp_ms"].as_i64().unwrap_or(0),
         is_final: partial["is_final"].as_bool().unwrap_or(true),
         confidence: partial["confidence"].as_f64().unwrap_or(0.0),
@@ -901,4 +912,34 @@ pub async fn rename_speaker(
 
     meetings::rename_speaker(db.connection(), &meeting_id, &speaker_id, &new_name)
         .map_err(|e| format!("Failed to rename speaker: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn past_transcript_labels_remote_speaker_tags() {
+        let transcript = serde_json::json!([
+            {"id": "a", "text": "Hi", "speaker": "User", "speaker_id": "you", "timestamp_ms": 1_000, "is_final": true},
+            {"id": "b", "text": "Hello", "speaker": "Them", "speaker_id": "them", "speaker_tag": "S1", "timestamp_ms": 2_000, "is_final": true},
+            {"id": "c", "text": "Yes", "speaker": "Them", "speaker_id": "them", "speaker_tag": "S2", "timestamp_ms": 3_000, "is_final": true},
+            {"id": "d", "text": "Plain", "speaker": "Them", "speaker_id": "them", "timestamp_ms": 4_000, "is_final": true},
+            {"id": "e", "text": "Room", "speaker": "Them", "speaker_id": "speaker_0", "speaker_tag": "S1", "timestamp_ms": 5_000, "is_final": true}
+        ]);
+        let names: HashMap<String, String> = [
+            ("them:S1", "Erin"),
+            ("them", "Them"),
+            ("speaker_0", "Dana"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let labels: Vec<String> = past_transcript(&transcript, &names, 0).into_iter().map(|s| s.speaker).collect();
+        assert_eq!(labels, vec!["You", "Erin", "Speaker 2", "Them", "Erin"]);
+        // In-person line without a remote name keeps its speaker_id name.
+        let names: HashMap<String, String> = [("speaker_0".to_string(), "Dana".to_string())].into_iter().collect();
+        let labels: Vec<String> = past_transcript(&transcript, &names, 0).into_iter().map(|s| s.speaker).collect();
+        assert_eq!(labels, vec!["You", "Speaker 1", "Speaker 2", "Them", "Dana"]);
+    }
 }

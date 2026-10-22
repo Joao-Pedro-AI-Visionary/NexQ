@@ -100,10 +100,27 @@ pub struct TranscriptSegment {
     pub speaker: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub speaker_id: Option<String>,
+    /// Diarization tag of a remote-party line ("S1"); `speaker` stays "Them".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker_tag: Option<String>,
     pub timestamp_ms: i64,
     pub is_final: bool,
     pub confidence: f64,
     pub created_at: String,
+}
+
+/// The `meeting_speakers` id under which a remote speaker tag's name is
+/// kept ("them:S1").
+pub fn remote_speaker_id(tag: &str) -> String {
+    format!("them:{tag}")
+}
+
+/// Label of a remote speaker tag that was never renamed ("S2" → "Speaker 2").
+pub fn default_remote_speaker_name(tag: &str) -> String {
+    match tag.strip_prefix('S') {
+        Some(n) if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) => format!("Speaker {n}"),
+        _ => tag.to_string(),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -451,8 +468,8 @@ pub fn append_transcript_segment(
 ) -> Result<(), DatabaseError> {
     conn.execute(
         "INSERT OR REPLACE INTO transcript_segments
-            (id, meeting_id, text, speaker, speaker_id, timestamp_ms, is_final, confidence, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            (id, meeting_id, text, speaker, speaker_id, timestamp_ms, is_final, confidence, created_at, speaker_tag)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             segment.id,
             meeting_id,
@@ -463,6 +480,7 @@ pub fn append_transcript_segment(
             segment.is_final,
             segment.confidence,
             segment.created_at,
+            segment.speaker_tag,
         ],
     )?;
 
@@ -475,7 +493,7 @@ fn list_transcript_segments(
     meeting_id: &str,
 ) -> Result<Vec<TranscriptSegment>, DatabaseError> {
     let mut stmt = conn.prepare(
-        "SELECT id, meeting_id, text, speaker, speaker_id, timestamp_ms, is_final, confidence, created_at
+        "SELECT id, meeting_id, text, speaker, speaker_id, timestamp_ms, is_final, confidence, created_at, speaker_tag
          FROM transcript_segments
          WHERE meeting_id = ?1
          ORDER BY timestamp_ms ASC",
@@ -492,6 +510,7 @@ fn list_transcript_segments(
             is_final: row.get(6)?,
             confidence: row.get(7)?,
             created_at: row.get(8)?,
+            speaker_tag: row.get(9)?,
         })
     })?;
 
@@ -551,17 +570,25 @@ pub fn save_meeting_speakers(
     Ok(())
 }
 
-/// Rename a single speaker within a meeting.
+/// Rename a single speaker within a meeting. A remote speaker tag
+/// ("them:S1") that has no row yet gets one, so its name persists.
 pub fn rename_speaker(
     conn: &Connection,
     meeting_id: &str,
     speaker_id: &str,
     new_name: &str,
 ) -> Result<(), DatabaseError> {
-    conn.execute(
+    let updated = conn.execute(
         "UPDATE meeting_speakers SET display_name = ?1 WHERE meeting_id = ?2 AND speaker_id = ?3",
         params![new_name, meeting_id, speaker_id],
     )?;
+    if updated == 0 && speaker_id.starts_with("them:") {
+        conn.execute(
+            "INSERT INTO meeting_speakers (id, meeting_id, speaker_id, display_name, source)
+             VALUES (?1, ?2, ?3, ?4, 'remote_tag')",
+            params![Uuid::new_v4().to_string(), meeting_id, speaker_id, new_name],
+        )?;
+    }
     Ok(())
 }
 
@@ -872,4 +899,73 @@ pub fn list_meeting_topic_sections(
         results.push(row?);
     }
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::migrations;
+
+    fn db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        migrations::run(&conn).unwrap();
+        conn
+    }
+
+    fn segment(meeting_id: &str, id: &str, text: &str, tag: Option<&str>, ts: i64) -> TranscriptSegment {
+        TranscriptSegment {
+            id: id.into(),
+            meeting_id: meeting_id.into(),
+            text: text.into(),
+            speaker: "Them".into(),
+            speaker_id: Some("them".into()),
+            speaker_tag: tag.map(str::to_string),
+            timestamp_ms: ts,
+            is_final: true,
+            confidence: 0.9,
+            created_at: "2026-10-22T10:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn segments_keep_speaker_tag_and_latest_text() {
+        let conn = db();
+        migrations::run(&conn).unwrap(); // the v8 column migration is idempotent
+        let meeting = create_meeting(&conn, "Sync").unwrap();
+        append_transcript_segment(&conn, &meeting.id, &segment(&meeting.id, "p1", "We ship", Some("S2"), 1)).unwrap();
+        append_transcript_segment(&conn, &meeting.id, &segment(&meeting.id, "p2", "Ok", None, 2)).unwrap();
+        // The paragraph grew after it was first saved: saving it again replaces it.
+        append_transcript_segment(&conn, &meeting.id, &segment(&meeting.id, "p1", "We ship on Friday", Some("S2"), 1)).unwrap();
+
+        let loaded = list_transcript_segments(&conn, &meeting.id).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!((loaded[0].text.as_str(), loaded[0].speaker_tag.as_deref()), ("We ship on Friday", Some("S2")));
+        assert_eq!(loaded[1].speaker_tag, None);
+        let json = get_meeting(&conn, &meeting.id).unwrap().transcript;
+        assert_eq!(json[0]["speaker_tag"], "S2");
+        assert!(json[1].get("speaker_tag").is_none(), "untagged lines omit the field");
+    }
+
+    #[test]
+    fn renaming_a_remote_tag_creates_its_speaker_row_once() {
+        let conn = db();
+        let meeting = create_meeting(&conn, "Sync").unwrap();
+        rename_speaker(&conn, &meeting.id, &remote_speaker_id("S1"), "Erin").unwrap();
+        rename_speaker(&conn, &meeting.id, &remote_speaker_id("S1"), "Erin K").unwrap();
+        // Other speakers are only renamed when they exist.
+        rename_speaker(&conn, &meeting.id, "speaker_3", "Nobody").unwrap();
+        let speakers = list_meeting_speakers(&conn, &meeting.id).unwrap();
+        assert_eq!(speakers.len(), 1);
+        assert_eq!(
+            (speakers[0].speaker_id.as_str(), speakers[0].display_name.as_str(), speakers[0].source.as_str()),
+            ("them:S1", "Erin K", "remote_tag")
+        );
+    }
+
+    #[test]
+    fn default_remote_speaker_names() {
+        assert_eq!(default_remote_speaker_name("S1"), "Speaker 1");
+        assert_eq!(default_remote_speaker_name("S12"), "Speaker 12");
+        assert_eq!(default_remote_speaker_name("X"), "X");
+    }
 }

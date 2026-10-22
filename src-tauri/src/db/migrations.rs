@@ -13,6 +13,7 @@ pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
     v5_recording_columns(conn)?;
     v6_translation_schema(conn)?;
     v7_meeting_chat(conn)?;
+    v8_segment_speaker_tag(conn)?;
 
     log::info!("Database migrations completed successfully");
     Ok(())
@@ -248,6 +249,16 @@ fn v7_meeting_chat(conn: &Connection) -> Result<(), rusqlite::Error> {
         ",
     )?;
     Ok(())
+}
+
+/// Schema v8: diarization speaker tag ("S1", "S2"...) of remote-party
+/// transcript lines; NULL for untagged lines.
+fn v8_segment_speaker_tag(conn: &Connection) -> Result<(), rusqlite::Error> {
+    match conn.execute("ALTER TABLE transcript_segments ADD COLUMN speaker_tag TEXT", []) {
+        Ok(_) => Ok(()),
+        Err(e) if e.to_string().contains("duplicate column name") => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 /// Schema v3: In-person meeting mode — meeting metadata, speakers, bookmarks,
