@@ -26,14 +26,22 @@ export const useTranscriptStore = create<TranscriptState>((set) => ({
       segments: [...state.segments, segment],
     })),
 
+  // Upsert by id: a final with an existing id (a line that grew) replaces it.
+  // An interim extending a line that is already final only adds the interim
+  // words as `pending_text`: the line keeps its final text, so it stays final
+  // for the AI and persistence while the speaker keeps talking.
   updateInterimSegment: (segment) =>
     set((state) => {
       const existing = state.segments.findIndex(
         (s) => s.id === segment.id
       );
       if (existing >= 0) {
+        const current = state.segments[existing];
         const updated = [...state.segments];
-        updated[existing] = segment;
+        updated[existing] =
+          current.is_final && !segment.is_final
+            ? { ...current, pending_text: segment.text }
+            : segment;
         return { segments: updated };
       }
       return { segments: [...state.segments, segment] };
@@ -42,7 +50,11 @@ export const useTranscriptStore = create<TranscriptState>((set) => ({
   finalizeAllInterim: () =>
     set((state) => ({
       segments: state.segments.map((s) =>
-        s.is_final ? s : { ...s, is_final: true }
+        s.is_final
+          ? s.pending_text === undefined
+            ? s
+            : { ...s, text: s.pending_text, pending_text: undefined }
+          : { ...s, is_final: true }
       ),
     })),
 

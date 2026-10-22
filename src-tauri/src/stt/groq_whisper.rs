@@ -515,6 +515,8 @@ impl STTProvider for GroqWhisperSTT {
                                 speaker: None,
                                 language: None,
                                 segment_id: Some(utt_id.clone()),
+                                duration_ms: None,
+                                speaker_tag: None,
                             })
                             .await;
                     }
@@ -530,6 +532,8 @@ impl STTProvider for GroqWhisperSTT {
                                     speaker: None,
                                     language: None,
                                     segment_id: Some(utt_id.clone()),
+                                    duration_ms: None,
+                                    speaker_tag: None,
                                 })
                                 .await;
                             utt_text.clear();
@@ -558,6 +562,8 @@ impl STTProvider for GroqWhisperSTT {
                         speaker: None,
                         language: None,
                         segment_id: Some(utt_id),
+                        duration_ms: None,
+                        speaker_tag: None,
                     })
                     .await;
             }

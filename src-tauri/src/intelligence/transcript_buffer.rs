@@ -2,6 +2,9 @@
 
 use std::collections::VecDeque;
 
+/// How many recent segments are checked for a paragraph being pushed again.
+const GROWN_LOOKBACK: usize = 16;
+
 /// A single transcript segment stored in the buffer.
 #[derive(Debug, Clone)]
 pub struct BufferSegment {
@@ -37,6 +40,17 @@ impl TranscriptBuffer {
         timestamp_ms: u64,
         is_final: bool,
     ) {
+        // A paragraph that grew is pushed again as a final with the same
+        // speaker and start time: replace it instead of keeping both copies.
+        if is_final {
+            if let Some(existing) = self.segments.iter_mut().rev().take(GROWN_LOOKBACK).find(|s| {
+                s.is_final && s.timestamp_ms == timestamp_ms && s.speaker == speaker
+            }) {
+                existing.text = text;
+                return;
+            }
+        }
+
         let segment = BufferSegment {
             text,
             speaker,
@@ -135,5 +149,23 @@ impl TranscriptBuffer {
                 break;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_grown_paragraph_replaces_its_earlier_copy() {
+        let mut buf = TranscriptBuffer::new();
+        buf.push_segment("We ship".into(), "Them".into(), 1_000, true);
+        buf.push_segment("Sure".into(), "User".into(), 2_000, true);
+        buf.push_segment("We ship on Friday".into(), "Them".into(), 1_000, true);
+        assert_eq!(buf.len(), 2);
+        assert_eq!(buf.get_all_text(), "[Unknown]: We ship on Friday\n[You]: Sure");
+        // Another speaker's line at the same time is its own segment.
+        buf.push_segment("Hm".into(), "User".into(), 1_000, true);
+        assert_eq!(buf.len(), 3);
     }
 }

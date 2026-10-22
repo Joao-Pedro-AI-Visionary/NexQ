@@ -12,6 +12,20 @@ export const SPEAKER_COLORS = [
   "#6366f1", // indigo
 ] as const;
 
+// People on the other side of an online call (remote speaker tags). Muted,
+// warm-leaning tones that stay apart from "you" green and read as siblings
+// of "them" orange: one per person, never decorative.
+export const REMOTE_SPEAKER_COLORS = [
+  "#f2a46b", // apricot
+  "#86b7dc", // sky
+  "#d8b46a", // sand
+  "#c39be0", // lavender
+  "#e3909f", // rose
+  "#7fc4b8", // sea glass
+  "#d79c80", // clay
+  "#9ea9e6", // periwinkle
+] as const;
+
 export const FIXED_SPEAKER_COLORS: Record<string, string> = {
   you: "#22c55e",
   them: "#f97316",

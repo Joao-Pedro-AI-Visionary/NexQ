@@ -202,7 +202,7 @@ const DEEPGRAM_PRESETS: DeepgramPreset[] = [
     description: "Balanced settings for most meetings",
     config: {
       model: "nova-3", smart_format: false, interim_results: true,
-      endpointing: 300, punctuate: true, diarize: false,
+      endpointing: 300, punctuate: true, diarize: true,
       profanity_filter: false, numerals: false, dictation: false,
       vad_events: true, keyterms: [],
     },
@@ -224,7 +224,7 @@ const DEEPGRAM_PRESETS: DeepgramPreset[] = [
     description: "Best transcript quality, smart formatting",
     config: {
       model: "nova-3", smart_format: true, interim_results: true,
-      endpointing: 500, punctuate: true, diarize: false,
+      endpointing: 500, punctuate: true, diarize: true,
       profanity_filter: false, numerals: true, dictation: false,
       vad_events: true, keyterms: [],
     },
@@ -1146,9 +1146,9 @@ function DeepgramAdvancedSettings() {
           {/* Advanced Feature Toggles */}
           <div className="px-5 py-3 border-b border-border/20 space-y-2">
             <DeepgramToggle
-              label="Diarization"
+              label="Tell remote speakers apart"
               param="diarize"
-              description="Detect and label different speakers in the transcript"
+              description="Labels each person on the other side of the call (Speaker 1, 2…). Never applied to your mic."
               checked={deepgramConfig.diarize}
               onChange={(v) => updateField("diarize", v)}
             />

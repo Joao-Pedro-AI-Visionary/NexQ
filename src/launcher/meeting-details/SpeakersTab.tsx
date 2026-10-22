@@ -215,7 +215,7 @@ export function SpeakersTab({ meeting, onSegmentClick }: SpeakersTabProps) {
     const synthetic = meeting.transcript.length > 0
       ? syntheticSpeakersFromTranscript(meeting)
       : [];
-    if (synthetic.length === 0) return meeting.speakers ?? [];
+    if (synthetic.length === 0) return (meeting.speakers ?? []).filter((s) => s.source !== "remote_tag");
     if (meeting.speakers && meeting.speakers.length > 0) {
       const storedMap = new Map(meeting.speakers.map(s => [s.id, s]));
       return synthetic.map(s => {

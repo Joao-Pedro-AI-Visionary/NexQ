@@ -5,6 +5,7 @@
 import type { Meeting, TranscriptSegment, AIScenario, SpeakerIdentity } from "./types";
 import { formatTimestamp, formatDurationLong, getSpeakerLabel, getModeLabel } from "./utils";
 import { showToast } from "../stores/toastStore";
+import { defaultRemoteSpeakerName, remoteKeyOf } from "./speakerLabels";
 
 /** Strip LLM thinking tags from text (Qwen3, DeepSeek, etc.) */
 function stripThinkTags(text: string): string {
@@ -27,6 +28,10 @@ function resolveSpeaker(
   seg: TranscriptSegment,
   speakerMap: Map<string, SpeakerIdentity> | null
 ): string {
+  const remoteKey = remoteKeyOf(seg);
+  if (remoteKey && seg.speaker_tag) {
+    return speakerMap?.get(remoteKey)?.display_name ?? defaultRemoteSpeakerName(seg.speaker_tag);
+  }
   if (speakerMap && seg.speaker_id) {
     const s = speakerMap.get(seg.speaker_id);
     if (s) return s.display_name;

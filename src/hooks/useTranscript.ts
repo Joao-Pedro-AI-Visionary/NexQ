@@ -28,16 +28,23 @@ function devLog(msg: string) {
  * - Update speaker stats on final segments
  * - Return enriched segment with speaker_id set, or null to discard
  */
-function processSpeaker(segment: TranscriptSegment): TranscriptSegment | null {
-  const speakerStore = useSpeakerStore.getState();
+/** Words already counted in speaker stats, per final segment id. */
+const countedWords = new Map<string, number>();
 
-  // Check audio mode
-  let isInPerson = false;
+function currentIsInPerson(): boolean {
   try {
     if (_meetingStoreRef) {
-      isInPerson = _meetingStoreRef.useMeetingStore.getState().audioMode === "in_person";
+      return _meetingStoreRef.useMeetingStore.getState().audioMode === "in_person";
     }
   } catch { /* fallback to online mode */ }
+  return false;
+}
+
+export function processSpeaker(
+  segment: TranscriptSegment,
+  isInPerson: boolean = currentIsInPerson()
+): TranscriptSegment | null {
+  const speakerStore = useSpeakerStore.getState();
 
   // In in-person mode, discard "User" segments — the room mic captures everyone,
   // so mic/Web Speech transcription is redundant and confusing.
@@ -47,10 +54,19 @@ function processSpeaker(segment: TranscriptSegment): TranscriptSegment | null {
 
   let speakerId: string;
 
-  if (segment.speaker_id) {
+  if (!isInPerson) {
+    // Online: the parties are fixed You / Them. A diarized remote line keeps
+    // "them" (stats, filters, question detection) and is told apart by its
+    // speaker_tag, tracked as the remote speaker `them:<tag>`; the raw
+    // diarized speaker_id ("speaker_0") is not used here.
+    speakerId = segment.speaker === "User" ? "you" : "them";
+    if (speakerId === "them" && segment.speaker_tag) {
+      speakerStore.ensureRemoteSpeaker(segment.speaker_tag);
+    }
+  } else if (segment.speaker_id) {
     // Diarized segment from Deepgram — use the speaker_id directly
     speakerId = segment.speaker_id;
-  } else if (isInPerson) {
+  } else {
     // In-person mode interim without diarization data
     const diarizationEnabled = useConfigStore.getState().diarizationEnabled;
     if (diarizationEnabled) {
@@ -60,8 +76,6 @@ function processSpeaker(segment: TranscriptSegment): TranscriptSegment | null {
       // No diarization: everything is "room"
       speakerId = "room";
     }
-  } else {
-    speakerId = segment.speaker === "User" ? "you" : "them";
   }
 
   // Debug: log speaker assignment for final segments
@@ -77,8 +91,16 @@ function processSpeaker(segment: TranscriptSegment): TranscriptSegment | null {
       speakerStore.addSpeaker(speakerId);
     }
     if (segment.is_final) {
+      // A line that grows is re-sent as a final under the same id: count
+      // only its new words, and the line once.
       const wordCount = segment.text.split(/\s+/).filter(Boolean).length;
-      speakerStore.updateStats(speakerId, wordCount, 0);
+      const counted = countedWords.get(segment.id);
+      countedWords.set(segment.id, wordCount);
+      if (counted === undefined) {
+        speakerStore.updateStats(speakerId, wordCount, 0);
+      } else if (wordCount > counted) {
+        speakerStore.updateStats(speakerId, wordCount - counted, 0, false);
+      }
     }
   }
 

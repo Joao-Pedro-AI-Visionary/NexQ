@@ -154,6 +154,8 @@ impl WhisperApiSTT {
                                         speaker: None,
                                         language: Some(language.to_string()),
                                         segment_id: None,
+                                        duration_ms: None,
+                                        speaker_tag: None,
                                     };
                                     let _ = result_tx.send(result).await;
                                 }
@@ -260,6 +262,8 @@ impl STTProvider for WhisperApiSTT {
                     speaker: None,
                     language: Some(self.language.clone()),
                     segment_id: None,
+                    duration_ms: None,
+                    speaker_tag: None,
                 };
                 let _ = tx.send(interim).await;
 

@@ -14,6 +14,7 @@ import { useBookmarkStore } from "../stores/bookmarkStore";
 import { useTranslationStore } from "../stores/translationStore";
 import { TranscriptContextMenu } from "./TranscriptContextMenu";
 import { showBookmarkToast } from "./BookmarkToast";
+import { defaultRemoteSpeakerName, remoteKeyOf, remoteSpeakerColor } from "../lib/speakerLabels";
 
 // Module-level singleton: ensures only one hover tooltip is visible at a time.
 // When a new line is hovered, it dismisses the previous tooltip first.
@@ -63,15 +64,24 @@ export function TranscriptLine({ segment, searchQuery }: TranscriptLineProps) {
   const isTranslating = translating.has(segment.id);
 
   // Resolve speaker ID — prefer explicit speaker_id, fall back to speaker field
-  const speakerId = segment.speaker_id ?? (segment.speaker === "User" ? "you" : "them");
-  const isPending = speakerId === "__pending";
+  const baseSpeakerId = segment.speaker_id ?? (segment.speaker === "User" ? "you" : "them");
+  const isPending = baseSpeakerId === "__pending";
+  // A tagged line from the other side of an online call shows its person
+  // ("Speaker 2", or the name given), not the shared "Them".
+  const remoteKey = remoteKeyOf({ ...segment, speaker_id: baseSpeakerId });
+  const speakerId = remoteKey ?? baseSpeakerId;
 
   // Reactive: select the actual speaker object — triggers re-render on rename/merge
   const speaker = useSpeakerStore((s) => isPending ? undefined : s.speakers[speakerId]);
   const renameSpeaker = useSpeakerStore((s) => s.renameSpeaker);
+  const ensureRemoteSpeaker = useSpeakerStore((s) => s.ensureRemoteSpeaker);
 
-  const speakerLabel = isPending ? "..." : (speaker?.display_name ?? speakerId);
-  const speakerHex = isPending ? "#6b7280" : (speaker?.color ?? "#6b7280");
+  const speakerLabel = isPending
+    ? "..."
+    : (speaker?.display_name ?? (remoteKey && segment.speaker_tag ? defaultRemoteSpeakerName(segment.speaker_tag) : speakerId));
+  const speakerHex = isPending
+    ? "#6b7280"
+    : (speaker?.color ?? (remoteKey && segment.speaker_tag ? remoteSpeakerColor(segment.speaker_tag) : "#6b7280"));
 
   // Convert epoch timestamp to elapsed time since meeting start
   const elapsedMs = meetingStartTime
@@ -102,6 +112,7 @@ export function TranscriptLine({ segment, searchQuery }: TranscriptLineProps) {
   const commitRename = () => {
     const trimmed = editName.trim();
     if (trimmed && trimmed !== speakerLabel) {
+      if (remoteKey && segment.speaker_tag) ensureRemoteSpeaker(segment.speaker_tag);
       renameSpeaker(speakerId, trimmed);
     }
     setIsEditing(false);
@@ -144,6 +155,13 @@ export function TranscriptLine({ segment, searchQuery }: TranscriptLineProps) {
     confidenceHighlightEnabled &&
     segment.confidence > 0 &&
     segment.confidence < confidenceThreshold;
+
+  // Words still being recognized at the end of a final line (interim),
+  // shown dimmed after its final text.
+  const pendingTail =
+    segment.pending_text && segment.pending_text.startsWith(segment.text)
+      ? segment.pending_text.slice(segment.text.length)
+      : null;
 
   // Highlight search matches in text
   const renderText = () => {
@@ -294,6 +312,11 @@ export function TranscriptLine({ segment, searchQuery }: TranscriptLineProps) {
           }
         >
           {renderText()}
+          {pendingTail && (
+            <span className="italic" style={{ opacity: 0.45 }}>
+              {pendingTail}
+            </span>
+          )}
         </span>
 
         {/* Inline translation — visible below the original text */}

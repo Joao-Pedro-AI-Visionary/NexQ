@@ -253,6 +253,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
 
       // 4. Set meeting state
       const now = Date.now();
+      (await import("../lib/transcriptPersistence")).resetSavedSegments();
       set({
         activeMeeting: meeting,
         isRecording: true,
@@ -302,15 +303,18 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
     if (mutedThem) configStore.getState().toggleMuteThem();
 
     // 3. Flush all remaining transcript segments to DB before ending
+    // (and lines that grew since they were saved)
     if (meeting) {
       const segments = useTranscriptStore.getState().segments;
       const lastIdx = get().lastPersistedIndex;
-      const unpersisted = segments.slice(lastIdx).filter((s) => s.is_final);
+      const { segmentsToSave, segmentForSave, markSegmentSaved } = await import("../lib/transcriptPersistence");
+      const { toSave: unpersisted } = segmentsToSave(segments, lastIdx, { all: true });
 
       for (const seg of unpersisted) {
         try {
           const { appendTranscriptSegment } = await import("../lib/ipc");
-          await appendTranscriptSegment(meeting.id, JSON.stringify(seg));
+          await appendTranscriptSegment(meeting.id, segmentForSave(seg));
+          markSegmentSaved(seg);
         } catch (err) {
           console.error("[meetingStore] Failed to persist segment:", err);
           break;
@@ -397,7 +401,9 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
     if (meeting && shouldPersistOverlayData(windowLabel, overlayActive)) {
       try {
         const { useSpeakerStore } = await import("./speakerStore");
-        const speakers = useSpeakerStore.getState().getAllSpeakers();
+        // Remote speaker tags too, so their names (e.g. "Erin") persist.
+        const speakerState = useSpeakerStore.getState();
+        const speakers = [...speakerState.getAllSpeakers(), ...speakerState.getRemoteSpeakers()];
         if (speakers.length > 0) {
           const { saveMeetingSpeakers } = await import("../lib/ipc");
           const transformed = speakers.map((s) => ({

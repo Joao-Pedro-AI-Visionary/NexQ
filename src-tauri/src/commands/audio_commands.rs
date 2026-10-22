@@ -9,7 +9,30 @@ use crate::audio::session_monitor;
 use crate::audio::vad::{calculate_peak, calculate_rms, VoiceActivityDetector};
 use crate::audio::{AudioCaptureManager, AudioLevel, AudioSource};
 use crate::stt::provider::STTProvider;
+use crate::stt::segment_accumulator::AccumulatorOutput;
 use crate::state::AppState;
+
+/// The `segment` of a `transcript_update` / `transcript_final` payload for an
+/// accumulator output, under `id` and labelled `speaker`. A diarized line
+/// also carries `speaker_tag` ("S1") and, for in-person mode, the matching
+/// `speaker_id` ("speaker_0").
+fn accumulator_segment_json(id: &str, speaker: &str, output: &AccumulatorOutput) -> serde_json::Value {
+    let mut seg = serde_json::json!({
+        "id": id,
+        "text": output.text,
+        "speaker": speaker,
+        "timestamp_ms": output.timestamp_ms,
+        "is_final": output.is_final,
+        "confidence": output.confidence
+    });
+    if let Some(ref tag) = output.speaker_tag {
+        seg["speaker_tag"] = serde_json::json!(tag);
+        if let Some(speaker_id) = crate::stt::provider::diarized_speaker_id(tag) {
+            seg["speaker_id"] = serde_json::json!(speaker_id);
+        }
+    }
+    seg
+}
 
 /// List all available audio input and output devices.
 #[command]
@@ -175,14 +198,7 @@ pub async fn start_capture(
                         "transcript_update"
                     };
                     let payload = serde_json::json!({
-                        "segment": {
-                            "id": output.id,
-                            "text": output.text,
-                            "speaker": output.speaker,
-                            "timestamp_ms": output.timestamp_ms,
-                            "is_final": output.is_final,
-                            "confidence": output.confidence
-                        }
+                        "segment": accumulator_segment_json(&output.id, &output.speaker, &output)
                     });
                     let _ = stt_app.emit(event_name, &payload);
 
@@ -1145,23 +1161,7 @@ pub async fn start_capture_per_party(
                     };
                     // Namespace IDs to avoid collision with "You" accumulator
                     let seg_id = format!("them_{}_{}", prefix, output.id);
-                    // Extract diarized speaker_id from accumulator output
-                    let speaker_id_val = if output.speaker.starts_with("speaker_") {
-                        Some(output.speaker.clone())
-                    } else {
-                        None
-                    };
-                    let mut seg = serde_json::json!({
-                        "id": seg_id,
-                        "text": output.text,
-                        "speaker": "Them",
-                        "timestamp_ms": output.timestamp_ms,
-                        "is_final": output.is_final,
-                        "confidence": output.confidence
-                    });
-                    if let Some(ref sid) = speaker_id_val {
-                        seg["speaker_id"] = serde_json::json!(sid);
-                    }
+                    let seg = accumulator_segment_json(&seg_id, "Them", &output);
                     let payload = serde_json::json!({ "segment": seg });
                     let _ = stt_app.emit(event_name, &payload);
 
@@ -1184,22 +1184,7 @@ pub async fn start_capture_per_party(
             // Flush remaining accumulated segment on meeting end
             if let Some(output) = accumulator.flush() {
                 let seg_id = format!("them_{}_{}", prefix, output.id);
-                let speaker_id_val = if output.speaker.starts_with("speaker_") {
-                    Some(output.speaker.clone())
-                } else {
-                    None
-                };
-                let mut seg = serde_json::json!({
-                    "id": seg_id,
-                    "text": output.text,
-                    "speaker": "Them",
-                    "timestamp_ms": output.timestamp_ms,
-                    "is_final": output.is_final,
-                    "confidence": output.confidence
-                });
-                if let Some(ref sid) = speaker_id_val {
-                    seg["speaker_id"] = serde_json::json!(sid);
-                }
+                let seg = accumulator_segment_json(&seg_id, "Them", &output);
                 let payload = serde_json::json!({ "segment": seg });
                 let _ = stt_app.emit("transcript_final", &payload);
 

@@ -24,7 +24,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use crate::audio::AudioChunk;
-use crate::stt::provider::{STTProviderType, STTProvider, TranscriptResult};
+use crate::stt::provider::{diarized_speaker_id, STTProviderType, STTProvider, TranscriptResult};
 
 /// All configurable Deepgram streaming parameters.
 /// Serialized to/from JSON for the IPC boundary.
@@ -41,7 +41,7 @@ pub struct DeepgramConfig {
     pub endpointing: Option<u32>,
     /// Add punctuation and capitalization
     pub punctuate: bool,
-    /// Detect speaker changes (diarization)
+    /// Tell remote speakers apart (diarization; never on the "You" mic)
     pub diarize: bool,
     /// Remove profanity from transcript
     pub profanity_filter: bool,
@@ -63,7 +63,7 @@ impl Default for DeepgramConfig {
             interim_results: true,
             endpointing: Some(300),
             punctuate: true,
-            diarize: false,
+            diarize: true,
             profanity_filter: false,
             numerals: false,
             dictation: false,
@@ -182,6 +182,12 @@ impl DeepgramSTT {
         self.app_handle = Some(handle);
     }
 
+    /// Diarization runs only on the remote party / room audio: the "You" mic
+    /// is one person, so diarizing it would be billed for nothing.
+    fn diarize_active(&self) -> bool {
+        self.config.diarize && self.party != "You"
+    }
+
     /// Build the Deepgram WebSocket URL from the current config.
     fn build_ws_url(&self) -> String {
         let mut params = vec![
@@ -205,7 +211,7 @@ impl DeepgramSTT {
         if self.config.punctuate {
             params.push("punctuate=true".to_string());
         }
-        if self.config.diarize {
+        if self.diarize_active() {
             params.push("diarize=true".to_string());
         }
         if self.config.profanity_filter {
@@ -320,30 +326,15 @@ impl DeepgramSTT {
         let is_final = response.is_final.unwrap_or(false);
         let confidence = alt.confidence as f32;
 
-        // Extract speaker from diarization word data if available.
-        // Use the most frequent speaker ID across words as the segment speaker.
-        let diarized_speaker = if !alt.words.is_empty() {
-            let mut speaker_counts: std::collections::HashMap<u32, usize> =
-                std::collections::HashMap::new();
-            for w in &alt.words {
-                if let Some(sid) = w.speaker {
-                    *speaker_counts.entry(sid).or_insert(0) += 1;
-                }
-            }
-            speaker_counts
-                .into_iter()
-                .max_by_key(|&(_, count)| count)
-                .map(|(sid, _)| format!("speaker_{}", sid))
-        } else {
-            None
-        };
-
-        let final_speaker = diarized_speaker.unwrap_or_else(|| speaker.to_string());
+        // Diarization: the segment's speaker tag is the most frequent speaker
+        // ID across its words ("S1" for speaker 0). The speaker stays the
+        // party label, so routing, filters and question detection are unchanged.
+        let speaker_tag = dominant_speaker(&alt.words).map(|sid| format!("S{}", sid + 1));
 
         if is_final {
             log::debug!(
-                "DeepgramSTT: party={} final_speaker={} text={:?}",
-                speaker, final_speaker, &text[..text.len().min(40)]
+                "DeepgramSTT: party={} tag={:?} text={:?}",
+                speaker, speaker_tag, &text[..text.len().min(40)]
             );
         }
 
@@ -367,9 +358,11 @@ impl DeepgramSTT {
             is_final,
             confidence,
             timestamp_ms,
-            speaker: Some(final_speaker),
+            speaker: Some(speaker.to_string()),
             language: None,
             segment_id: None,
+            duration_ms: response.duration.map(|d| (d.max(0.0) * 1000.0).round() as u64),
+            speaker_tag,
         })
     }
 
@@ -403,9 +396,11 @@ impl DeepgramSTT {
                             Self::parse_response(&text, &speaker, start_time)
                         {
                             // Emit speaker_detected for new diarization speaker IDs
+                            // (in-person mode adds them as speakers; online mode
+                            // ignores the event and labels lines by tag instead).
                             if diarize_enabled {
-                                if let Some(ref spk) = result.speaker {
-                                    if spk.starts_with("speaker_") && !seen_speakers.contains(spk) {
+                                if let Some(ref spk) = result.speaker_tag.as_deref().and_then(diarized_speaker_id) {
+                                    if !seen_speakers.contains(spk) {
                                         seen_speakers.insert(spk.clone());
                                         if let Some(ref handle) = app_handle {
                                             let payload = serde_json::json!({
@@ -618,7 +613,7 @@ impl STTProvider for DeepgramSTT {
             start_time,
             Arc::clone(&self.connection_state),
             self.app_handle.clone(),
-            self.config.diarize,
+            self.diarize_active(),
         );
 
         Self::spawn_writer_task(
@@ -770,6 +765,16 @@ impl STTProvider for DeepgramSTT {
     }
 }
 
+/// The speaker ID most words carry (ties go to the lower ID), if any word has one.
+fn dominant_speaker(words: &[DeepgramWord]) -> Option<u32> {
+    let mut counts: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
+    for sid in words.iter().filter_map(|w| w.speaker) {
+        *counts.entry(sid).or_insert(0) += 1;
+    }
+    let best = counts.values().copied().max()?;
+    counts.into_iter().find(|&(_, count)| count == best).map(|(sid, _)| sid)
+}
+
 fn normalize_deepgram_language(language: &str) -> String {
     let trimmed = language.trim();
     if trimmed.is_empty() {
@@ -789,4 +794,65 @@ pub fn estimate_cost(duration_minutes: f32, streams: u32) -> (f32, f32) {
     let rate_per_min = 0.0043_f32;
     let cost = duration_minutes * rate_per_min * streams as f32;
     (cost, rate_per_min)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn results_json(start: f64, duration: f64, speakers: &[u32]) -> String {
+        let words: Vec<serde_json::Value> = speakers
+            .iter()
+            .map(|sid| serde_json::json!({"word": "w", "speaker": sid}))
+            .collect();
+        serde_json::json!({
+            "type": "Results",
+            "is_final": true,
+            "start": start,
+            "duration": duration,
+            "channel": {"alternatives": [{"transcript": " hello world ", "confidence": 0.98, "words": words}]}
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn parse_reads_duration_and_dominant_speaker_tag() {
+        let r = DeepgramSTT::parse_response(&results_json(1.5, 4.23, &[1, 0, 1]), "Them", Instant::now()).unwrap();
+        assert_eq!(r.text, "hello world");
+        assert!(r.is_final);
+        assert_eq!(r.duration_ms, Some(4_230));
+        assert_eq!(r.speaker.as_deref(), Some("Them"), "speaker stays the party label");
+        assert_eq!(r.speaker_tag.as_deref(), Some("S2"));
+    }
+
+    #[test]
+    fn parse_without_diarization_has_no_tag() {
+        let r = DeepgramSTT::parse_response(&results_json(0.0, 1.0, &[]), "Them", Instant::now()).unwrap();
+        assert_eq!(r.speaker_tag, None);
+        // Tie between speakers 0 and 3: the lower id wins (stable across calls).
+        let r = DeepgramSTT::parse_response(&results_json(0.0, 1.0, &[3, 0]), "Them", Instant::now()).unwrap();
+        assert_eq!(r.speaker_tag.as_deref(), Some("S1"));
+    }
+
+    #[test]
+    fn diarize_is_requested_only_off_the_you_mic() {
+        assert!(DeepgramConfig::default().diarize, "on by default");
+        let mut them = DeepgramSTT::new();
+        them.set_party("Them");
+        assert!(them.build_ws_url().contains("diarize=true"));
+        let mut you = DeepgramSTT::new();
+        you.set_party("You");
+        assert!(!you.build_ws_url().contains("diarize"));
+        let mut off = DeepgramSTT::new();
+        off.set_config(DeepgramConfig { diarize: false, ..DeepgramConfig::default() });
+        assert!(!off.build_ws_url().contains("diarize"));
+    }
+
+    #[test]
+    fn diarized_speaker_id_maps_tags() {
+        assert_eq!(diarized_speaker_id("S1").as_deref(), Some("speaker_0"));
+        assert_eq!(diarized_speaker_id("S12").as_deref(), Some("speaker_11"));
+        assert_eq!(diarized_speaker_id("S0"), None);
+        assert_eq!(diarized_speaker_id("x"), None);
+    }
 }

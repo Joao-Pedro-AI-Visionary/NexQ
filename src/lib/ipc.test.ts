@@ -35,6 +35,27 @@ describe("generateAssist", () => {
     ]);
   });
 
+  it("labels diarized remote lines with their person's name for the AI", async () => {
+    const { useSpeakerStore } = await import("../stores/speakerStore");
+    useSpeakerStore.getState().initForOnline();
+    useSpeakerStore.getState().ensureRemoteSpeaker("S1");
+    useSpeakerStore.getState().ensureRemoteSpeaker("S2");
+    useSpeakerStore.getState().renameSpeaker("them:S1", "Erin");
+    useTranscriptStore.setState({
+      segments: [
+        { id: "a", text: "We ship", speaker: "Them", speaker_id: "them", speaker_tag: "S1", timestamp_ms: 1, is_final: true },
+        { id: "b", text: "Agreed", speaker: "Them", speaker_id: "them", speaker_tag: "S2", timestamp_ms: 2, is_final: true },
+        { id: "c", text: "Great", speaker: "User", speaker_id: "you", timestamp_ms: 3, is_final: true },
+        { id: "d", text: "Plain", speaker: "Them", speaker_id: "them", timestamp_ms: 4, is_final: true },
+      ],
+    } as never);
+
+    await generateAssist("Assist");
+
+    const sent = JSON.parse(invoke.mock.calls[0][1].transcriptSegments);
+    expect(sent.map((s: { speaker: string }) => s.speaker)).toEqual(["Erin", "Speaker 2", "User", "Them"]);
+  });
+
   it("uses the caller's request id and transcript segments", async () => {
     const segments = [{ id: "s1", text: "past", speaker: "You", timestamp_ms: 5 }];
 

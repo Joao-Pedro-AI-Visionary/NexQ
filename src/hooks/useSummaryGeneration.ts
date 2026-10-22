@@ -6,6 +6,7 @@ import {
   onStreamError,
 } from "../lib/events";
 import { generateAssist, updateMeetingSummary } from "../lib/ipc";
+import { assistSegments } from "../lib/assistSegments";
 import { useMeetingStore, pastMeetingIdFor } from "../stores/meetingStore";
 import type { Meeting } from "../lib/types";
 
@@ -101,14 +102,12 @@ export function useSummaryGeneration(
       unlistenersRef.current.push(...cleanups);
 
       // Pass the meeting's transcript directly to bypass empty transcriptStore
-      const segments = meeting.transcript
-        .filter((s) => s.is_final)
-        .map((s) => ({
-          id: s.id,
-          text: s.text,
-          speaker: s.speaker,
-          timestamp_ms: s.timestamp_ms,
-        }));
+      // (diarized lines labelled with their person's name)
+      const segments = assistSegments(
+        meeting.transcript.filter((s) => s.is_final),
+        false,
+        meeting.speakers
+      );
 
       await generateAssist("MeetingSummary", undefined, {
         requestId,

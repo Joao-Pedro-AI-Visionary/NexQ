@@ -73,6 +73,8 @@ struct TranscriptSegmentPayload {
     speaker: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     speaker_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    speaker_tag: Option<String>,
     timestamp_ms: u64,
     is_final: bool,
     confidence: f32,
@@ -274,21 +276,19 @@ impl STTRouter {
                     .clone()
                     .unwrap_or_else(|| "Unknown".to_string());
 
-                // Separate party label from diarized speaker ID.
-                // Deepgram sets speaker to "speaker_N" when diarization is active.
-                // Keep "speaker_N" as speaker_id; use party label ("Them"/"User") as speaker.
-                let (speaker, speaker_id) = if raw_speaker.starts_with("speaker_") {
-                    // Diarized: use "Them" as the party label, actual ID as speaker_id
-                    ("Them".to_string(), Some(raw_speaker))
-                } else {
-                    (raw_speaker, None)
-                };
+                // The speaker is the party label; a diarized line also carries
+                // its tag ("S1") and the in-person speaker id ("speaker_0").
+                let speaker_id = result
+                    .speaker_tag
+                    .as_deref()
+                    .and_then(provider::diarized_speaker_id);
 
                 let segment = TranscriptSegmentPayload {
                     id: format!("seg_{}", counter),
                     text: result.text.clone(),
-                    speaker,
+                    speaker: raw_speaker,
                     speaker_id,
+                    speaker_tag: result.speaker_tag.clone(),
                     timestamp_ms: result.timestamp_ms,
                     is_final: result.is_final,
                     confidence: result.confidence,

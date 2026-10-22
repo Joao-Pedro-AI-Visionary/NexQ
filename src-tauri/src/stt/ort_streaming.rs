@@ -858,6 +858,8 @@ fn inference_thread_main(
                             speaker: None,
                             language: Some(language.clone()),
                             segment_id: Some(seg_id),
+                            duration_ms: None,
+                            speaker_tag: None,
                         });
                     }
                 } else {
@@ -877,6 +879,8 @@ fn inference_thread_main(
                                 speaker: None,
                                 language: Some(language.clone()),
                                 segment_id: Some(seg_id),
+                                duration_ms: None,
+                                speaker_tag: None,
                             });
                         }
 
@@ -904,6 +908,8 @@ fn inference_thread_main(
                 speaker: None,
                 language: Some(language),
                 segment_id: Some(seg_id),
+                duration_ms: None,
+                speaker_tag: None,
             });
         }
     }

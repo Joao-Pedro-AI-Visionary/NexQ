@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { SpeakerIdentity, SpeakerStats, SpeakerSource } from "../lib/types";
 import { getSpeakerColor, FIXED_SPEAKER_COLORS } from "../lib/speakerColors";
+import { defaultRemoteSpeakerName, remoteSpeakerColor, remoteSpeakerId } from "../lib/speakerLabels";
 
 interface SpeakerState {
   speakers: Record<string, SpeakerIdentity>;
@@ -13,16 +14,25 @@ interface SpeakerState {
 
   // Mutations
   addSpeaker: (speakerId: string) => void;
+  /**
+   * Track a person on the other side of an online call (diarization tag
+   * "S1") as speaker `them:S1`, named "Speaker 1" until renamed. Kept out of
+   * the speaker order: "Them" stays the stats/filter speaker.
+   */
+  ensureRemoteSpeaker: (tag: string) => void;
   renameSpeaker: (speakerId: string, newName: string) => void;
   dismissNaming: () => void;
   mergeSpeaker: (fromId: string, intoId: string) => void;
-  updateStats: (speakerId: string, wordCount: number, durationMs: number) => void;
+  /** Add words / talk time; `newSegment` (default true) also counts a segment. */
+  updateStats: (speakerId: string, wordCount: number, durationMs: number, newSegment?: boolean) => void;
 
   // Getters
   getSpeaker: (speakerId: string) => SpeakerIdentity | undefined;
   getSpeakerColor: (speakerId: string) => string;
   getSpeakerDisplayName: (speakerId: string) => string;
   getAllSpeakers: () => SpeakerIdentity[];
+  /** People tracked by remote speaker tag (see `ensureRemoteSpeaker`). */
+  getRemoteSpeakers: () => SpeakerIdentity[];
 
   // Reset
   reset: () => void;
@@ -101,6 +111,13 @@ export const useSpeakerStore = create<SpeakerState>((set, get) => ({
     }));
   },
 
+  ensureRemoteSpeaker: (tag) => {
+    const id = remoteSpeakerId(tag);
+    if (id in get().speakers) return;
+    const speaker = makeSpeaker(id, defaultRemoteSpeakerName(tag), "remote_tag", remoteSpeakerColor(tag));
+    set((s) => ({ speakers: { ...s.speakers, [id]: speaker } }));
+  },
+
   renameSpeaker: (speakerId, newName) => {
     set((s) => {
       const existing = s.speakers[speakerId];
@@ -146,12 +163,12 @@ export const useSpeakerStore = create<SpeakerState>((set, get) => ({
     });
   },
 
-  updateStats: (speakerId, wordCount, durationMs) => {
+  updateStats: (speakerId, wordCount, durationMs, newSegment = true) => {
     set((s) => {
       const existing = s.speakers[speakerId];
       if (!existing) return s;
       const stats: SpeakerStats = {
-        segment_count: existing.stats.segment_count + 1,
+        segment_count: existing.stats.segment_count + (newSegment ? 1 : 0),
         word_count: existing.stats.word_count + wordCount,
         talk_time_ms: existing.stats.talk_time_ms + durationMs,
         last_spoke_ms: Date.now(),
@@ -187,6 +204,10 @@ export const useSpeakerStore = create<SpeakerState>((set, get) => ({
     return speakerOrder
       .filter((id) => id in speakers)
       .map((id) => speakers[id]);
+  },
+
+  getRemoteSpeakers: () => {
+    return Object.values(get().speakers).filter((s) => s.source === "remote_tag");
   },
 
   reset: () => {

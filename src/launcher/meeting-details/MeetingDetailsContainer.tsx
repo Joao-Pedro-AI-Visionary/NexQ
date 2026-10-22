@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import type { Meeting, MeetingBookmark, RecordingInfo, TranslationResult } from "../../lib/types";
-import { getMeeting, getRecordingInfo, getAllMeetingTranslations, translateSegments, startPastMeetingSession, closePastMeetingSession, cancelGeneration } from "../../lib/ipc";
+import { getMeeting, getRecordingInfo, getAllMeetingTranslations, translateSegments, startPastMeetingSession, closePastMeetingSession, cancelGeneration, renameSpeaker } from "../../lib/ipc";
+import { withSpeakerName } from "../../lib/speakerLabels";
+import { showToast } from "../../stores/toastStore";
 import { onTranscriptFinal, onRecordingReady, onTranslationResult, onTranslationError } from "../../lib/events";
 import { useMeetingStore } from "../../stores/meetingStore";
 import { useTranslationStore } from "../../stores/translationStore";
@@ -364,6 +366,17 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
     setMeeting((prev) => (prev ? { ...prev, bookmarks } : prev));
   }, []);
 
+  // Name a remote speaker (`them:S1`): every line with that tag follows, and
+  // the name is saved with the meeting (also used for its AI context).
+  const handleRenameSpeaker = useCallback((speakerKey: string, name: string) => {
+    setMeeting((prev) => (prev ? { ...prev, speakers: withSpeakerName(prev.speakers, speakerKey, name) } : prev));
+    if (isDemoActive) return;
+    renameSpeaker(meetingId, speakerKey, name).catch((err) => {
+      console.error("[MeetingDetails] Failed to save the speaker name:", err);
+      showToast("Couldn't save the speaker name", "error");
+    });
+  }, [meetingId, isDemoActive]);
+
   const handleScrollHandled = useCallback(() => setScrollToSegmentIndex(null), []);
 
   const handleToggleTranslationVisibility = useCallback(() => setTranslationsVisible((v) => !v), []);
@@ -439,6 +452,7 @@ export function MeetingDetails({ meetingId, onBack }: MeetingDetailsProps) {
             bookmarks={meeting.bookmarks}
             meetingId={meeting.id}
             onBookmarksChanged={handleBookmarksChanged}
+            onRenameSpeaker={handleRenameSpeaker}
             initialScrollToIndex={scrollToSegmentIndex}
             onScrollHandled={handleScrollHandled}
             translations={translations}

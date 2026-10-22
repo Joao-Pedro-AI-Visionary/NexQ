@@ -19,6 +19,21 @@ pub struct TranscriptResult {
     /// instead of generating one from a counter. Used by dual-pass whisper.cpp.
     #[serde(skip)]
     pub segment_id: Option<String>,
+    /// How long the recognized speech lasts (ms from `timestamp_ms`), when
+    /// the provider reports it (Deepgram). Used to measure pauses from the
+    /// end of a final rather than its start.
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+    /// Diarization tag of the dominant speaker ("S1", "S2"...), when the
+    /// provider separates speakers. `speaker` stays the party label.
+    #[serde(default)]
+    pub speaker_tag: Option<String>,
+}
+
+/// The in-person speaker id ("speaker_0") of a diarization tag ("S1").
+pub fn diarized_speaker_id(tag: &str) -> Option<String> {
+    let n: u32 = tag.strip_prefix('S')?.parse().ok()?;
+    Some(format!("speaker_{}", n.checked_sub(1)?))
 }
 
 /// Runtime configuration for whisper.cpp dual-pass transcription.
