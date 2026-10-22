@@ -477,8 +477,8 @@ function ModelSettings() {
   };
 
   const rows = [
-    { tier: "Fast", hint: "Live answers and quick actions", model: "fast_model", effort: "fast_effort" },
-    { tier: "Deep", hint: "Recaps and past meetings", model: "deep_model", effort: "deep_effort" },
+    { tier: "Fast", hint: "Live answers and quick actions", model: "fast_model", effort: "fast_effort", thinking: "fast_thinking" },
+    { tier: "Deep", hint: "Recaps and past meetings", model: "deep_model", effort: "deep_effort", thinking: "deep_thinking" },
   ] as const;
 
   return (
@@ -541,6 +541,11 @@ function ModelSettings() {
                   )}
                 </select>
                 {unavailable && <p className="mt-1 text-meta text-warning">No longer available</p>}
+                <ThinkingToggle
+                  tier={row.tier}
+                  checked={config[row.thinking]}
+                  onChange={(on) => update({ [row.thinking]: on })}
+                />
               </div>
               <select
                 aria-label={`${row.tier} effort`}
@@ -564,6 +569,36 @@ function ModelSettings() {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+/** Per-tier extended thinking: off answers fastest, on reasons more first. */
+function ThinkingToggle({ tier, checked, onChange }: { tier: string; checked: boolean; onChange: (on: boolean) => void }) {
+  const hintId = `claude-thinking-hint-${tier.toLowerCase()}`;
+  return (
+    <div className="mt-2 flex items-center gap-2.5">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={`${tier} extended thinking`}
+        aria-describedby={hintId}
+        onClick={() => onChange(!checked)}
+        className={`relative h-4 w-7 shrink-0 cursor-pointer rounded-full transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 ${
+          checked ? "bg-primary" : "bg-muted"
+        }`}
+      >
+        <span
+          className={`absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-white shadow-sm transition-transform duration-200 ${
+            checked ? "translate-x-3" : "translate-x-0"
+          }`}
+        />
+      </button>
+      <span className="text-xs text-foreground">Extended thinking</span>
+      <span id={hintId} className="truncate text-meta text-muted-foreground/70">
+        Off: fastest replies · On: deeper reasoning, slower
+      </span>
     </div>
   );
 }

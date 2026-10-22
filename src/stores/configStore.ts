@@ -48,6 +48,8 @@ export const DEFAULT_CLAUDE_CLI_CONFIG: ClaudeCliConfig = {
   fast_effort: "low",
   deep_model: "sonnet",
   deep_effort: "medium",
+  fast_thinking: false,
+  deep_thinking: true,
   fallback_provider: null,
   fallback_model: null,
 };

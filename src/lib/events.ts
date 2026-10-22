@@ -16,6 +16,7 @@ import type {
   StreamErrorEvent,
   StreamSourcesEvent,
   StreamStartEvent,
+  StreamThinkingEvent,
   StreamTokenEvent,
   TranscriptIndexedEvent,
   TranscriptUpdateEvent,
@@ -68,6 +69,15 @@ export function onStreamEnd(
   handler: (event: StreamEndEvent) => void
 ): Promise<UnlistenFn> {
   return listen<StreamEndEvent>("llm_stream_end", (e) => handler(e.payload));
+}
+
+/** The model started thinking before its first words (once per request). */
+export function onStreamThinking(
+  handler: (event: StreamThinkingEvent) => void
+): Promise<UnlistenFn> {
+  return listen<StreamThinkingEvent>("llm_stream_thinking", (e) =>
+    handler(e.payload)
+  );
 }
 
 export function onStreamSources(
