@@ -31,14 +31,22 @@ export function formatShortcut(accelerator: string, mac = isMacPlatform()): stri
 
 /**
  * The accelerator for a pressed key combination, or null for a lone modifier
- * or a combination without Ctrl/Cmd/Alt (global shortcuts need one).
- * Ctrl on Windows and Cmd on macOS both become "CmdOrCtrl".
+ * or a combination without a modifier (global shortcuts need one). The
+ * platform's primary modifier (Cmd on macOS, Ctrl elsewhere) becomes
+ * "CmdOrCtrl"; the other one is kept as itself (Ctrl on macOS, Super on
+ * Windows), so Control+H and Command+H stay different shortcuts on a Mac.
  */
-export function acceleratorFromEvent(e: Pick<KeyboardEvent, "key" | "code" | "ctrlKey" | "metaKey" | "shiftKey" | "altKey">): string | null {
+export function acceleratorFromEvent(
+  e: Pick<KeyboardEvent, "key" | "code" | "ctrlKey" | "metaKey" | "shiftKey" | "altKey">,
+  mac = isMacPlatform(),
+): string | null {
   if (["Control", "Shift", "Alt", "Meta"].includes(e.key)) return null;
-  if (!e.ctrlKey && !e.metaKey && !e.altKey) return null;
+  const primary = mac ? e.metaKey : e.ctrlKey;
+  const secondary = mac ? e.ctrlKey : e.metaKey;
+  if (!primary && !secondary && !e.altKey) return null;
   const parts: string[] = [];
-  if (e.ctrlKey || e.metaKey) parts.push("CmdOrCtrl");
+  if (primary) parts.push("CmdOrCtrl");
+  if (secondary) parts.push(mac ? "Ctrl" : "Super");
   if (e.altKey) parts.push("Alt");
   if (e.shiftKey) parts.push("Shift");
   // Use the physical key so Shift/Alt don't turn "H" into a symbol.
@@ -49,4 +57,57 @@ export function acceleratorFromEvent(e: Pick<KeyboardEvent, "key" | "code" | "ct
   else return null;
   parts.push(key);
   return parts.join("+");
+}
+
+const MODIFIER_ORDER = ["CmdOrCtrl", "Ctrl", "Super", "Alt", "Shift"];
+const MODIFIER_ALIASES: Record<string, string> = {
+  cmdorctrl: "CmdOrCtrl",
+  commandorcontrol: "CmdOrCtrl",
+  ctrl: "Ctrl",
+  control: "Ctrl",
+  cmd: "Super",
+  command: "Super",
+  super: "Super",
+  meta: "Super",
+  alt: "Alt",
+  option: "Alt",
+  shift: "Shift",
+};
+
+/**
+ * One spelling per accelerator on this platform, so "Ctrl+Shift+h" and
+ * "CmdOrCtrl+Shift+H" compare equal on Windows (Ctrl is the primary
+ * modifier there; Cmd is on macOS).
+ */
+export function normalizeAccelerator(accelerator: string, mac = isMacPlatform()): string {
+  const mods = new Set<string>();
+  let key = "";
+  for (const raw of accelerator.split("+").filter(Boolean)) {
+    let mod = MODIFIER_ALIASES[raw.toLowerCase()];
+    if (mod === (mac ? "Super" : "Ctrl")) mod = "CmdOrCtrl";
+    if (mod) mods.add(mod);
+    else key = raw.length === 1 ? raw.toUpperCase() : raw;
+  }
+  return [...MODIFIER_ORDER.filter((m) => mods.has(m)), key].join("+");
+}
+
+/**
+ * Shortcuts NexQ already uses (global: Ctrl+M, Ctrl+B, Ctrl+,; in-window:
+ * Ctrl+Shift+L dev log, Ctrl+Shift+D demo). A user binding must not take one.
+ */
+export const RESERVED_SHORTCUTS: Record<string, string> = {
+  "CmdOrCtrl+M": "Start / end meeting",
+  "CmdOrCtrl+B": "Show / hide overlay",
+  "CmdOrCtrl+,": "Open settings",
+  "CmdOrCtrl+Shift+L": "Dev log",
+  "CmdOrCtrl+Shift+D": "Demo mode",
+};
+
+/** The action that already owns `accelerator`, if any. */
+export function reservedShortcutAction(accelerator: string, mac = isMacPlatform()): string | null {
+  const wanted = normalizeAccelerator(accelerator, mac);
+  for (const [accel, action] of Object.entries(RESERVED_SHORTCUTS)) {
+    if (normalizeAccelerator(accel, mac) === wanted) return action;
+  }
+  return null;
 }

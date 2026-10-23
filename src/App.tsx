@@ -159,15 +159,27 @@ function App() {
     let unlisten: (() => void) | undefined;
     listen<{ meeting: Meeting; audioMode: AudioMode; aiScenario: AIScenario }>(
       "nexq:meeting_started",
-      (e) => {
+      async (e) => {
         const { meeting, audioMode, aiScenario } = e.payload;
+        const startedAt = Date.now();
+        // Reset ALL per-meeting stores in THIS (overlay) window first. Each Tauri
+        // webview has its own Zustand instances, so the launcher clearing its
+        // copies is not enough. Publishing the meeting before the reset would let
+        // the overlay mount with the previous meeting's transcript (and detect its
+        // questions again).
+        try {
+          await resetMeetingScopedStores();
+          initMeetingSpeakers(audioMode);
+        } catch (err) {
+          console.warn("[App] Failed to reset meeting stores in overlay:", err);
+        }
         useMeetingStore.setState({
           activeMeeting: meeting,
           currentView: "overlay",
           audioMode,
           aiScenario,
           isRecording: true,
-          meetingStartTime: Date.now(),
+          meetingStartTime: startedAt,
           elapsedMs: 0,
           lastPersistedIndex: 0,
           selectedMeetingId: null,
@@ -175,15 +187,8 @@ function App() {
           settingsOpen: false,
         });
         useMeetingStore.getState().startTimer();
-        // Reset ALL per-meeting stores in THIS (overlay) window. Each Tauri webview
-        // has its own Zustand instances, so the launcher clearing its copies is not
-        // enough — without this the overlay keeps rendering the previous meeting's
-        // transcript, AI responses, speakers, bookmarks, etc. Then tell the
-        // launcher this window owns the meeting's speaker/bookmark data.
-        resetMeetingScopedStores()
-          .then(() => { initMeetingSpeakers(audioMode); })
-          .catch((err) => console.warn("[App] Failed to reset meeting stores in overlay:", err))
-          .finally(() => { emitOverlayMeetingReady(meeting.id).catch(() => {}); });
+        // Then tell the launcher this window owns the meeting's speaker/bookmark data.
+        emitOverlayMeetingReady(meeting.id).catch(() => {});
       }
     ).then((fn) => { unlisten = fn; });
     return () => { unlisten?.(); };

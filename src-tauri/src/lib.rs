@@ -544,6 +544,9 @@ pub fn run() {
                 });
             }
 
+            // -- Stealth mode saved on: hide windows from capture before the webviews load --
+            stealth_commands::restore_on_startup(app.handle());
+
             // -- Intercept launcher window close: hide instead of quit --
             if let Some(launcher) = app.get_webview_window("launcher") {
                 let close_app = app.handle().clone();

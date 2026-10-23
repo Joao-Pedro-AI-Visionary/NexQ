@@ -3,7 +3,7 @@ import { ScreenShareOff } from "lucide-react";
 import { DEFAULT_STEALTH_SHORTCUT, useConfigStore } from "../stores/configStore";
 import { showToast } from "../stores/toastStore";
 import { getStealthSupport } from "../lib/ipc";
-import { acceleratorFromEvent, formatShortcut } from "../lib/shortcutLabel";
+import { acceleratorFromEvent, formatShortcut, reservedShortcutAction } from "../lib/shortcutLabel";
 import type { StealthSupport } from "../lib/types";
 
 /** Settings → General: stealth mode ("Hide from screen share") and its shortcut. */
@@ -33,6 +33,12 @@ export function StealthSettings() {
       }
       const accel = acceleratorFromEvent(e);
       if (!accel) return;
+      const taken = reservedShortcutAction(accel);
+      if (taken) {
+        // Keep listening: the current binding (and the other action) stay as they are.
+        showToast(`${formatShortcut(accel)} is already used by "${taken}"`, "error");
+        return;
+      }
       setShortcut(accel);
       setRecording(false);
       showToast(`Shortcut set to ${formatShortcut(accel)}`, "success");

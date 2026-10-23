@@ -1216,13 +1216,14 @@ export const useConfigStore = create<ConfigState>((set) => ({
         if (val != null) set({ stealthShortcut: val });
       });
 
-      // Windows are left out of screen capture from the start when stealth
-      // mode was on (the backend starts with it off).
+      // The backend already restored it natively at startup; this re-applies it
+      // and, if the windows can't be hidden, shows the setting as off.
       if (stealthMode) {
         import("../lib/ipc").then(({ setStealthMode: applyStealthMode }) =>
-          applyStealthMode(true).catch((e) =>
-            console.warn("[configStore] Failed to restore stealth mode:", e),
-          ),
+          applyStealthMode(true).catch((e) => {
+            console.warn("[configStore] Failed to restore stealth mode:", e);
+            set({ stealthMode: false });
+          }),
         );
       }
 

@@ -1,4 +1,5 @@
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use serde::Serialize;
 use tauri::{command, AppHandle, Manager, Runtime, Window};
@@ -55,47 +56,119 @@ pub fn get_stealth_support() -> StealthSupport {
     support()
 }
 
+/// Serializes stealth transitions (and new windows picking up the setting).
+static TRANSITION: Mutex<()> = Mutex::new(());
+
 /// Turn stealth mode on or off for every NexQ window (and for windows opened
-/// later, see [`apply_to_new_window`]). Rebuilds the tray menu so its check
-/// mark follows.
+/// later, see [`apply_to_new_window`]). All or nothing: if a window refuses,
+/// the windows already changed are put back and the setting stays as it was.
+/// Rebuilds the tray menu so its check mark follows.
 #[command]
 pub async fn set_stealth_mode(app: AppHandle, enabled: bool) -> Result<(), String> {
     if enabled && !support().supported {
         return Err("Hiding from screen share isn't available on this platform".to_string());
     }
-    STEALTH.store(enabled, Ordering::SeqCst);
-
-    let mut errors = Vec::new();
-    for (label, window) in app.webview_windows() {
-        if let Err(e) = set_capture_excluded(&window.as_ref().window(), enabled) {
-            errors.push(format!("{label}: {e}"));
+    let result = {
+        let _guard = TRANSITION.lock().unwrap_or_else(|e| e.into_inner());
+        let windows: Vec<(String, Window)> = app
+            .webview_windows()
+            .into_iter()
+            .map(|(label, w)| (label, w.as_ref().window()))
+            .collect();
+        let result = transition(&windows, stealth_enabled(), enabled, |w, on| set_capture_excluded(w, on));
+        if result.is_ok() {
+            STEALTH.store(enabled, Ordering::SeqCst);
+            log::info!(
+                "Stealth mode {}",
+                if enabled { "on: windows hidden from screen capture" } else { "off" }
+            );
         }
-    }
-    log::info!(
-        "Stealth mode {}",
-        if enabled { "on: windows hidden from screen capture" } else { "off" }
-    );
+        result
+    };
 
     let meeting_active = app.state::<AppState>().meeting_active.load(Ordering::SeqCst);
     if let Err(e) = crate::commands::tray_commands::rebuild_tray_menu(app.clone(), meeting_active).await {
         log::warn!("Failed to refresh the tray menu after a stealth change: {e}");
     }
+    result
+}
 
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(format!("Couldn't hide every window from capture ({})", errors.join("; ")))
+/// Apply `enabled` to every window; on the first failure, restore `previous`
+/// on the windows already changed. The error says whether that worked.
+fn transition<W>(
+    windows: &[(String, W)],
+    previous: bool,
+    enabled: bool,
+    apply: impl Fn(&W, bool) -> Result<(), String>,
+) -> Result<(), String> {
+    for (i, (label, window)) in windows.iter().enumerate() {
+        if let Err(e) = apply(window, enabled) {
+            let not_restored: Vec<&str> = windows[..i]
+                .iter()
+                .filter(|(_, w)| apply(w, previous).is_err())
+                .map(|(l, _)| l.as_str())
+                .collect();
+            let state = if previous { "hidden from" } else { "visible in" };
+            return Err(if not_restored.is_empty() {
+                format!("Couldn't change screen-share visibility ({label}: {e}); NexQ is still {state} screen share")
+            } else {
+                format!(
+                    "Couldn't change screen-share visibility ({label}: {e}), and these windows couldn't be put back: {}. Toggle it again or restart NexQ",
+                    not_restored.join(", ")
+                )
+            });
+        }
     }
+    Ok(())
 }
 
 /// Apply the current stealth setting to a window that was just created
 /// (e.g. the dev log window), so it is never captured before it is hidden.
 pub fn apply_to_new_window<R: Runtime>(window: &Window<R>) {
+    let _guard = TRANSITION.lock().unwrap_or_else(|e| e.into_inner());
     if stealth_enabled() {
         if let Err(e) = set_capture_excluded(window, true) {
             log::warn!("Stealth mode: couldn't hide window '{}': {e}", window.label());
         }
     }
+}
+
+/// At startup, before the webviews load their settings: hide the windows
+/// right away when stealth mode was saved on (the frontend's `config.json`
+/// store, key `stealthMode`), so reopening NexQ mid-share never shows them.
+pub fn restore_on_startup(app: &AppHandle) {
+    let saved_on = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .and_then(|dir| std::fs::read_to_string(dir.join(FRONTEND_STORE)).ok())
+        .map_or(false, |text| saved_stealth(&text));
+    if !saved_on || !support().supported {
+        return;
+    }
+    let _guard = TRANSITION.lock().unwrap_or_else(|e| e.into_inner());
+    let windows: Vec<(String, Window)> = app
+        .webview_windows()
+        .into_iter()
+        .map(|(label, w)| (label, w.as_ref().window()))
+        .collect();
+    match transition(&windows, false, true, |w, on| set_capture_excluded(w, on)) {
+        Ok(()) => {
+            STEALTH.store(true, Ordering::SeqCst);
+            log::info!("Stealth mode restored at startup");
+        }
+        Err(e) => log::warn!("Stealth mode: couldn't restore at startup: {e}"),
+    }
+}
+
+/// The frontend config store file (src/stores/configStore.ts `STORE_FILE`).
+const FRONTEND_STORE: &str = "config.json";
+
+fn saved_stealth(store_json: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(store_json)
+        .ok()
+        .and_then(|v| v.get("stealthMode").and_then(|b| b.as_bool()))
+        .unwrap_or(false)
 }
 
 #[cfg(target_os = "windows")]
@@ -141,5 +214,58 @@ fn set_capture_excluded<R: Runtime>(_window: &Window<R>, excluded: bool) -> Resu
         Err("not supported on this platform".to_string())
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    /// Fake windows: (fails_when_set_to, current state).
+    fn windows(specs: &[(&str, Option<bool>)]) -> Vec<(String, (Option<bool>, RefCell<bool>))> {
+        specs
+            .iter()
+            .map(|(l, fail)| (l.to_string(), (*fail, RefCell::new(false))))
+            .collect()
+    }
+
+    fn apply(w: &(Option<bool>, RefCell<bool>), on: bool) -> Result<(), String> {
+        if w.0 == Some(on) {
+            return Err("refused".into());
+        }
+        *w.1.borrow_mut() = on;
+        Ok(())
+    }
+
+    #[test]
+    fn all_windows_change_together() {
+        let ws = windows(&[("launcher", None), ("overlay", None)]);
+        assert!(transition(&ws, false, true, apply).is_ok());
+        assert!(ws.iter().all(|(_, w)| *w.1.borrow()));
+    }
+
+    #[test]
+    fn a_refusal_rolls_back_the_windows_already_changed() {
+        let ws = windows(&[("launcher", None), ("overlay", Some(true))]);
+        let err = transition(&ws, false, true, apply).unwrap_err();
+        assert!(err.contains("still visible in"), "{err}");
+        assert!(ws.iter().all(|(_, w)| !*w.1.borrow()));
+    }
+
+    #[test]
+    fn a_failed_rollback_names_the_windows_left_changed() {
+        // launcher accepts "on" but refuses going back to "off".
+        let ws = windows(&[("launcher", Some(false)), ("overlay", Some(true))]);
+        let err = transition(&ws, false, true, apply).unwrap_err();
+        assert!(err.contains("couldn't be put back: launcher"), "{err}");
+    }
+
+    #[test]
+    fn saved_setting_is_read_from_the_frontend_store() {
+        assert!(saved_stealth(r#"{"stealthMode":true,"theme":"dark"}"#));
+        assert!(!saved_stealth(r#"{"stealthMode":false}"#));
+        assert!(!saved_stealth("{}"));
+        assert!(!saved_stealth("not json"));
     }
 }

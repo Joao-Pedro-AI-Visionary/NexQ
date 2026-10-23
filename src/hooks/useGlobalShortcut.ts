@@ -11,6 +11,7 @@ import { meetingShortcutAction, showLauncherWindow, showOverlayWindow } from "..
 import { endMeetingFromThisWindow } from "./useUpdater";
 import { showToast } from "../stores/toastStore";
 import { useConfigStore } from "../stores/configStore";
+import { reservedShortcutAction } from "../lib/shortcutLabel";
 
 /** Ctrl+M: end the running meeting (in every window that holds it) or start one. */
 async function toggleMeetingFromShortcut(): Promise<void> {
@@ -48,7 +49,12 @@ export function useGlobalShortcut() {
   // Stealth mode shortcut (user-configurable, re-registered when it changes)
   useEffect(() => {
     const key = stealthShortcut;
-    if (!key) return;
+    // Never take over a built-in shortcut (e.g. a binding saved before it was
+    // reserved): registering it would unregister that action's handler.
+    if (!key || reservedShortcutAction(key)) {
+      if (key) console.warn(`[useGlobalShortcut] Stealth shortcut ${key} collides with a built-in shortcut; not registered`);
+      return;
+    }
     let registered = false;
     (async () => {
       try {
