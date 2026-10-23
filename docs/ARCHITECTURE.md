@@ -72,11 +72,11 @@ flowchart LR
 | `context/` | Loading context documents (PDF with a fallback extractor, DOCX, TXT, MD) and token counting. |
 | `translation/` | Translation router: DeepL, Google, Microsoft, LLM-based, and offline OPUS-MT models. |
 | `db/` | SQLite via rusqlite (`nexq.db`), with versioned migrations in `migrations.rs`. Tables cover meetings, transcript segments, speakers, bookmarks, action items, topic sections, translations, meeting chat, context resources and RAG chunks/embeddings. |
-| `credentials/` | API keys in the OS credential store: Windows Credential Manager (`windows_cred.rs`); macOS Keychain from v2.25. Keys never go into settings files or the database. |
+| `credentials/` | API keys in the OS credential store: Windows Credential Manager (`windows_cred.rs`); macOS Keychain (`macos_keychain.rs`). Keys never go into settings files or the database. |
 | `commands/` | One module per feature area exposing `#[command]` functions; all are registered in `lib.rs`. |
 | `tray/` | Tray icon, menu and tooltip state. |
 | `commands/updater_commands.rs` | Discord-style updater: background download, Ed25519-verified install on quit, never during a meeting. |
-| `commands/stealth_commands.rs` | Excludes the overlay from screen capture (`WDA_EXCLUDEFROMCAPTURE` on Windows; `NSWindowSharingNone` on macOS from v2.25). |
+| `commands/stealth_commands.rs` | Stealth mode: keeps every NexQ window out of screen capture (`WDA_EXCLUDEFROMCAPTURE` on Windows, `NSWindowSharingNone` on macOS). |
 
 ### AppState
 

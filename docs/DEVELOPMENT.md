@@ -15,11 +15,12 @@ Everything you need to build, run, test and debug NexQ locally. For how the code
   ```
   `src-tauri/.cargo/config.toml` sets `LIBCLANG_PATH` to `C:\Program Files\LLVM\bin` and uses the Ninja generator, so `cmake` and `ninja` must be on `PATH`. Open a new terminal after installing.
 
-### macOS (Apple Silicon, from v2.25)
+### macOS (Apple Silicon)
 
 - Node.js 20 or newer and Rust stable
 - Xcode Command Line Tools: `xcode-select --install`
-- CMake: `brew install cmake`
+- CMake: `brew install cmake` (Ninja optional: `brew install ninja`)
+- Before `npx tauri dev`, run `source scripts/macos-env.sh` in that shell: it points `LIBCLANG_PATH` at the Xcode toolchain and picks a CMake generator, overriding the Windows defaults in `src-tauri/.cargo/config.toml`. `./build-mac.sh` does this for you.
 
 See the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) if something is missing.
 
@@ -47,7 +48,7 @@ npx tauri dev
 | `cargo test --lib` | Rust unit tests (run in `src-tauri/`) |
 | `cargo check` | Fast Rust compile check (run in `src-tauri/`) |
 | `npx tauri build` | Production build (NSIS installer on Windows) |
-| `./build-mac.sh` | macOS: build the `.app` and `.dmg` and install to `/Applications` (from v2.25; `--help` for options) |
+| `./build-mac.sh` | macOS: build the `.app` and `.dmg` and install to `/Applications` (`--help` for options) |
 
 Do not run `npm run release`; releases are cut by maintainers (see [CONTRIBUTING.md](../CONTRIBUTING.md#how-releases-work)).
 

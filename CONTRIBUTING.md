@@ -24,7 +24,7 @@ By participating you agree to follow our [Code of Conduct](CODE_OF_CONDUCT.md).
 You do not need to write Rust to help.
 
 - **Report bugs.** Use the [bug report form](https://github.com/naxhq/NexQ/issues/new?template=bug_report.yml). Your NexQ version, OS, providers and logs make a bug fixable.
-- **Test on macOS.** macOS support (Apple Silicon) is in beta from v2.25. Real-world reports on different Macs, audio setups and meeting apps are very valuable.
+- **Test on macOS.** macOS support (Apple Silicon) is in beta. Real-world reports on different Macs, audio setups and meeting apps are very valuable.
 - **Improve the docs.** The [user guide](docs/user-guide/) and developer docs ([architecture](docs/ARCHITECTURE.md), [development](docs/DEVELOPMENT.md)) always need clearer steps and fresh screenshots.
 - **Suggest features.** Use the [feature request form](https://github.com/naxhq/NexQ/issues/new?template=feature_request.yml) and describe the problem before the solution.
 - **Add languages and providers.** New STT languages, translation targets, and STT or LLM providers are well-scoped contributions.
@@ -65,7 +65,7 @@ npx tauri dev
 
 `npx tauri dev` stages ONNX Runtime (`scripts/fetch-onnxruntime.mjs`), starts the Vite dev server on port 5173, compiles the Rust backend and opens the app. Frontend changes hot-reload; Rust changes trigger a rebuild. The first Rust build takes a while because whisper.cpp is compiled from source.
 
-On macOS, `./build-mac.sh` (arriving with v2.25) builds the `.app` and `.dmg` and installs to `/Applications`. Run `./build-mac.sh --help` for options.
+On macOS, run `source scripts/macos-env.sh` once per shell before `npx tauri dev` (it overrides the Windows libclang/CMake defaults). `./build-mac.sh` builds the `.app` and `.dmg` and installs to `/Applications`; run `./build-mac.sh --help` for options.
 
 More detail, including debugging and log locations, is in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 

@@ -44,9 +44,9 @@ Live two-party transcription, instant AI answers grounded in your own documents,
 
 ## What's new
 
-> **v2.25 (upcoming)**
+> **v2.25**
 > - **macOS support (Apple Silicon, beta).** Native macOS build, Keychain credential storage and the transparent overlay. A community contribution by [@visitek](https://github.com/visitek).
-> - **Stealth Mode: "Hide from screen share".** The overlay stays visible to you but is excluded from screen sharing, recordings and screenshots (`WDA_EXCLUDEFROMCAPTURE` on Windows, `NSWindowSharingNone` on macOS). Toggle it in Settings, from the tray, or with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> (<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> on macOS).
+> - **Stealth Mode: "Hide from screen share".** NexQ stays visible to you but is left out of screen sharing, recordings and screenshots (`WDA_EXCLUDEFROMCAPTURE` on Windows, `NSWindowSharingNone` on macOS). Toggle it in Settings, from the overlay header or the tray, or with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> (<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> on macOS).
 > - **Czech transcription.**
 >
 > **Recently shipped:** transcript paragraphs with separated remote speakers, a transcript scope picker and answer history (v2.24); a Claude model picker read from the CLI with per-model effort (v2.23); Claude via your own subscription, silent background updates, and "Ask a past meeting" (v2.22). See the full [CHANGELOG](CHANGELOG.md).
@@ -81,7 +81,7 @@ Live two-party transcription, instant AI answers grounded in your own documents,
 - Fully offline mode with local STT and a local LLM
 - Local RAG over your PDF, DOCX, TXT and MD files (SQLite FTS + embeddings)
 - API keys in the OS credential store, never in plain files
-- Stealth Mode keeps the overlay out of screen shares (v2.25)
+- Stealth Mode keeps NexQ out of screen shares and recordings
 
 </td>
 <td valign="top">
@@ -121,7 +121,7 @@ Live two-party transcription, instant AI answers grounded in your own documents,
 2. Run the installer. If SmartScreen warns about an unrecognized app, click **More info → Run anyway** (the installer is not code-signed; you can always [build from source](#development)).
 3. NexQ updates itself in the background and installs on quit, never in the middle of a meeting.
 
-### macOS (Apple Silicon, beta, from v2.25)
+### macOS (Apple Silicon, beta)
 
 1. Download the `.dmg` from the [releases page](https://github.com/naxhq/NexQ/releases) and drag **NexQ** into **Applications**.
 2. The beta build is not notarized, so Gatekeeper will block it. Clear the quarantine flag once:
@@ -231,7 +231,7 @@ npx tauri dev          # run the full app with hot reload
 | Type check | `npx tsc --noEmit` |
 | Production frontend build | `npm run build` |
 | Windows installer | `npx tauri build` |
-| macOS app + dmg (from v2.25) | `./build-mac.sh` |
+| macOS app + dmg | `./build-mac.sh` |
 
 Read **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** for setup details, debugging and logs, and **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for how the pieces fit together.
 
