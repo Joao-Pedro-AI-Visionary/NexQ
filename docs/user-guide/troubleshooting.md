@@ -191,8 +191,10 @@ This only appears the first time you install. Subsequent launches will not trigg
 NexQ stores all data in the app data directory:
 
 ```
-%LOCALAPPDATA%\com.nexq.app\
+%APPDATA%\com.nexq.app\
 ```
+
+On macOS: `~/Library/Application Support/com.nexq.app/`
 
 This includes:
 - SQLite database (meetings, transcripts, AI interactions)

@@ -82,7 +82,7 @@ NexQ can record meeting audio alongside the live transcript.
 
 1. Open Settings > Audio
 2. Toggle **Recording** on
-3. Recordings are saved as WAV files in the app data directory (`%LOCALAPPDATA%\com.nexq.app\`)
+3. Recordings are saved as WAV files in the app data directory (`%APPDATA%\com.nexq.app\`)
 
 ### Playback
 
