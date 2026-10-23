@@ -484,8 +484,9 @@ pub fn run() {
                         });
                     }
                     "show_overlay" => {
+                        // The overlay window switches to the meeting view, then
+                        // shows itself (showing it first flashed an empty window).
                         let _ = _app.emit("tray_show_overlay", ());
-                        show_overlay(&app_handle);
                     }
                     "copy_ai_answer" => {
                         let _ = _app.emit("tray_copy", "ai_answer");

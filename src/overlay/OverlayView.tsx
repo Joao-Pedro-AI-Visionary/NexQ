@@ -154,10 +154,11 @@ export function OverlayView() {
     }
   }, [activeMeeting?.id, targetLang]);
 
+  // Hide the overlay and show the dashboard; the overlay keeps its meeting
+  // view, so RETURN, Ctrl+B or the tray bring it straight back.
   const handleMinimizeToDashboard = useCallback(() => {
-    setCurrentView("launcher");
     showLauncherWindow().catch(() => {});
-  }, [setCurrentView]);
+  }, []);
 
   const meetingTitle = activeMeeting?.title || "NexQ";
 
@@ -247,7 +248,7 @@ export function OverlayView() {
           />
           <HeaderBtn icon={<Eye className="h-3.5 w-3.5" />} onClick={cycleOpacity} tooltip={`Transparency: ${Math.round(overlayOpacity * 100)}% (click to cycle)`} />
           <HeaderBtn icon={<Settings className="h-3.5 w-3.5" />} onClick={() => setCurrentView("settings")} tooltip="Settings" />
-          <HeaderBtn icon={<Minus className="h-3.5 w-3.5" />} onClick={handleMinimizeToDashboard} tooltip="Minimize to Dashboard" />
+          <HeaderBtn icon={<Minus className="h-3.5 w-3.5" />} onClick={handleMinimizeToDashboard} tooltip="Minimize to Dashboard (Ctrl+B brings it back)" />
 
           {/* Translation controls */}
           <button

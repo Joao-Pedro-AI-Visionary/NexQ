@@ -26,7 +26,7 @@ import type { AppView, Meeting, AudioMode, AIScenario } from "./lib/types";
 import { useDemoShortcut } from "./demo/useDemoShortcut";
 import { DemoPicker } from "./demo/DemoPicker";
 import { DemoBadge } from "./demo/DemoBadge";
-import { showLauncherWindow, showOverlayWindow } from "./lib/windows";
+import { SHOW_MEETING_OVERLAY_EVENT, showLauncherWindow, showMeetingOverlay, showOverlayWindow } from "./lib/windows";
 import { emitOverlayMeetingReady, onOverlayMeetingReady, onStealthModeChanged } from "./lib/events";
 
 function App() {
@@ -108,13 +108,37 @@ function App() {
     });
   }, []);
 
-  // LAUNCHER window: when meeting starts, show overlay Tauri window and hide self
+  // LAUNCHER window: the meeting runs in the overlay window. When a meeting
+  // starts (or anything asks this window for the meeting view), bring the
+  // overlay up and keep the dashboard here, so showing the launcher again
+  // never shows a second, unpinned copy of the meeting.
   useEffect(() => {
     if (windowLabel !== "launcher") return;
     if (currentView === "overlay") {
-      showOverlayWindow().catch(() => {});
+      useMeetingStore.getState().setCurrentView("launcher");
+      showMeetingOverlay().catch(() => {});
     }
   }, [currentView, windowLabel]);
+
+  // OVERLAY window: show the meeting overlay on request (launcher RETURN,
+  // Ctrl+B, tray "Show Overlay"). It renders only its own view, so switch to
+  // the meeting first; with no meeting running, show the launcher instead.
+  useEffect(() => {
+    if (windowLabel !== "overlay") return;
+    const show = () => {
+      const store = useMeetingStore.getState();
+      if (!store.activeMeeting) {
+        showLauncherWindow().catch(() => {});
+        return;
+      }
+      if (store.currentView !== "overlay" && store.currentView !== "settings") store.setCurrentView("overlay");
+      showOverlayWindow().catch(() => {});
+    };
+    const unlisteners: Array<() => void> = [];
+    listen(SHOW_MEETING_OVERLAY_EVENT, show).then((fn) => unlisteners.push(fn));
+    listen("tray_show_overlay", show).then((fn) => unlisteners.push(fn));
+    return () => unlisteners.forEach((fn) => fn());
+  }, [windowLabel]);
 
   // LAUNCHER window: listen for nexq:meeting_ended from overlay, show self + reset state
   useEffect(() => {
@@ -236,6 +260,8 @@ function App() {
     }).then((unlisten) => unlisteners.push(unlisten));
 
     listen("tray_open_settings", () => {
+      // Settings open in the launcher (the tray shows it)
+      if (windowLabel === "overlay") return;
       // Use getState() to avoid stale closure captures
       const view = useMeetingStore.getState().currentView;
       if (view === "overlay") {
@@ -278,10 +304,6 @@ function App() {
 
     onStealthModeChanged((enabled) => {
       useConfigStore.getState().stealthModeApplied(enabled);
-    }).then((unlisten) => unlisteners.push(unlisten));
-
-    listen("tray_show_overlay", () => {
-      showOverlayWindow().catch(() => {});
     }).then((unlisten) => unlisteners.push(unlisten));
 
     listen<string>("tray_copy", (e) => {
@@ -350,19 +372,9 @@ function App() {
   return (
     <div className={`h-screen w-screen overflow-hidden text-foreground ${resolvedView === "overlay" ? "bg-transparent" : "bg-background"}`}>
       <ErrorBoundary fallbackMessage="NexQ encountered an error">
-        {resolvedView === "launcher" && (
+        {(resolvedView === "launcher" || resolvedView === "overlay") && (
           <ErrorBoundary fallbackMessage="Failed to load launcher">
             <LauncherView />
-          </ErrorBoundary>
-        )}
-        {resolvedView === "overlay" && (
-          <ErrorBoundary fallbackMessage="Failed to load overlay">
-            <div key={activeMeetingId || "no-meeting"} className="flex h-full">
-              <div className="flex-1 min-w-0 overflow-hidden">
-                <OverlayView />
-              </div>
-              <CallLogPanel />
-            </div>
           </ErrorBoundary>
         )}
         {resolvedView === "wizard" && (

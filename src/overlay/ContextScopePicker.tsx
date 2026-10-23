@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { createPortal } from "react-dom";
 import { Clock3 } from "lucide-react";
 import { useConfigStore } from "../stores/configStore";
+import { useMeetingStore } from "../stores/meetingStore";
 import {
   DEFAULT_CONTEXT_SCOPE,
   MAX_MINUTES,
@@ -22,7 +23,7 @@ const OPTION_LABEL: Record<ContextScopeKind, string> = {
 };
 
 const OPTION_HINT: Record<ContextScopeKind, string> = {
-  default: "Each action's own window",
+  default: "Each action's own transcript window",
   since_last_any: "New talk since any answer",
   since_last_same: "New talk since this action ran",
   minutes: "",
@@ -48,6 +49,13 @@ export function ContextScopePicker() {
   const sticky = useConfigStore((s) => s.contextScopeSticky ?? true);
   const setScope = useConfigStore((s) => s.setContextScope);
   const setSticky = useConfigStore((s) => s.setContextScopeSticky);
+  const isClaude = useConfigStore((s) => s.llmProvider === "claude_cli");
+  // Claude ignores per-action windows: its session holds the whole meeting.
+  const defaultHint = isClaude ? "Claude decides from the whole meeting" : OPTION_HINT.default;
+  const openActionSettings = () => {
+    setOpen(false);
+    useMeetingStore.getState().openSettings("ai_actions");
+  };
 
   const [open, setOpen] = useState(false);
   const [focusIdx, setFocusIdx] = useState(0);
@@ -235,8 +243,10 @@ export function ContextScopePicker() {
                         <span className={`block text-xs ${checked ? "text-foreground" : "text-foreground/80"}`}>
                           {kind === "minutes" ? `Last ${clampMinutes(scope.minutes)} min` : OPTION_LABEL[kind]}
                         </span>
-                        {OPTION_HINT[kind] && (
-                          <span className="block truncate text-meta text-muted-foreground/50">{OPTION_HINT[kind]}</span>
+                        {(kind === "default" ? defaultHint : OPTION_HINT[kind]) && (
+                          <span className="block truncate text-meta text-muted-foreground/50">
+                            {kind === "default" ? defaultHint : OPTION_HINT[kind]}
+                          </span>
                         )}
                       </span>
                     </button>
@@ -289,6 +299,24 @@ export function ContextScopePicker() {
                 );
               })}
             </div>
+
+            <p className="px-2 pb-1 pt-1.5 text-meta leading-snug text-muted-foreground/55">
+              {isClaude ? (
+                "Claude's live session already holds the whole meeting; each request sends only new lines. This only tells it where to focus."
+              ) : (
+                <>
+                  Each action's window is set in{" "}
+                  <button
+                    type="button"
+                    onClick={openActionSettings}
+                    className="cursor-pointer text-primary/80 underline-offset-2 hover:text-primary hover:underline"
+                  >
+                    Settings → AI Actions
+                  </button>
+                  .
+                </>
+              )}
+            </p>
 
             <div className="mt-1 flex items-center justify-between gap-2 border-t border-border/15 px-2 pb-0.5 pt-2">
               <span className="text-xs text-foreground/75">Keep for next actions</span>
