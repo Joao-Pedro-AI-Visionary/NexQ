@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  build-and-publish:
+  windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,6 +33,67 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0.5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "NexQ ${{ github.ref_name }}"
+          releaseBody: "See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details."
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+
+      - name: Verify updater JSON exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Checking release assets for latest.json..."
+          gh release view ${{ github.ref_name }} --json assets --jq '.assets[].name'
+          gh release download ${{ github.ref_name }} --pattern "latest.json" --dir _verify --clobber
+          echo "latest.json contents:"
+          cat _verify/latest.json
+
+  macos:
+    # After Windows: both jobs merge into the release's latest.json, so they
+    # must not upload at the same time.
+    needs: windows
+    runs-on: macos-14 # Apple Silicon
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          # Bump when ggml/whisper build flags in src-tauri/.cargo/config.toml change —
+          # whisper-rs-sys won't rebuild on env changes, so a stale cache keeps old flags.
+          prefix-key: v1-ggml-portable
+
+      - name: Install dependencies
+        run: npm ci
+
+      # libclang and the CMake generator for whisper.cpp (src-tauri/.cargo/config.toml
+      # holds the Windows defaults).
+      - name: macOS build environment
+        shell: bash
+        run: |
+          source scripts/macos-env.sh
+          echo "LIBCLANG_PATH=$LIBCLANG_PATH" >> "$GITHUB_ENV"
+          echo "CMAKE_GENERATOR=$CMAKE_GENERATOR" >> "$GITHUB_ENV"
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0.5
