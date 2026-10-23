@@ -1,33 +1,30 @@
 ---
-// FinalCTA.astro — full-width call-to-action before footer
-const baseUrl = import.meta.env.BASE_URL;
+import Icon from './Icon.astro';
+import { RELEASES_LATEST, REPO } from '../data/site';
+
+const base = import.meta.env.BASE_URL;
 ---
 
-<section class="relative bg-surface-raised py-24">
-  <!-- Gradient top border -->
-  <div class="absolute left-0 right-0 top-0 h-px bg-gradient-to-r from-transparent via-accent-purple/30 to-transparent"></div>
-
-  <div class="mx-auto max-w-3xl px-6 text-center">
-    <h2 class="text-3xl font-extrabold text-text-primary md:text-4xl">
-      Ready to own your meetings?
+<section class="relative overflow-hidden border-t border-line py-28 sm:py-36" aria-labelledby="cta-title">
+  <div
+    class="pointer-events-none absolute inset-x-0 bottom-0 h-full"
+    style="background: radial-gradient(50% 60% at 50% 100%, rgba(59,130,246,0.10) 0%, transparent 70%);"
+    aria-hidden="true"
+  ></div>
+  <div class="wrap relative flex flex-col items-center text-center" data-reveal>
+    <img src={`${base}img/logo-96.png`} alt="" width="56" height="56" class="rounded-2xl shadow-[0_12px_40px_-12px_rgba(59,130,246,0.6)]" loading="lazy" />
+    <h2 id="cta-title" class="mt-8 max-w-3xl text-[2.25rem] font-semibold leading-[1.05] tracking-[-0.04em] text-ink sm:text-6xl">
+      Walk into your next call <span class="font-serif font-normal italic tracking-[-0.02em]">prepared.</span>
     </h2>
-    <p class="mt-4 text-text-secondary">
-      Free. Private. Open source. Download NexQ and take control.
-    </p>
-    <div class="mt-8 flex flex-wrap items-center justify-center gap-4">
-      <a
-        href="https://github.com/naxhq/NexQ/releases/latest"
-        class="btn-primary"
-      >
-        Download for Windows
+    <p class="mt-5 max-w-xl text-lg text-ink-2">Free, open source, and running on your own machine in minutes.</p>
+    <div class="mt-9 flex w-full flex-col gap-3 sm:w-auto sm:flex-row">
+      <a href={RELEASES_LATEST} class="btn-primary sm:!px-6">
+        <Icon name="download" />
+        <span data-download-label>Download for Windows</span>
       </a>
-      <a
-        href="https://github.com/naxhq/NexQ"
-        target="_blank"
-        rel="noopener noreferrer"
-        class="btn-secondary"
-      >
-        Star on GitHub
+      <a href={REPO} target="_blank" rel="noopener" class="btn-ghost">
+        <Icon name="github" />
+        View source
       </a>
     </div>
   </div>
