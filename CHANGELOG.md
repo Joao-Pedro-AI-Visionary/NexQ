@@ -1,3 +1,25 @@
+# [2.25.0](https://github.com/naxhq/NexQ/compare/v2.24.0...v2.25.0) (2026-10-23)
+
+
+### Bug Fixes
+
+* **audio:** don't overwrite saved STT provider when reopening settings ([35cd0c6](https://github.com/naxhq/NexQ/commit/35cd0c6495a29090e607de6376b14896a8f54d9f))
+* **build:** use macOS-compatible xattr when installing the app ([5214ca3](https://github.com/naxhq/NexQ/commit/5214ca3b3d0961db8c83e2d2017245814ab8069e))
+* **context:** pass attached documents to Assist when RAG returns nothing ([6514b61](https://github.com/naxhq/NexQ/commit/6514b61bd32a42b542d9e4bd3fc4edd07d0609a7))
+* **llm:** persist custom provider URL, auth and model across restarts ([09dc9a0](https://github.com/naxhq/NexQ/commit/09dc9a0a16204741c71c82bd8cbf3fe3b9c79f1b))
+* **macos:** keep Windows builds working and harden the macOS port ([83acafe](https://github.com/naxhq/NexQ/commit/83acafecb4b03a86f3597a0b1c16bd28abafee71))
+* **meeting:** fully reset per-meeting state when a new meeting starts ([429f326](https://github.com/naxhq/NexQ/commit/429f32611f73dee2687540a813d88e600c86f60e))
+* **stealth:** atomic transitions, native restore at startup, safe shortcut rebinding ([9e57b21](https://github.com/naxhq/NexQ/commit/9e57b21dff8a8e52c944170618177894036972a9))
+* **stt:** stop Deepgram auto-reconnect from stacking reader tasks ([3be41ca](https://github.com/naxhq/NexQ/commit/3be41ca60b672afb08f7e69faba496264aa46417))
+
+
+### Features
+
+* **macos:** add native macOS support ([035e9c4](https://github.com/naxhq/NexQ/commit/035e9c49e9acc114a97948973514df374a78e9e9))
+* **stealth:** hide NexQ from screen sharing while it stays visible to you ([#10](https://github.com/naxhq/NexQ/issues/10)) ([476e9d3](https://github.com/naxhq/NexQ/commit/476e9d3d12ba8fe679be5961a2896dd588a20e42))
+* **stt:** add Czech to meeting transcription languages ([5da1f16](https://github.com/naxhq/NexQ/commit/5da1f1619124e4dbab24fd227c6a945595614b33))
+* **website:** add optimized media, icons and social image ([f045656](https://github.com/naxhq/NexQ/commit/f04565630e2c0e1789cd9082ccb80c26c7f29889))
+* **website:** redesign landing page with v2.22-v2.25 features ([ca60e52](https://github.com/naxhq/NexQ/commit/ca60e52203ff78ee2749a04b64d5bd812e537856))
 # [2.24.0](https://github.com/naxhq/NexQ/compare/v2.23.0...v2.24.0) (2026-10-22)
 
 
