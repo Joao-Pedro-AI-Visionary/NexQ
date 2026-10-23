@@ -156,9 +156,13 @@ export function LLMSettings() {
     if (selectedRef.current === useConfigStore.getState().llmProvider) setSelectedModel(llmModel);
   }, [llmModel]);
 
-  // Custom provider fields
-  const [customBaseUrl, setCustomBaseUrl] = useState("");
-  const [customAuthType, setCustomAuthType] = useState<"none" | "bearer" | "api_key">("none");
+  // Custom provider fields — hydrated from persisted config so they survive restarts
+  const storedCustomBaseUrl = useConfigStore((s) => s.customLlmBaseUrl);
+  const storedCustomAuthType = useConfigStore((s) => s.customLlmAuthType);
+  const setCustomLlmConfig = useConfigStore((s) => s.setCustomLlmConfig);
+
+  const [customBaseUrl, setCustomBaseUrl] = useState(storedCustomBaseUrl);
+  const [customAuthType, setCustomAuthType] = useState<"none" | "bearer" | "api_key">(storedCustomAuthType);
   const [customAuthValue, setCustomAuthValue] = useState("");
 
   // Check which providers have stored API keys (for badge display)
@@ -190,6 +194,23 @@ export function LLMSettings() {
     setOpenRouterModels([]);
     setModelsError("");
   }, [selectedProvider]);
+
+  // Custom provider: load persisted base URL / auth type + stored token when the
+  // provider is selected, so the user's endpoint is restored after a restart.
+  useEffect(() => {
+    if (selectedProvider !== "custom") return;
+    setCustomBaseUrl(useConfigStore.getState().customLlmBaseUrl);
+    setCustomAuthType(useConfigStore.getState().customLlmAuthType);
+    getApiKey("custom")
+      .then((v) => setCustomAuthValue(v || ""))
+      .catch(() => setCustomAuthValue(""));
+  }, [selectedProvider]);
+
+  // Persist base URL / auth type as the user edits them (token is saved on blur).
+  useEffect(() => {
+    if (selectedProvider !== "custom") return;
+    setCustomLlmConfig(customBaseUrl, customAuthType);
+  }, [selectedProvider, customBaseUrl, customAuthType, setCustomLlmConfig]);
 
   // Build the provider config JSON for backend calls
   const buildProviderConfig = useCallback(() => {
@@ -456,6 +477,7 @@ export function LLMSettings() {
                   type="password"
                   value={customAuthValue}
                   onChange={(e) => setCustomAuthValue(e.target.value)}
+                  onBlur={() => { storeApiKey("custom", customAuthValue).catch(() => {}); }}
                   placeholder={customAuthType === "bearer" ? "Bearer token..." : "API key..."}
                   maxLength={256}
                   className="w-full rounded-lg border border-border/50 bg-background px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20"
@@ -550,7 +572,12 @@ export function LLMSettings() {
           disabled={claudeUnusable}
           onClick={async () => {
             try {
-              if (apiKey) await storeApiKey(selectedProvider, apiKey).catch(() => {});
+              if (selectedProvider === "custom") {
+                if (customAuthValue) await storeApiKey("custom", customAuthValue).catch(() => {});
+                setCustomLlmConfig(customBaseUrl, customAuthType);
+              } else if (apiKey) {
+                await storeApiKey(selectedProvider, apiKey).catch(() => {});
+              }
               // Same path as the footer. Without a pick, the model last used
               // with the provider; Claude takes its Fast model.
               await activateLLMProvider(selectedProvider, {

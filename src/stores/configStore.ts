@@ -3,6 +3,7 @@ import { load, Store } from "@tauri-apps/plugin-store";
 import type {
   ThemeMode,
   LLMProviderType,
+  CustomLlmAuthType,
   STTProviderType,
   HotkeyConfig,
   MeetingAudioConfig,
@@ -114,6 +115,29 @@ function normalizeContextScope(value: Partial<ContextScopeSetting> | null | unde
   return { kind: value.kind as ContextScopeSetting["kind"], minutes: clampMinutes(value.minutes ?? DEFAULT_CONTEXT_SCOPE.minutes) };
 }
 
+/**
+ * Backend config JSON for `provider` from what is stored: its API key, or for
+ * the custom provider the persisted base URL, auth type and token (saved in
+ * the credential manager under "custom").
+ */
+async function storedProviderConfig(provider: LLMProviderType): Promise<string> {
+  const { getApiKey } = await import("../lib/ipc");
+  const config: Record<string, unknown> = { provider_type: provider };
+  if (provider === "custom") {
+    const { customLlmBaseUrl, customLlmAuthType } = useConfigStore.getState();
+    if (customLlmBaseUrl) config.base_url = customLlmBaseUrl;
+    if (customLlmAuthType !== "none") {
+      config.auth_type = customLlmAuthType;
+      const token = await getApiKey("custom").catch(() => null);
+      if (token) config.auth_value = token;
+    }
+  } else if (provider !== "claude_cli") {
+    const key = await getApiKey(provider).catch(() => null);
+    if (key) config.api_key = key;
+  }
+  return JSON.stringify(config);
+}
+
 async function persistValue(key: string, value: unknown): Promise<void> {
   try {
     const store = await getStore();
@@ -148,6 +172,10 @@ interface ConfigState {
    * pickers then offer the static aliases.
    */
   claudeModels: ClaudeModelInfo[] | null;
+  // Custom LLM provider (persisted so a custom endpoint survives restarts).
+  // The auth token itself is stored via the credential manager under "custom".
+  customLlmBaseUrl: string;
+  customLlmAuthType: CustomLlmAuthType;
 
   // Audio (legacy — kept for backward compat, new code uses meetingAudioConfig)
   micDeviceId: string | null;
@@ -280,6 +308,7 @@ interface ConfigState {
   setClaudeCliFallback: (provider: string | null, model: string | null) => void;
   /** Keep the latest Claude model catalog (persisted, shared with every window). */
   setClaudeModels: (models: ClaudeModelInfo[]) => void;
+  setCustomLlmConfig: (baseUrl: string, authType: CustomLlmAuthType) => void;
   setMicDeviceId: (id: string | null) => void;
   setSystemDeviceId: (id: string | null) => void;
   setRecordingEnabled: (enabled: boolean) => void;
@@ -355,6 +384,8 @@ export const useConfigStore = create<ConfigState>((set) => ({
   claudeCliConfig: DEFAULT_CLAUDE_CLI_CONFIG,
   claudeCliFallbackPinned: false,
   claudeModels: null,
+  customLlmBaseUrl: "",
+  customLlmAuthType: "none",
   micDeviceId: null,
   systemDeviceId: null,
   recordingEnabled: false,
@@ -456,10 +487,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
     const ipc = await import("../lib/ipc");
     const before = useConfigStore.getState();
     let providerConfig = options.providerConfig;
-    if (providerConfig == null) {
-      const key = provider === "claude_cli" ? null : await ipc.getApiKey(provider).catch(() => null);
-      providerConfig = JSON.stringify({ provider_type: provider, ...(key && { api_key: key }) });
-    }
+    if (providerConfig == null) providerConfig = await storedProviderConfig(provider);
     await ipc.setLLMProvider(providerConfig);
     before.setLLMProvider(provider);
     // An activated provider counts as verified (the "Ready" badge in Settings).
@@ -525,6 +553,11 @@ export const useConfigStore = create<ConfigState>((set) => ({
       fallback_provider: provider,
       fallback_model: provider ? model : null,
     });
+  },
+  setCustomLlmConfig: (baseUrl, authType) => {
+    set({ customLlmBaseUrl: baseUrl, customLlmAuthType: authType });
+    persistValue("customLlmBaseUrl", baseUrl);
+    persistValue("customLlmAuthType", authType);
   },
   setMicDeviceId: (id) => {
     set({ micDeviceId: id });
@@ -846,6 +879,8 @@ export const useConfigStore = create<ConfigState>((set) => ({
       const sttLanguage = await store.get<string>("sttLanguage");
       const llmProvider = await store.get<LLMProviderType>("llmProvider");
       const llmModel = await store.get<string>("llmModel");
+      const customLlmBaseUrl = await store.get<string>("customLlmBaseUrl");
+      const customLlmAuthType = await store.get<CustomLlmAuthType>("customLlmAuthType");
       const micDeviceId = await store.get<string | null>("micDeviceId");
       const systemDeviceId = await store.get<string | null>("systemDeviceId");
       const recordingEnabled = await store.get<boolean>("recordingEnabled");
@@ -1019,6 +1054,8 @@ export const useConfigStore = create<ConfigState>((set) => ({
         claudeCliConfig,
         claudeCliFallbackPinned,
         ...(Array.isArray(claudeModels) && claudeModels.length > 0 && { claudeModels }),
+        ...(customLlmBaseUrl != null && { customLlmBaseUrl }),
+        ...(customLlmAuthType != null && { customLlmAuthType }),
         ...(micDeviceId !== undefined && { micDeviceId }),
         ...(systemDeviceId !== undefined && { systemDeviceId }),
         ...(recordingEnabled != null && { recordingEnabled }),
@@ -1200,14 +1237,9 @@ export const useConfigStore = create<ConfigState>((set) => ({
       const loadedLLMProvider = llmProvider ?? "ollama";
       const loadedLLMModel = loadedLLMProvider === "claude_cli" ? claudeCliConfig.fast_model : (llmModel ?? "");
       if (loadedLLMProvider) {
-        import("../lib/ipc").then(async ({ setLLMProvider: ipcSetLLM, setActiveModel: ipcSetModel, getApiKey: ipcGetKey }) => {
+        import("../lib/ipc").then(async ({ setLLMProvider: ipcSetLLM, setActiveModel: ipcSetModel }) => {
           try {
-            const apiKey = await ipcGetKey(loadedLLMProvider).catch(() => null);
-            const config = JSON.stringify({
-              provider_type: loadedLLMProvider,
-              ...(apiKey && { api_key: apiKey }),
-            });
-            await ipcSetLLM(config);
+            await ipcSetLLM(await storedProviderConfig(loadedLLMProvider));
             if (loadedLLMModel) {
               await ipcSetModel(loadedLLMProvider, loadedLLMModel);
             }

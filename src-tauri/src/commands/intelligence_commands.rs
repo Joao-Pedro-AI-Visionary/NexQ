@@ -244,6 +244,30 @@ async fn retrieve_rag(
 }
 
 /// The last 500 characters of `text` (the RAG query's transcript context).
+/// Most document text sent per request when RAG retrieval finds nothing
+/// (~8k tokens): stateless providers resend it on every request.
+const DOC_FALLBACK_CHARS: usize = 32_000;
+
+/// The attached documents' text, capped at [`DOC_FALLBACK_CHARS`]; None when
+/// nothing is attached.
+fn attached_documents_fallback(state: &AppState) -> Option<String> {
+    let text = state.context.as_ref()?.lock().ok()?.get_resources_context();
+    cap_document_text(&text, DOC_FALLBACK_CHARS)
+}
+
+fn cap_document_text(text: &str, max_chars: usize) -> Option<String> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    if text.chars().count() <= max_chars {
+        return Some(text.to_string());
+    }
+    let head: String = text.chars().take(max_chars).collect();
+    Some(format!("{head}
+
+[… documents truncated — index them for full coverage]"))
+}
+
 fn tail_chars(text: &str, n: usize) -> String {
     let count = text.chars().count();
     text.chars().skip(count.saturating_sub(n)).collect()
@@ -951,7 +975,7 @@ pub async fn generate_assist(
     // toggle is the user's intent. If they enabled RAG for this action and have
     // indexed files, we should search. (config.enabled defaults to false and is
     // inconsistently set, while Test Knowledge Base ignores it entirely.)
-    let rag = if include_rag && active_cache_name.is_none() {
+    let mut rag = if include_rag && active_cache_name.is_none() {
         // RAG query sources (priority: custom_question > effective_question > transcript)
         // custom_question is what the user typed (Ask mode) or the clicked question (Assist mode)
         // effective_question is the auto-detected question from the meeting
@@ -963,6 +987,13 @@ pub async fn generate_assist(
     } else {
         RagRetrieval::default()
     };
+    // Nothing retrieved (no index yet, Ollama unreachable, or no match): include
+    // the attached documents directly so the AI still has the meeting context.
+    if include_rag && active_cache_name.is_none() && rag.context_text.is_empty() {
+        if let Some(docs) = attached_documents_fallback(&state) {
+            rag.context_text = docs;
+        }
+    }
 
     let context_text = rag.context_text;
     let include_context = !context_text.is_empty();
@@ -1216,6 +1247,17 @@ pub async fn get_action_configs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn document_fallback_is_capped() {
+        assert_eq!(cap_document_text("  
+", 10), None);
+        assert_eq!(cap_document_text("short doc", 10).as_deref(), Some("short doc"));
+        let capped = cap_document_text(&"é".repeat(25), 10).unwrap();
+        assert!(capped.starts_with(&"é".repeat(10)));
+        assert!(!capped.starts_with(&"é".repeat(11)));
+        assert!(capped.ends_with("index them for full coverage]"));
+    }
 
     const SEGS: &str = r#"[
         {"id":"a","text":"Intro","speaker":"User","timestamp_ms":1000},

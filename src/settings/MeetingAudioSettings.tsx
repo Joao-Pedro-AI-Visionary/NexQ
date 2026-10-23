@@ -158,6 +158,7 @@ const STT_LANGUAGES = [
   { value: "ar-SA", label: "Arabic" },
   { value: "tr-TR", label: "Turkish" },
   { value: "pl-PL", label: "Polish" },
+  { value: "cs-CZ", label: "Czech" },
   { value: "sv-SE", label: "Swedish" },
 ];
 
@@ -938,18 +939,29 @@ function ProviderSelect({
   }
 
   // Auto-reset to a working provider if the current one is no longer available.
-  // Skip fallback on initial engine load to prevent model changes from resetting providers.
-  const enginesLoadedRef = useRef(false);
+  //
+  // IMPORTANT: this must NOT run on the initial load. Availability resolves
+  // asynchronously (local engines + API-key status), and reacting to the first
+  // resolution would silently overwrite the user's saved provider every time the
+  // settings page is opened. So we wait until BOTH lists have been populated once,
+  // then only react to later changes.
+  const initialAvailabilityLoadedRef = useRef(false);
 
   useEffect(() => {
-    if (!enginesLoadedRef.current) {
-      if (localEngines.length > 0) enginesLoadedRef.current = true;
+    if (!initialAvailabilityLoadedRef.current) {
+      const enginesReady = localEngines.length > 0;
+      const keysReady = Object.keys(apiKeyStatus).length > 0;
+      if (enginesReady && keysReady) {
+        initialAvailabilityLoadedRef.current = true;
+      }
       return; // Skip fallback on initial load
     }
     const currentOpt = STT_OPTIONS.find((o) => o.value === value);
     if (currentOpt && !isAvailable(currentOpt)) {
+      // Never fall back to an exclusive provider (Web Speech / Windows Speech):
+      // they capture the OS default mic and can only serve one party at a time.
       const fallback = STT_OPTIONS.find(
-        (o) => o.value !== value && isAvailable(o)
+        (o) => o.value !== value && isAvailable(o) && !isExclusiveProvider(o.value)
       );
       if (fallback) {
         onChange(fallback.value);

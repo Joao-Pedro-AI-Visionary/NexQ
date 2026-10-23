@@ -290,6 +290,24 @@ impl ContextManager {
         parts.join("\n")
     }
 
+    /// Get only the attached resources' text (without custom instructions).
+    /// Used for the context-stuffing fallback so attached documents reach the
+    /// LLM even when the RAG index is empty or the embedding server is down.
+    pub fn get_resources_context(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        for resource in &self.resources {
+            if let Some(cached) = self.cache.get(&resource.id) {
+                if !cached.text.is_empty() {
+                    parts.push(format!(
+                        "## {} ({})\n{}\n",
+                        resource.name, resource.file_type, cached.text
+                    ));
+                }
+            }
+        }
+        parts.join("\n")
+    }
+
     /// Set custom instructions text.
     pub fn set_custom_instructions(&mut self, text: &str) {
         self.custom_instructions = text.to_string();

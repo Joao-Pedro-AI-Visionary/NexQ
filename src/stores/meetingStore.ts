@@ -12,6 +12,7 @@ import {
 } from "../lib/ipc";
 import { useConfigStore } from "./configStore";
 import { useTranscriptStore } from "./transcriptStore";
+import { initMeetingSpeakers, resetMeetingScopedStores } from "./resetMeeting";
 
 interface MeetingState {
   // View state
@@ -150,6 +151,15 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
         );
       } catch { /* non-critical */ }
 
+      // 0b. Flush ALL meeting-scoped state up-front, before the speaker store is
+      // initialized below, so nothing from the previous meeting leaks in.
+      // The overlay window does the same when it receives nexq:meeting_started.
+      try {
+        await resetMeetingScopedStores();
+      } catch (e) {
+        console.warn("[meetingStore] Failed to reset meeting-scoped stores:", e);
+      }
+
       // 1. Create meeting record in SQLite
       const meeting = await ipcStartMeeting(title);
 
@@ -162,26 +172,14 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
 
       // 1c. Initialize speaker store for the resolved mode
       try {
-        const { useSpeakerStore } = await import("./speakerStore");
-        const config = useConfigStore.getState();
-        if (resolvedMode === "online") {
-          useSpeakerStore.getState().initForOnline();
-        } else {
-          const hasDiarization =
-            config.diarizationEnabled &&
-            ["deepgram", "azure_speech"].includes(
-              config.meetingAudioConfig?.you?.stt_provider ?? config.sttProvider
-            );
-          useSpeakerStore.getState().initForInPerson(hasDiarization);
-
-          // Inform user if local STT won't support speaker separation
-          if (!hasDiarization) {
-            const { showToast } = await import("../stores/toastStore");
-            showToast(
-              "Local STT doesn't support speaker separation — all speech labeled as Room.",
-              "info"
-            );
-          }
+        const hasSpeakers = initMeetingSpeakers(resolvedMode);
+        // Inform user if local STT won't support speaker separation
+        if (resolvedMode !== "online" && !hasSpeakers) {
+          const { showToast } = await import("../stores/toastStore");
+          showToast(
+            "Local STT doesn't support speaker separation — all speech labeled as Room.",
+            "info"
+          );
         }
       } catch { /* non-critical */ }
 
@@ -220,37 +218,6 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
         // Continue anyway — meeting is created, user can still use AI features
       }
 
-      // 3. Clear previous transcript segments and leftover AI state
-      useTranscriptStore.getState().clearSegments();
-
-      // Clear AI response history, dev log, and call log from any prior meeting
-      try {
-        const { useStreamStore } = await import("./streamStore");
-        useStreamStore.getState().resetForMeeting();
-      } catch { /* non-critical */ }
-      try {
-        const { useDevLogStore } = await import("./devLogStore");
-        useDevLogStore.getState().clear();
-      } catch { /* non-critical */ }
-      try {
-        const { useCallLogStore } = await import("./callLogStore");
-        useCallLogStore.getState().clearAll();
-      } catch { /* non-critical */ }
-
-      // 3b. Clear new feature stores
-      try {
-        const { useBookmarkStore } = await import("./bookmarkStore");
-        useBookmarkStore.getState().clearBookmarks();
-      } catch { /* non-critical */ }
-      try {
-        const { useActionItemStore } = await import("./actionItemStore");
-        useActionItemStore.getState().clearItems();
-      } catch { /* non-critical */ }
-      try {
-        const { useTopicSectionStore } = await import("./topicSectionStore");
-        useTopicSectionStore.getState().clearSections();
-      } catch { /* non-critical */ }
-
       // 4. Set meeting state
       const now = Date.now();
       (await import("../lib/transcriptPersistence")).resetSavedSegments();
@@ -260,6 +227,10 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
         meetingStartTime: now,
         elapsedMs: 0,
         lastPersistedIndex: 0,
+        // Reset lingering per-view state from the previous meeting
+        selectedMeetingId: null,
+        unfinishedMeeting: null,
+        settingsOpen: false,
       });
 
       // 5. Start timer

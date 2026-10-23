@@ -21,6 +21,7 @@ import { useTranslationStore } from "./stores/translationStore";
 import { CallLogPanel } from "./calllog";
 import { SelectionToolbar } from "./components/SelectionToolbar";
 import { ActiveMeetingProvider } from "./components/ActiveMeetingProvider";
+import { initMeetingSpeakers, resetMeetingScopedStores } from "./stores/resetMeeting";
 import { listen } from "@tauri-apps/api/event";
 import type { AppView, Meeting, AudioMode, AIScenario } from "./lib/types";
 import { useDemoShortcut } from "./demo/useDemoShortcut";
@@ -36,6 +37,9 @@ function App() {
   const setCurrentView = useMeetingStore((s) => s.setCurrentView);
   const startMeetingFlow = useMeetingStore((s) => s.startMeetingFlow);
   const loadRecentMeetings = useMeetingStore((s) => s.loadRecentMeetings);
+  // Changes on every new meeting → used as a React key to remount overlay UI
+  // so local component state (open panels, tabs, layout) is reset too.
+  const activeMeetingId = useMeetingStore((s) => s.activeMeeting?.id ?? "");
   const firstRunCompleted = useConfigStore((s) => s.firstRunCompleted);
   const configLoaded = useConfigStore((s) => s._loaded);
   const loadConfig = useConfigStore((s) => s.loadConfig);
@@ -158,8 +162,6 @@ function App() {
       "nexq:meeting_started",
       (e) => {
         const { meeting, audioMode, aiScenario } = e.payload;
-        // The answers and request times shown here belong to the previous meeting.
-        useStreamStore.getState().resetForMeeting();
         useMeetingStore.setState({
           activeMeeting: meeting,
           currentView: "overlay",
@@ -169,10 +171,20 @@ function App() {
           meetingStartTime: Date.now(),
           elapsedMs: 0,
           lastPersistedIndex: 0,
+          selectedMeetingId: null,
+          unfinishedMeeting: null,
+          settingsOpen: false,
         });
         useMeetingStore.getState().startTimer();
-        // Tell the launcher this window owns the meeting's speaker/bookmark data
-        emitOverlayMeetingReady(meeting.id).catch(() => {});
+        // Reset ALL per-meeting stores in THIS (overlay) window. Each Tauri webview
+        // has its own Zustand instances, so the launcher clearing its copies is not
+        // enough — without this the overlay keeps rendering the previous meeting's
+        // transcript, AI responses, speakers, bookmarks, etc. Then tell the
+        // launcher this window owns the meeting's speaker/bookmark data.
+        resetMeetingScopedStores()
+          .then(() => { initMeetingSpeakers(audioMode); })
+          .catch((err) => console.warn("[App] Failed to reset meeting stores in overlay:", err))
+          .finally(() => { emitOverlayMeetingReady(meeting.id).catch(() => {}); });
       }
     ).then((fn) => { unlisten = fn; });
     return () => { unlisten?.(); };
@@ -312,7 +324,9 @@ function App() {
         <ErrorBoundary fallbackMessage="NexQ encountered an error">
           {currentView === "overlay" && (
             <ErrorBoundary fallbackMessage="Failed to load overlay">
-              <div className="flex h-full">
+              {/* key on the meeting id → remounts overlay UI per meeting so local
+                  state (open panels, tabs, layout mode) does not carry over */}
+              <div key={activeMeetingId || "no-meeting"} className="flex h-full">
                 <div className="flex-1 min-w-0 overflow-hidden">
                   <OverlayView />
                 </div>
@@ -340,7 +354,7 @@ function App() {
         )}
         {resolvedView === "overlay" && (
           <ErrorBoundary fallbackMessage="Failed to load overlay">
-            <div className="flex h-full">
+            <div key={activeMeetingId || "no-meeting"} className="flex h-full">
               <div className="flex-1 min-w-0 overflow-hidden">
                 <OverlayView />
               </div>

@@ -3,6 +3,7 @@ import { HelpCircle, Sparkles, Check, Clock, X } from "lucide-react";
 import { onQuestionDetected } from "../lib/events";
 import { runUserAction } from "../lib/userAction";
 import { useTranscriptStore } from "../stores/transcriptStore";
+import { useMeetingStore } from "../stores/meetingStore";
 import type { DetectedQuestion } from "../lib/types";
 
 export function looksLikeQuestion(text: string): boolean {
@@ -37,6 +38,14 @@ export function QuestionDetector() {
   // Text of each final line when it was last checked for a question.
   const checkedTextRef = useRef<Map<string, string>>(new Map());
   const segments = useTranscriptStore((s) => s.segments);
+  const activeMeetingId = useMeetingStore((s) => s.activeMeeting?.id ?? "");
+
+  // Clear detected questions when a new meeting starts so a question from the
+  // previous meeting doesn't linger in the overlay.
+  useEffect(() => {
+    setQuestions([]);
+    checkedTextRef.current = new Map();
+  }, [activeMeetingId]);
 
   const addQuestion = useCallback((q: DetectedQuestion, segmentId?: string) => {
     setQuestions((prev) => {

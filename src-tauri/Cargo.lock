@@ -3167,6 +3167,7 @@ dependencies = [
  "log",
  "lopdf 0.32.0",
  "ndarray",
+ "objc2",
  "ogg",
  "ort",
  "pdf-extract",

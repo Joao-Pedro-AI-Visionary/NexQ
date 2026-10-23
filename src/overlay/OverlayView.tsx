@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useScenarioStore } from "../stores/scenarioStore";
 import { useCallLogStore } from "../stores/callLogStore";
@@ -59,6 +59,17 @@ export function OverlayView() {
   const [statsOpen, setStatsOpen] = useState(false);
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
   const [layoutMode, setLayoutMode] = useState<"split" | "ai" | "transcript">("split");
+
+  // The overlay window stays mounted between meetings, so reset its local UI
+  // state whenever a new meeting starts (panels, layout, ask input).
+  const activeMeetingId = activeMeeting?.id ?? "";
+  useEffect(() => {
+    setAskInputVisible(false);
+    setDevLogOpen(false);
+    setStatsOpen(false);
+    setBookmarksOpen(false);
+    setLayoutMode("split");
+  }, [activeMeetingId]);
   const cycleLayout = () => setLayoutMode((m) => m === "split" ? "ai" : m === "ai" ? "transcript" : "split");
   const toggleLog = useCallLogStore((s) => s.toggleOpen);
   const logOpen = useCallLogStore((s) => s.isOpen);
