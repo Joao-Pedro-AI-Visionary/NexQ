@@ -1,13 +1,18 @@
 {
   "bundle": {
-    "targets": ["app", "dmg"],
+    "targets": [
+      "app",
+      "dmg"
+    ],
     "resources": {
       "ort/libonnxruntime.dylib": "libonnxruntime.dylib"
     },
     "macOS": {
       "minimumSystemVersion": "11.0",
       "hardenedRuntime": true,
-      "entitlements": "entitlements.plist"
-    }
+      "entitlements": "entitlements.plist",
+      "signingIdentity": "-"
+    },
+    "createUpdaterArtifacts": true
   }
 }

@@ -93,3 +93,5 @@ wasapi = "0.22"
 # Used by src/commands/stealth_commands.rs to set the overlay NSWindow's
 # `sharingType` to NSWindowSharingNone (equivalent of Windows' WDA_EXCLUDEFROMCAPTURE).
 objc2 = "0.6"
+# macOS Keychain credential backend (src/credentials/macos_keychain.rs).
+security-framework = "3"

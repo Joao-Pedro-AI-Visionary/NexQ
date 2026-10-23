@@ -198,7 +198,8 @@ pub async fn get_pending_update(state: State<'_, AppState>) -> Result<Option<Upd
 
 /// Install the downloaded update now. On Windows the NSIS installer is launched
 /// in passive mode (`/P /R`: progress only, relaunches NexQ) and this process
-/// exits, so on success this never returns. (Install on quit passes
+/// exits, so on success this never returns. On macOS the bundle is replaced
+/// in place and NexQ restarts itself. (Install on quit passes
 /// [`POST_UPDATE_QUIT_ARG`] so the relaunched NexQ exits at once.)
 ///
 /// Waits (up to 2 min) for post-meeting recording pipelines first, so ending a
@@ -206,14 +207,22 @@ pub async fn get_pending_update(state: State<'_, AppState>) -> Result<Option<Upd
 /// Refuses while a meeting is active, or if the recording is still saving
 /// after the wait.
 #[command]
-pub async fn install_update_now(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn install_update_now(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     if state.meeting_active.load(Ordering::SeqCst) {
         return Err("End the meeting before updating".to_string());
     }
     if !wait_for_recordings(&state, RECORDING_WAIT_LIMIT).await {
         return Err("Still saving the last recording — try again in a moment".to_string());
     }
-    install_pending(&state, InstallFor::Restart)
+    install_pending(&state, InstallFor::Restart)?;
+    // macOS replaces the app bundle in place and returns: relaunch it.
+    #[cfg(not(target_os = "windows"))]
+    app.restart();
+    #[cfg(target_os = "windows")]
+    {
+        let _ = app;
+        Ok(())
+    }
 }
 
 /// Wait until no post-meeting recording pipeline is running. Returns false on timeout.

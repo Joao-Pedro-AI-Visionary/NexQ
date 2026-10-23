@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 #
-# build.sh — one-command macOS build + install for NexQ.
+# build-mac.sh — one-command macOS build + install for NexQ.
 #
-#   ./build.sh                 Build (app + dmg) and install to /Applications
-#   ./build.sh --no-install    Build only, don't touch /Applications
-#   ./build.sh --debug         Debug build (target/debug) instead of release
-#   ./build.sh --run           Launch the app after installing
-#   ./build.sh <extra args>    Forwarded to `tauri build`
-#                              e.g. ./build.sh --bundles app     (skip the .dmg)
-#   ./build.sh --help
+#   ./build-mac.sh                 Build (app + dmg) and install to /Applications
+#   ./build-mac.sh --no-install    Build only, don't touch /Applications
+#   ./build-mac.sh --debug         Debug build (target/debug) instead of release
+#   ./build-mac.sh --run           Launch the app after installing
+#   ./build-mac.sh <extra args>    Forwarded to `tauri build`
+#                              e.g. ./build-mac.sh --bundles app     (skip the .dmg)
+#   ./build-mac.sh --help
 #
 # Environment:
 #   INSTALL_DIR    Override the install location (default: /Applications)
 #
-# Requires: macOS, Node.js, Rust (cargo), CMake. See README / install steps.
+# Requires: macOS on Apple Silicon, Xcode Command Line Tools, Node.js, Rust, CMake.
 
 set -euo pipefail
 
@@ -27,7 +27,7 @@ BUILD_ARGS=()
 
 usage() {
   cat <<'EOF'
-Usage: ./build.sh [options] [-- extra tauri build args]
+Usage: ./build-mac.sh [options] [-- extra tauri build args]
 
   (no options)     Build (app + dmg) and install to /Applications
   --no-install     Build only, don't touch /Applications
@@ -76,6 +76,16 @@ command -v cmake >/dev/null 2>&1 || \
 if [[ ! -d node_modules ]]; then
   echo "▶ Installing npm dependencies ..."
   npm install
+fi
+
+# libclang / CMake generator for macOS (overrides the Windows defaults in
+# src-tauri/.cargo/config.toml).
+# shellcheck source=scripts/macos-env.sh
+source "$SCRIPT_DIR/scripts/macos-env.sh"
+
+# Updater artifacts need the release signing key; local builds skip them.
+if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+  BUILD_ARGS+=("--config" '{"bundle":{"createUpdaterArtifacts":false}}')
 fi
 
 # ── Build ────────────────────────────────────────────────────────────────────

@@ -1,12 +1,11 @@
 # Build configuration for whisper-rs (requires CMake + libclang).
 #
-# NOTE: The Windows-only LIBCLANG_PATH / CMAKE_GENERATOR overrides were removed so
-# this crate also builds on macOS, where libclang is provided by the Xcode Command
-# Line Tools and CMake uses its default (Makefile) generator. Windows developers can
-# set them in their shell instead:
-#   set LIBCLANG_PATH=C:\Program Files\LLVM\bin
-#   set CMAKE_GENERATOR=Ninja
+# Windows defaults: LLVM's libclang and the Ninja generator. Cargo's [env] never
+# overrides a variable that is already set, so macOS builds export their own
+# values first: `source scripts/macos-env.sh` (build-mac.sh and CI do this).
 [env]
+LIBCLANG_PATH = "C:\\Program Files\\LLVM\\bin"
+CMAKE_GENERATOR = "Ninja"
 
 # Portable CPU baseline for whisper.cpp/ggml (whisper-rs-sys forwards GGML_* to CMake).
 # ggml defaults to GGML_NATIVE=ON, which bakes the *build machine's* CPU features
