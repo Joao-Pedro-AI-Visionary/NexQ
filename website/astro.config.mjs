@@ -1,10 +1,11 @@
 import { defineConfig } from 'astro/config';
-import react from '@astrojs/react';
 import tailwind from '@astrojs/tailwind';
+import sitemap from '@astrojs/sitemap';
 
+// Deployed to GitHub Pages as a project site: https://naxhq.github.io/NexQ/
 export default defineConfig({
-  site: 'https://VahidAlizadeh.github.io',
+  site: 'https://naxhq.github.io',
   base: '/NexQ/',
   output: 'static',
-  integrations: [react(), tailwind()],
+  integrations: [tailwind(), sitemap()],
 });

@@ -1,34 +1,48 @@
 /** @type {import('tailwindcss').Config} */
 export default {
-  content: ['./src/**/*.{astro,html,js,jsx,md,mdx,svelte,ts,tsx,vue}'],
+  content: ['./src/**/*.{astro,html,js,ts,md}'],
   theme: {
     extend: {
       colors: {
-        surface: {
-          DEFAULT: '#0c0c14',
-          raised: '#12121c',
-          overlay: '#1a1a28',
+        // Mirrors the tokens in src/styles/global.css (hex so opacity modifiers work).
+        // Warm slate-blue neutrals. Every accent carries meaning:
+        // blue = primary action / brand, green = live / success,
+        // amber = the other party / caution, red = recording / destructive.
+        bg: {
+          DEFAULT: '#0b0d13',
+          raised: '#11141c',
+          sunken: '#08090e',
+          panel: '#161a24',
         },
-        accent: {
-          purple: '#a78bfa',
-          blue: '#60a5fa',
-          green: '#34d399',
-          red: '#ef4444',
-          amber: '#fbbf24',
+        ink: {
+          DEFAULT: '#eef1f7',
+          2: '#a3aabd',
+          3: '#838aa0',
         },
-        text: {
-          primary: '#f0f0f5',
-          secondary: '#8888a0',
-          muted: '#555566',
+        line: {
+          DEFAULT: 'rgba(160, 175, 215, 0.1)',
+          strong: 'rgba(160, 175, 215, 0.18)',
         },
-        border: {
-          DEFAULT: '#1e1e2e',
-          subtle: '#16161f',
+        brand: {
+          DEFAULT: '#3b82f6',
+          ink: '#7aa7ff',
+          btn: '#2563eb',
         },
+        live: '#3ddc97',
+        them: '#f2b84b',
+        rec: '#f26d6d',
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', 'sans-serif'],
-        mono: ['Cascadia Code', 'monospace'],
+        sans: ['Geist', 'ui-sans-serif', 'system-ui', 'Segoe UI', 'sans-serif'],
+        mono: ['"Geist Mono"', 'ui-monospace', '"Cascadia Code"', 'Menlo', 'monospace'],
+        serif: ['"Instrument Serif"', 'ui-serif', 'Georgia', 'serif'],
+      },
+      maxWidth: {
+        page: '72rem',
+      },
+      transitionTimingFunction: {
+        // Critically damped spring approximation: fast start, no overshoot.
+        spring: 'cubic-bezier(0.22, 1, 0.36, 1)',
       },
     },
   },
