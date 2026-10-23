@@ -1,171 +1,275 @@
-<p align="center">
-  <img src="src-tauri/icons/nexq-clean.png" alt="NexQ" width="120">
-</p>
-<p align="center">
-  <strong>AI Meeting Assistant & Real-Time Interview Copilot</strong>
-</p>
+<div align="center">
 
-<p align="center">
+<img src="src-tauri/icons/nexq-clean.png" alt="NexQ logo" width="112">
 
-[![Release](https://img.shields.io/github/v/release/naxhq/NexQ?style=flat-square&color=blue)](https://github.com/naxhq/NexQ/releases/latest)
-[![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
-[![Build](https://img.shields.io/github/actions/workflow/status/naxhq/NexQ/release.yml?style=flat-square&label=build)](https://github.com/naxhq/NexQ/actions/workflows/release.yml)
+# NexQ
+
+**The open-source, local-first AI meeting assistant and real-time interview copilot.**
+Live two-party transcription, instant AI answers grounded in your own documents, and an overlay only you can see.
+
+[![Latest release](https://img.shields.io/github/v/release/naxhq/NexQ?style=flat-square&color=2f81f7)](https://github.com/naxhq/NexQ/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/naxhq/NexQ/total?style=flat-square&color=orange)](https://github.com/naxhq/NexQ/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6?style=flat-square&logo=windows)](https://github.com/naxhq/NexQ/releases/latest)
-[![Tauri](https://img.shields.io/badge/Tauri-2.0-FFC131?style=flat-square&logo=tauri&logoColor=white)](https://v2.tauri.app/)
-[![React](https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=white)](https://react.dev/)
+[![CI](https://img.shields.io/github/actions/workflow/status/naxhq/NexQ/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/naxhq/NexQ/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
+[![Stars](https://img.shields.io/github/stars/naxhq/NexQ?style=flat-square&color=yellow)](https://github.com/naxhq/NexQ/stargazers)
+<br>
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%28Apple%20Silicon%2C%20beta%29-lightgrey?style=flat-square)](https://github.com/naxhq/NexQ/releases/latest)
+[![Tauri 2](https://img.shields.io/badge/Tauri-2-FFC131?style=flat-square&logo=tauri&logoColor=white)](https://v2.tauri.app/)
 [![Rust](https://img.shields.io/badge/Rust-stable-DEA584?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.5-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)](CONTRIBUTING.md)
+[![React 18](https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=white)](https://react.dev/)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)](CONTRIBUTING.md)
 
-</p>
+**[Download](https://github.com/naxhq/NexQ/releases/latest)** ·
+**[Website](https://naxhq.github.io/NexQ/)** ·
+**[Docs](docs/user-guide/)** ·
+**[Contributing](CONTRIBUTING.md)** ·
+**[Report a bug](https://github.com/naxhq/NexQ/issues/new?template=bug_report.yml)**
 
-<p align="center">
-  <img src="website/public/screenshots/live-meeting-demo.gif" alt="NexQ in action — live meeting with transcript, translation, and AI assist" width="700">
-</p>
-<p align="center"><em>NexQ overlay during a live interview — real-time transcription and AI suggestions</em></p>
+<br>
 
-### Why NexQ?
+<img src="website/public/screenshots/live-meeting-demo.gif" alt="NexQ overlay during a live meeting with real-time transcript, translation and AI assist" width="720">
 
-🔒 **100% Local** — your audio and data never leave your machine
+<sub>The NexQ overlay during a live interview: real-time transcription and AI suggestions.</sub>
 
-🆓 **Free & Open Source** — no subscriptions, no limits, ever
+</div>
 
-⚡ **10 STT + 9 LLM providers** — from local Whisper & Ollama to cloud Deepgram & OpenAI, or your own Claude subscription
+---
+
+## Why NexQ?
+
+- **Local-first and private.** Audio is captured on your machine, and you choose where it goes: fully offline engines (Whisper, Parakeet, Ollama) or the cloud providers you configure. No bot joins your call.
+- **Free and open source.** MIT licensed, no account, no subscription, no usage caps.
+- **Bring your own models.** 10 speech-to-text engines and 9 LLM providers, from local Whisper and Ollama to Deepgram, OpenAI, Gemini, or your existing Claude Pro/Max subscription.
+- **Built for the moment.** Answers stream in while the other person is still talking, grounded in your resume, notes, or slides.
+
+## What's new
+
+> **v2.25 (upcoming)**
+> - **macOS support (Apple Silicon, beta).** Native macOS build, Keychain credential storage and the transparent overlay. A community contribution by [@visitek](https://github.com/visitek).
+> - **Stealth Mode: "Hide from screen share".** The overlay stays visible to you but is excluded from screen sharing, recordings and screenshots (`WDA_EXCLUDEFROMCAPTURE` on Windows, `NSWindowSharingNone` on macOS). Toggle it in Settings, from the tray, or with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> (<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> on macOS).
+> - **Czech transcription.**
+>
+> **Recently shipped:** transcript paragraphs with separated remote speakers, a transcript scope picker and answer history (v2.24); a Claude model picker read from the CLI with per-model effort (v2.23); Claude via your own subscription, silent background updates, and "Ask a past meeting" (v2.22). See the full [CHANGELOG](CHANGELOG.md).
 
 ## Features
 
-- **Dual-party transcription** — captures mic ("You") and system audio ("Them") simultaneously
-- **Real-time AI copilot** — get streaming answers, follow-up suggestions, and meeting recaps from 9 LLM providers, including Claude via your own subscription (Beta)
-- **Local RAG pipeline** — index your own documents (PDF, DOCX, TXT, MD) for context-aware AI responses
-- **Gemini Context Cache** — upload documents to Gemini once, skip local embedding entirely for ~3-5s faster queries
-- **Claude subscription (Beta)** — use your own Claude Pro/Max login through the local `claude` CLI, no API key
-- **Automatic updates** — silent background download, one-click restart (installs on quit; never ends a meeting without asking)
-- **10 STT providers** — Web Speech API, Deepgram, Groq, Whisper, ONNX Runtime, and more
-- **Always-on-top overlay** — compact, transparent floating window visible only to you
-- **Bookmarks & action items** — pin key moments and auto-extract tasks
-- **Speaker labeling** — identify and name each speaker in the transcript
-- **Multi-language translation** — real-time translation via 5 providers (100+ languages)
-- **Audio recording & playback** — record meetings as WAV, replay with synced transcript
-- **Meeting scenarios** — pre-configured templates for interviews, lectures, and team meetings
+<table>
+<tr>
+<td valign="top" width="50%">
 
-## Quick Start
+**Transcription**
+- Two independent streams: your mic ("You") and system audio ("Them"), each with its own engine, language and mute
+- 10 STT engines, local or cloud ([table below](#supported-providers))
+- Speaker labeling and remote-speaker separation
+- Real-time translation into 100+ languages (5 providers, including offline OPUS-MT)
 
-1. **Download** the [latest release](https://github.com/naxhq/NexQ/releases/latest)
-2. **Configure** your STT and LLM providers (or use free local models)
-3. **Start** any meeting — NexQ captures system audio automatically
+</td>
+<td valign="top" width="50%">
 
-[Getting Started Guide](docs/user-guide/getting-started.md) | [All User Guides](docs/user-guide/)
+**AI copilot**
+- Streaming Assist, What to Say, Shorten, Follow-Up, Recap and free-form Ask
+- Automatic question detection and one-key AI actions
+- Interview, lecture, oral-exam, webinar and team-meeting scenarios with editable prompts
+- AI Call Log: inspect every prompt, latency and token count
 
-## Gemini Context Cache
+</td>
+</tr>
+<tr>
+<td valign="top">
 
-For users running NexQ on a laptop without a dedicated GPU, local embedding can add 2–5 seconds of latency per AI query. The **Gemini Context Cache** feature eliminates this entirely.
+**Privacy and local-first**
+- Fully offline mode with local STT and a local LLM
+- Local RAG over your PDF, DOCX, TXT and MD files (SQLite FTS + embeddings)
+- API keys in the OS credential store, never in plain files
+- Stealth Mode keeps the overlay out of screen shares (v2.25)
 
-Instead of embedding documents locally via Ollama on every query, NexQ uploads your context documents to Gemini's servers once per meeting session. Gemini pre-processes and stores the KV state. Every subsequent query skips local embedding completely — only the live transcript and your question are sent fresh.
+</td>
+<td valign="top">
 
-**Setup:**
-1. Load your context documents (PDF, DOCX, TXT) in the Context panel
-2. Go to **Settings → Context Strategy**
-3. Select **Gemini Context Cache**
-4. Choose your model and TTL, then click **Create Cache from Context Docs**
+**Meeting tools**
+- Always-on-top, transparent overlay with global shortcuts
+- Bookmarks, action items and topic sections
+- Audio recording with synced transcript playback
+- Searchable meeting history, summaries and "Ask a past meeting"
 
-**Requirements:** Google Gemini API key, documents loaded in context.
-
-**Speed comparison (CPU-only laptop):**
-
-| Mode | Per-query overhead | Notes |
-|------|-------------------|-------|
-| Local RAG (`all-minilm`) | ~1–2s | Fastest local option |
-| Local RAG (`nomic-embed-text`) | ~3–5s | Default model |
-| **Gemini Context Cache** | **~0s** | No local embedding at all |
-
-Cache expires after your chosen TTL (30 min – 24 hours). Delete it early from the same settings panel.
-
-## Why NexQ vs. Others?
-
-| | NexQ | Otter.ai | Granola | Krisp |
-|---|:---:|:---:|:---:|:---:|
-| **Price** | **Free** | $8+/mo | $18/mo | $16/mo |
-| **100% Local** | Yes | No | Partial | Partial |
-| **Open Source** | Yes | No | No | No |
-| **No Bot Joins** | Yes | No | Yes | Yes |
-| **STT Providers** | **10** | 1 | 1 | 1 |
-| **LLM Providers** | **9** | 1 | 1 | 1 |
-| **Local LLM** | Yes | No | No | No |
-| **RAG / Doc Context** | Yes | No | No | No |
+</td>
+</tr>
+</table>
 
 ## Screenshots
 
-| Live Interview | Lecture Mode | Past Meeting Review |
+| Live interview | Lecture mode | Past meeting review |
 |:---:|:---:|:---:|
-| ![Interview](website/public/screenshots/Interview.png) | ![Lecture](website/public/screenshots/Lecture.png) | ![Past Meeting](website/public/screenshots/Past-meeting.png) |
+| ![Live interview](website/public/screenshots/Interview.png) | ![Lecture mode](website/public/screenshots/Lecture.png) | ![Past meeting review](website/public/screenshots/Past-meeting.png) |
 
-## Tech Stack
+<details>
+<summary>More screenshots</summary>
 
-| Layer | Technology |
-|-------|-----------|
-| Desktop | Tauri 2 (Rust + WebView2) |
-| Frontend | React 18, TypeScript 5.5, Vite 6 |
-| State | Zustand 4.5 |
-| Styling | Tailwind CSS 3.4, shadcn/ui |
-| Audio | cpal, WASAPI (Windows loopback) |
-| STT | whisper-rs, ONNX Runtime, Deepgram, Groq, Web Speech API |
-| LLM | OpenAI, Anthropic, Groq, Ollama, LM Studio, Gemini, Claude (your subscription via Claude Code) |
-| Database | SQLite (rusqlite) |
+| Dual-party transcription | Real-time AI copilot |
+|:---:|:---:|
+| ![Dual-party transcription](<website/public/screenshots/Dual-Party Transcription.png>) | ![Real-time AI copilot](<website/public/screenshots/Real-Time AI Copilot.png>) |
+| **Local RAG pipeline** | **Multi-language translation** |
+| ![Local RAG pipeline](<website/public/screenshots/Local RAG Pipeline.png>) | ![Multi-language translation](<website/public/screenshots/Multi-Language Translation.png>) |
+
+</details>
+
+## Install
+
+### Windows 10 / 11
+
+1. Download the `x64-setup.exe` installer from the [latest release](https://github.com/naxhq/NexQ/releases/latest).
+2. Run the installer. If SmartScreen warns about an unrecognized app, click **More info → Run anyway** (the installer is not code-signed; you can always [build from source](#development)).
+3. NexQ updates itself in the background and installs on quit, never in the middle of a meeting.
+
+### macOS (Apple Silicon, beta, from v2.25)
+
+1. Download the `.dmg` from the [releases page](https://github.com/naxhq/NexQ/releases) and drag **NexQ** into **Applications**.
+2. The beta build is not notarized, so Gatekeeper will block it. Clear the quarantine flag once:
+   ```bash
+   xattr -cr /Applications/NexQ.app
+   ```
+3. Grant microphone access when prompted. Please report anything that misbehaves with the `platform: macos` label.
+
+## Quick start
+
+1. **Pick a speech engine** in Settings → STT Providers. Web Speech works with zero setup; download a local model for offline use, or add a Deepgram / Groq key.
+2. **Pick an LLM** in Settings → LLM Providers. [Ollama](https://ollama.com) is detected automatically; cloud providers need an API key; Claude can use your existing subscription.
+3. **(Optional) Load context** such as your resume or notes in the Context panel.
+4. **Start a meeting** with <kbd>Ctrl</kbd>+<kbd>M</kbd>. NexQ captures system audio, so it works with Zoom, Teams, Meet, Discord, or anything else.
+
+Guides: [Getting started](docs/user-guide/getting-started.md) · [Choosing providers](docs/user-guide/ai-providers.md) · [Audio setup](docs/user-guide/audio-setup.md) · [Interview copilot](docs/user-guide/interview-copilot.md) · [Keyboard shortcuts](docs/user-guide/keyboard-shortcuts.md) · [Troubleshooting](docs/user-guide/troubleshooting.md)
+
+## Supported providers
+
+<details>
+<summary><b>Speech-to-text (10)</b></summary>
+
+| Engine | Runs | Notes |
+|---|---|---|
+| Web Speech | Browser API | Zero setup; uses the WebView's built-in speech service |
+| Windows Speech | Local | Windows only, offline fallback |
+| Whisper.cpp | Local | Downloadable Whisper models, tiny to large-v3 |
+| Parakeet TDT | Local | NVIDIA Parakeet via ONNX Runtime, high accuracy |
+| ORT Streaming | Local | Streaming transducer via ONNX Runtime |
+| Sherpa-ONNX | Local | Streaming transducer in a sidecar process |
+| Deepgram | Cloud | Nova-3 and others, real-time streaming |
+| Groq Whisper | Cloud | Fast Whisper with a free tier |
+| Whisper API | Cloud | OpenAI Whisper REST API |
+| Azure Speech | Cloud | Azure Cognitive Services |
+
+</details>
+
+<details>
+<summary><b>LLM (9)</b></summary>
+
+| Provider | Runs | Notes |
+|---|---|---|
+| Ollama | Local | Auto-detected at `localhost:11434` |
+| LM Studio | Local | OpenAI-compatible local server |
+| OpenAI | Cloud | API key |
+| Anthropic | Cloud | API key |
+| Google Gemini | Cloud | API key; optional Gemini Context Cache and web-search grounding |
+| Groq | Cloud | API key, very fast inference |
+| OpenRouter | Cloud | Hundreds of models behind one key |
+| Claude (subscription, beta) | Local CLI | Uses your Claude Pro/Max login through the `claude` CLI, no API key ([guide](docs/user-guide/claude-subscription.md)) |
+| Custom | Any | Your own endpoint, SSE or NDJSON streaming |
+
+</details>
+
+<details>
+<summary><b>Translation (5)</b></summary>
+
+DeepL, Google, Microsoft, any configured LLM, and OPUS-MT (offline, local models).
+
+</details>
+
+<details>
+<summary><b>How NexQ compares</b></summary>
+
+| | NexQ | Otter.ai | Granola | Krisp |
+|---|:---:|:---:|:---:|:---:|
+| Price | **Free** | Paid tiers | Paid tiers | Paid tiers |
+| Open source | Yes | No | No | No |
+| Fully local option | Yes | No | No | Partial |
+| No bot joins the call | Yes | No | Yes | Yes |
+| Choice of STT / LLM | 10 / 9 | Fixed | Fixed | Fixed |
+| Local LLM | Yes | No | No | No |
+| Your own documents as context | Yes | No | No | No |
+
+</details>
+
+## Privacy
+
+- **Nothing leaves your machine unless you choose a cloud provider.** With a local STT engine and a local LLM, NexQ works offline.
+- **Your data stays on disk you control:** meetings, transcripts, recordings, models and the RAG index live in the app data folder (`%APPDATA%\com.nexq.app` on Windows, `~/Library/Application Support/com.nexq.app` on macOS).
+- **Secrets go to the OS credential store:** Windows Credential Manager or the macOS Keychain.
+- **No telemetry or analytics.** Apart from the providers you configure, NexQ only contacts GitHub Releases to check for updates, and every update is verified with an Ed25519 signature.
+- Found a security issue? Please follow [SECURITY.md](SECURITY.md).
 
 ## Development
 
-### Prerequisites
+NexQ is a [Tauri 2](https://v2.tauri.app/) app: a Rust backend (tokio) and a React 18 + TypeScript frontend.
 
-- [Node.js](https://nodejs.org/) 20+
-- [Rust](https://www.rust-lang.org/tools/install) (stable toolchain)
-- [Tauri CLI](https://v2.tauri.app/start/prerequisites/) (`npm install -g @tauri-apps/cli`)
+**Prerequisites**
 
-### Setup
+| | Windows | macOS (Apple Silicon) |
+|---|---|---|
+| Toolchain | [Node.js](https://nodejs.org/) 20+, [Rust](https://rustup.rs/) stable, [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/) (ships with Windows 11) | Node.js 20+, Rust stable, Xcode Command Line Tools (`xcode-select --install`) |
+| Native build tools | CMake, Ninja, LLVM: `winget install Kitware.CMake Ninja-build.Ninja LLVM.LLVM` | CMake: `brew install cmake` |
 
 ```bash
-# Clone the repository
 git clone https://github.com/naxhq/NexQ.git
 cd NexQ
-
-# Install frontend dependencies
 npm install
-
-# Run in development mode (launches Rust backend + React frontend)
-npx tauri dev
-
-# Build production installer
-npx tauri build
+npx tauri dev          # run the full app with hot reload
 ```
 
-### Other Commands
+| Task | Command |
+|---|---|
+| Frontend tests (Vitest) | `npm test` |
+| Rust tests | `cargo test --lib` (in `src-tauri/`) |
+| Type check | `npx tsc --noEmit` |
+| Production frontend build | `npm run build` |
+| Windows installer | `npx tauri build` |
+| macOS app + dmg (from v2.25) | `./build-mac.sh` |
 
-```bash
-npm run dev       # Vite dev server only (port 5173)
-npm run build     # TypeScript check + Vite production build
-```
-
-## Windows SmartScreen
-
-When you first run NexQ, Windows SmartScreen may display a warning. This is normal for open-source applications that are not code-signed. To proceed:
-
-1. Click **"More info"**
-2. Click **"Run anyway"**
-
-Code signing certificates are expensive and not feasible for most open-source projects. The application is safe to run — you can verify by building from source.
+Read **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** for setup details, debugging and logs, and **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for how the pieces fit together.
 
 ## Contributing
 
-Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions of every size are welcome: bug reports, docs, translations, new providers, and macOS testing in particular. Start with **[CONTRIBUTING.md](CONTRIBUTING.md)** and look for [`good first issue`](https://github.com/naxhq/NexQ/labels/good%20first%20issue) and [`help wanted`](https://github.com/naxhq/NexQ/labels/help%20wanted). Please follow our [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Community and support
+
+- **Questions and ideas:** [GitHub Discussions](https://github.com/naxhq/NexQ/discussions)
+- **Bugs and feature requests:** [Issues](https://github.com/naxhq/NexQ/issues/new/choose)
+- **Security reports:** privately, via [SECURITY.md](SECURITY.md)
+- More in [SUPPORT.md](SUPPORT.md)
+
+If NexQ helps you, a star helps others find it.
+
+<a href="https://star-history.com/#naxhq/NexQ&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=naxhq/NexQ&type=Date&theme=dark">
+    <img alt="Star history chart" src="https://api.star-history.com/svg?repos=naxhq/NexQ&type=Date" width="600">
+  </picture>
+</a>
 
 ## License
 
-[MIT License](LICENSE) — free forever.
+[MIT](LICENSE) © Vahid Alizadeh and NexQ contributors.
 
-## Acknowledgments
+## Acknowledgements
 
-- [Tauri](https://tauri.app/) — desktop application framework
-- [React](https://react.dev/) — user interface library
-- [whisper-rs](https://github.com/tazz4843/whisper-rs) — Rust bindings for OpenAI Whisper
-- [Deepgram](https://deepgram.com/) — speech-to-text API
-- [shadcn/ui](https://ui.shadcn.com/) — UI component library
+NexQ stands on the shoulders of
+[Tauri](https://tauri.app/),
+[React](https://react.dev/),
+[whisper.cpp](https://github.com/ggerganov/whisper.cpp) and [whisper-rs](https://github.com/tazz4843/whisper-rs),
+[ONNX Runtime](https://onnxruntime.ai/) and the [`ort`](https://github.com/pykeio/ort) crate,
+[sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx),
+[cpal](https://github.com/RustAudio/cpal),
+[rusqlite](https://github.com/rusqlite/rusqlite),
+[Zustand](https://github.com/pmndrs/zustand),
+[Tailwind CSS](https://tailwindcss.com/) and [shadcn/ui](https://ui.shadcn.com/),
+and [OPUS-MT](https://github.com/Helsinki-NLP/Opus-MT).
+Thanks to every contributor, including [@visitek](https://github.com/visitek) for the macOS port.

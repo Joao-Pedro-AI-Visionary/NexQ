@@ -1,0 +1,71 @@
+# Dependabot version updates.
+# Minor and patch updates are grouped into one PR per ecosystem per week to keep noise low;
+# major updates arrive as individual PRs. Security updates are not limited by these settings.
+# https://docs.github.com/code-security/dependabot/working-with-dependabot/dependabot-options-reference
+version: 2
+
+updates:
+  # Desktop app frontend (React, Vite, Tauri JS API)
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: chore
+      include: scope
+    labels: ["dependencies", "javascript"]
+    groups:
+      npm-minor-patch:
+        update-types: ["minor", "patch"]
+
+  # Project website (Astro)
+  - package-ecosystem: npm
+    directory: /website
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: chore
+      include: scope
+    labels: ["dependencies", "javascript", "area: website"]
+    groups:
+      website-minor-patch:
+        update-types: ["minor", "patch"]
+
+  # Rust backend
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: chore
+      include: scope
+    labels: ["dependencies", "rust"]
+    ignore:
+      # ort is pinned to a release candidate whose ONNX Runtime version must match
+      # scripts/fetch-onnxruntime.mjs; whisper-rs builds whisper.cpp with flags tuned in
+      # src-tauri/.cargo/config.toml. Both are upgraded deliberately, by hand.
+      - dependency-name: ort
+      - dependency-name: whisper-rs
+    groups:
+      cargo-minor-patch:
+        update-types: ["minor", "patch"]
+
+  # GitHub Actions used by the workflows
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: ci
+    labels: ["dependencies", "github-actions"]
+    groups:
+      actions:
+        patterns: ["*"]

@@ -1,0 +1,148 @@
+# Recommended label set for naxhq/NexQ.
+#
+# This file is documentation only: nothing applies it automatically. The format
+# (name / color / description) is compatible with label-sync actions such as
+# crazy-max/ghaction-github-labeler and EndBug/label-sync if you want to automate it later.
+#
+# To apply it once with the GitHub CLI (creates new labels, updates existing ones;
+# needs PyYAML: `pip install pyyaml`), from the repository root in bash:
+#
+#   python -c "import yaml,sys;[print(l['name'],l['color'],l['description'],sep='\t') for l in yaml.safe_load(open('.github/labels.yml',encoding='utf-8'))]" |
+#     while IFS=$'\t' read -r name color desc; do
+#       gh label create "$name" --color "$color" --description "$desc" --force --repo naxhq/NexQ
+#     done
+#
+# Labels referenced elsewhere: issue forms use bug, enhancement, documentation, needs-triage;
+# dependabot.yml uses dependencies, javascript, rust, github-actions, area: website;
+# labeler.yml applies the area: and platform: labels to pull requests by changed path.
+
+# ── Type ──────────────────────────────────────────────────────────────────────
+- name: bug
+  color: "d73a4a"
+  description: Something isn't working
+- name: enhancement
+  color: "a2eeef"
+  description: New feature or improvement
+- name: documentation
+  color: "0075ca"
+  description: Improvements or additions to documentation
+- name: question
+  color: "d876e3"
+  description: Further information is requested (prefer Discussions)
+- name: security
+  color: "b60205"
+  description: Security hardening (report vulnerabilities privately, see SECURITY.md)
+- name: performance
+  color: "fbca04"
+  description: Speed, latency, memory or CPU usage
+- name: breaking change
+  color: "b60205"
+  description: Changes behavior or data in a backwards-incompatible way
+
+# ── Status / triage ───────────────────────────────────────────────────────────
+- name: needs-triage
+  color: "ededed"
+  description: Awaiting review by a maintainer
+- name: needs-info
+  color: "fef2c0"
+  description: More information is needed from the reporter
+- name: confirmed
+  color: "0e8a16"
+  description: Reproduced by a maintainer
+- name: blocked
+  color: "5319e7"
+  description: Waiting on something else (upstream, another PR, a decision)
+- name: duplicate
+  color: "cfd3d7"
+  description: This issue or pull request already exists
+- name: invalid
+  color: "e4e669"
+  description: This doesn't seem right
+- name: wontfix
+  color: "ffffff"
+  description: This will not be worked on
+
+# ── Contributor-friendly ──────────────────────────────────────────────────────
+- name: good first issue
+  color: "7057ff"
+  description: Good for newcomers
+- name: help wanted
+  color: "008672"
+  description: Extra attention is needed; contributions welcome
+
+# ── Priority ──────────────────────────────────────────────────────────────────
+- name: "priority: critical"
+  color: "b60205"
+  description: Crash, data loss or broken meetings for many users
+- name: "priority: high"
+  color: "d93f0b"
+  description: Important; should be addressed in the next release
+- name: "priority: low"
+  color: "c2e0c6"
+  description: Nice to have
+
+# ── Platform ──────────────────────────────────────────────────────────────────
+- name: "platform: windows"
+  color: "0078d6"
+  description: Specific to Windows
+- name: "platform: macos"
+  color: "555555"
+  description: Specific to macOS (Apple Silicon)
+
+# ── Area ──────────────────────────────────────────────────────────────────────
+- name: "area: stt"
+  color: "c5def5"
+  description: Speech-to-text providers and transcription
+- name: "area: llm"
+  color: "c5def5"
+  description: LLM providers, streaming and AI actions
+- name: "area: claude"
+  color: "c5def5"
+  description: Claude (subscription) CLI provider
+- name: "area: audio"
+  color: "c5def5"
+  description: Mic and system audio capture, devices, recording
+- name: "area: overlay"
+  color: "c5def5"
+  description: In-meeting overlay window
+- name: "area: launcher"
+  color: "c5def5"
+  description: Launcher window, meeting history and details
+- name: "area: settings"
+  color: "c5def5"
+  description: Settings panels and configuration
+- name: "area: intelligence"
+  color: "c5def5"
+  description: Prompt assembly, question detection, transcript buffer
+- name: "area: rag"
+  color: "c5def5"
+  description: Context documents, embeddings and local RAG
+- name: "area: translation"
+  color: "c5def5"
+  description: Real-time translation
+- name: "area: stealth"
+  color: "c5def5"
+  description: Stealth Mode / hide from screen share
+- name: "area: updater"
+  color: "c5def5"
+  description: Auto-update and installer
+- name: "area: build"
+  color: "c5def5"
+  description: Build system, CI and release pipeline
+- name: "area: website"
+  color: "c5def5"
+  description: Project website (website/)
+
+# ── Dependencies (used by Dependabot) ─────────────────────────────────────────
+- name: dependencies
+  color: "0366d6"
+  description: Dependency updates
+- name: javascript
+  color: "f1e05a"
+  description: npm dependency updates
+- name: rust
+  color: "dea584"
+  description: Cargo dependency updates
+- name: github-actions
+  color: "000000"
+  description: GitHub Actions updates
