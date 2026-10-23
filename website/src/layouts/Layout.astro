@@ -1,84 +1,137 @@
 ---
 import '../styles/global.css';
+import fs from 'node:fs';
+import path from 'node:path';
+import { SITE_TITLE, SITE_DESCRIPTION, REPO, RELEASES_LATEST, LICENSE, FAQ } from '../data/site';
 
 interface Props {
   title?: string;
   description?: string;
 }
 
-const {
-  title = 'NexQ — AI Meeting Assistant & Real-Time Interview Copilot',
-  description = 'Free, open-source AI meeting assistant. 10 STT providers, 8 LLM providers, local RAG pipeline. 100% local processing — no bots join your calls.',
-} = Astro.props;
+const { title = SITE_TITLE, description = SITE_DESCRIPTION } = Astro.props;
+
+const base = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`;
+const canonical = new URL(Astro.url.pathname, Astro.site).href;
+const ogImage = new URL(`${base}og.jpg`, Astro.site).href;
+
+// The app's version lives in the repo root package.json (bumped by `npm run release`).
+let appVersion: string | undefined;
+try {
+  const pkg = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), '..', 'package.json'), 'utf8'));
+  appVersion = typeof pkg.version === 'string' ? pkg.version : undefined;
+} catch {
+  appVersion = undefined;
+}
+
+const softwareLd = {
+  '@context': 'https://schema.org',
+  '@type': 'SoftwareApplication',
+  name: 'NexQ',
+  description,
+  url: canonical,
+  image: ogImage,
+  applicationCategory: 'BusinessApplication',
+  applicationSubCategory: 'AI meeting assistant',
+  operatingSystem: 'Windows 10, Windows 11, macOS (Apple Silicon, beta)',
+  ...(appVersion ? { softwareVersion: appVersion } : {}),
+  downloadUrl: RELEASES_LATEST,
+  license: LICENSE,
+  isAccessibleForFree: true,
+  offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+  sameAs: [REPO],
+};
+
+const faqLd = {
+  '@context': 'https://schema.org',
+  '@type': 'FAQPage',
+  mainEntity: FAQ.map((f) => ({
+    '@type': 'Question',
+    name: f.q,
+    acceptedAnswer: { '@type': 'Answer', text: f.a },
+  })),
+};
 ---
 
 <!doctype html>
-<html lang="en" class="bg-surface text-text-primary">
+<html lang="en" dir="ltr">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
     <meta name="description" content={description} />
-    <meta name="theme-color" content="#0c0c14" />
+    <link rel="canonical" href={canonical} />
+    <meta name="theme-color" content="#0b0d13" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="generator" content={Astro.generator} />
 
     <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="NexQ" />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
-    <meta property="og:image" content="/NexQ/og-image.jpeg" />
-    <meta property="og:type" content="website" />
-    <meta name="twitter:card" content="summary_large_image" />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="NexQ: AI Meeting Assistant and Real-Time Interview Copilot" />
+    <meta property="og:locale" content="en_US" />
 
-    <!-- Google Fonts: Inter -->
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImage} />
+    <meta name="twitter:image:alt" content="NexQ: AI Meeting Assistant and Real-Time Interview Copilot" />
+
+    <!-- Icons -->
+    <link rel="icon" type="image/png" sizes="64x64" href={`${base}favicon.png`} />
+    <link rel="apple-touch-icon" href={`${base}apple-touch-icon.png`} />
+    <link rel="sitemap" href={`${base}sitemap-index.xml`} />
+
+    <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
       rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400..700&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@1&display=swap"
     />
 
-    <!-- Favicon -->
-    <link rel="icon" type="image/png" href="/NexQ/nexq-logo.png" />
+    <link rel="preload" as="image" href={`${base}media/hero-demo-poster.webp`} type="image/webp" fetchpriority="high" />
 
-    <title>{title}</title>
+    <script is:inline>document.documentElement.classList.add('js');</script>
+
+    <script type="application/ld+json" set:html={JSON.stringify(softwareLd)} />
+    <script type="application/ld+json" set:html={JSON.stringify(faqLd)} />
   </head>
-  <body class="min-h-screen bg-surface text-text-primary antialiased">
+  <body class="min-h-screen">
+    <a
+      href="#main"
+      class="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-lg focus:bg-brand-btn focus:px-4 focus:py-2 focus:text-white"
+    >
+      Skip to content
+    </a>
     <slot />
 
-    <!-- Lenis Smooth Scroll (disabled when prefers-reduced-motion) -->
     <script>
-      import Lenis from 'lenis';
-
-      const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-      if (!prefersReduced) {
-        const lenis = new Lenis({
-          duration: 1.2,
-          easing: (t: number) => Math.min(1, 1.001 - Math.pow(2, -10 * t)),
-        });
-
-        function raf(time: number) {
-          lenis.raf(time);
-          requestAnimationFrame(raf);
-        }
-        requestAnimationFrame(raf);
-      }
-    </script>
-
-    <!-- Scroll-triggered Animations -->
-    <script>
-      const observer = new IntersectionObserver(
-        (entries) => {
-          entries.forEach((entry) => {
-            if (entry.isIntersecting) {
-              entry.target.classList.add('is-visible');
+      // Reveal-on-scroll. CSS keeps everything visible without JS or with reduced motion.
+      const items = document.querySelectorAll<HTMLElement>('[data-reveal]');
+      if ('IntersectionObserver' in window) {
+        const io = new IntersectionObserver(
+          (entries) => {
+            for (const entry of entries) {
+              if (entry.isIntersecting) {
+                entry.target.classList.add('is-in');
+                io.unobserve(entry.target);
+              }
             }
-          });
-        },
-        { threshold: 0.1 }
-      );
-
-      document.querySelectorAll('.animate-on-scroll').forEach((el) => {
-        observer.observe(el);
-      });
+          },
+          { rootMargin: '0px 0px -8% 0px', threshold: 0.08 },
+        );
+        items.forEach((el) => io.observe(el));
+      } else {
+        items.forEach((el) => el.classList.add('is-in'));
+      }
     </script>
   </body>
 </html>
