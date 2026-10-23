@@ -3,6 +3,17 @@ name: CI
 on:
   pull_request:
     branches: [main]
+  # Also run on main so the README CI badge reflects the default branch.
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check:
@@ -33,9 +44,45 @@ jobs:
       - name: TypeScript check
         run: npx tsc --noEmit
 
+      - name: Frontend tests
+        run: npm test
+
       - name: Stage ONNX Runtime
         run: node scripts/fetch-onnxruntime.mjs
 
       - name: Rust check
         run: cargo check
         working-directory: src-tauri
+
+  check-macos:
+    runs-on: macos-14 # Apple Silicon
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          prefix-key: v1-ggml-portable
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Stage ONNX Runtime
+        run: node scripts/fetch-onnxruntime.mjs
+
+      - name: Rust check
+        shell: bash
+        working-directory: src-tauri
+        run: |
+          source ../scripts/macos-env.sh
+          cargo check

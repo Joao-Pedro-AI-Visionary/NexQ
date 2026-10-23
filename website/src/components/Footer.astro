@@ -1,102 +1,80 @@
 ---
-const baseUrl = import.meta.env.BASE_URL;
+import { REPO, RELEASES, CHANGELOG, CONTRIBUTING, LICENSE, ISSUES, doc } from '../data/site';
 
-const productLinks = [
-  { label: 'Features', href: '#features' },
-  { label: 'Use Cases', href: '#use-cases' },
-  { label: 'Compare', href: '#compare' },
-];
+const base = import.meta.env.BASE_URL;
+const year = new Date().getFullYear();
 
-const docsLinks = [
-  { label: 'Getting Started', href: 'https://github.com/naxhq/NexQ/blob/main/docs/user-guide/getting-started.md' },
-  { label: 'User Guide', href: 'https://github.com/naxhq/NexQ/blob/main/docs/user-guide/configuration.md' },
-  { label: 'Troubleshooting', href: 'https://github.com/naxhq/NexQ/blob/main/docs/user-guide/troubleshooting.md' },
-];
-
-const communityLinks = [
-  { label: 'GitHub', href: 'https://github.com/naxhq/NexQ' },
-  { label: 'Contributing', href: 'https://github.com/naxhq/NexQ/blob/main/CONTRIBUTING.md' },
-  { label: 'License', href: 'https://github.com/naxhq/NexQ/blob/main/LICENSE' },
+const groups = [
+  {
+    title: 'Product',
+    links: [
+      { label: 'Features', href: '#features' },
+      { label: 'Stealth mode', href: '#stealth' },
+      { label: 'Claude subscription', href: '#claude' },
+      { label: 'What’s new', href: '#whats-new' },
+      { label: 'Download', href: '#download' },
+    ],
+  },
+  {
+    title: 'Docs',
+    links: [
+      { label: 'Getting started', href: doc('getting-started') },
+      { label: 'AI providers', href: doc('ai-providers') },
+      { label: 'Keyboard shortcuts', href: doc('keyboard-shortcuts') },
+      { label: 'Troubleshooting', href: doc('troubleshooting') },
+    ],
+  },
+  {
+    title: 'Project',
+    links: [
+      { label: 'GitHub', href: REPO },
+      { label: 'Releases', href: RELEASES },
+      { label: 'Changelog', href: CHANGELOG },
+      { label: 'Contributing', href: CONTRIBUTING },
+      { label: 'Issues', href: ISSUES },
+    ],
+  },
 ];
 ---
 
-<footer class="bg-[#08080e]">
-  <div class="mx-auto grid max-w-6xl grid-cols-1 gap-8 px-6 py-16 md:grid-cols-4">
-    <!-- Col 1: Logo + tagline -->
-    <div>
-      <a href={baseUrl} class="flex items-center gap-2.5">
-        <img
-          src={`${baseUrl}nexq-logo.png`}
-          alt="NexQ"
-          width="32"
-          height="32"
-          class="rounded-lg"
-        />
-        <span class="text-lg font-bold text-text-primary">NexQ</span>
+<footer class="border-t border-line bg-bg-sunken" aria-labelledby="footer-title">
+  <h2 id="footer-title" class="sr-only">Site footer</h2>
+  <div class="wrap grid gap-12 py-16 md:grid-cols-12">
+    <div class="md:col-span-4">
+      <a href={base} class="inline-flex items-center gap-2.5 rounded-lg" aria-label="NexQ home">
+        <img src={`${base}img/logo-96.png`} alt="" width="28" height="28" class="rounded-[7px]" loading="lazy" />
+        <span class="text-[1.05rem] font-semibold tracking-tight text-ink">NexQ</span>
       </a>
-      <p class="mt-3 text-sm text-text-muted">AI Meeting Assistant</p>
+      <p class="mt-4 max-w-xs text-sm leading-relaxed text-ink-3">
+        Open-source AI meeting assistant and real-time interview copilot for Windows and macOS.
+      </p>
     </div>
-
-    <!-- Col 2: Product -->
-    <div>
-      <h4 class="mb-4 text-xs font-bold uppercase text-text-muted">Product</h4>
-      <ul class="space-y-2">
-        {productLinks.map((link) => (
-          <li>
-            <a href={link.href} class="text-sm text-text-secondary transition-colors duration-150 hover:text-text-primary">
-              {link.label}
-            </a>
-          </li>
-        ))}
-      </ul>
-    </div>
-
-    <!-- Col 3: Docs -->
-    <div>
-      <h4 class="mb-4 text-xs font-bold uppercase text-text-muted">Docs</h4>
-      <ul class="space-y-2">
-        {docsLinks.map((link) => {
-          const isExternal = link.href.startsWith('http');
-          return (
-            <li>
-              <a
-                href={link.href}
-                class="text-sm text-text-secondary transition-colors duration-150 hover:text-text-primary"
-                {...(isExternal ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
-              >
-                {link.label}
-              </a>
-            </li>
-          );
-        })}
-      </ul>
-    </div>
-
-    <!-- Col 4: Community -->
-    <div>
-      <h4 class="mb-4 text-xs font-bold uppercase text-text-muted">Community</h4>
-      <ul class="space-y-2">
-        {communityLinks.map((link) => (
-          <li>
-            <a
-              href={link.href}
-              target="_blank"
-              rel="noopener noreferrer"
-              class="text-sm text-text-secondary transition-colors duration-150 hover:text-text-primary"
-            >
-              {link.label}
-            </a>
-          </li>
-        ))}
-      </ul>
+    <div class="grid grid-cols-2 gap-8 sm:grid-cols-3 md:col-span-8">
+      {groups.map((g) => (
+        <nav aria-label={g.title}>
+          <h3 class="font-mono text-xs uppercase tracking-[0.12em] text-ink-3">{g.title}</h3>
+          <ul class="mt-4 space-y-1">
+            {g.links.map((l) => {
+              const external = l.href.startsWith('http');
+              return (
+                <li>
+                  <a
+                    href={l.href}
+                    class="inline-flex min-h-[32px] items-center text-sm text-ink-2 transition-colors hover:text-ink"
+                    {...(external ? { target: '_blank', rel: 'noopener' } : {})}
+                  >
+                    {l.label}
+                  </a>
+                </li>
+              );
+            })}
+          </ul>
+        </nav>
+      ))}
     </div>
   </div>
-
-  <!-- Bottom bar -->
-  <div class="mx-auto max-w-6xl border-t border-white/5 px-6">
-    <div class="flex flex-col items-center justify-between gap-2 py-8 sm:flex-row">
-      <span class="text-sm text-text-muted">Made by Vahid Alizadeh</span>
-      <span class="text-sm text-text-muted">MIT License &middot; &copy; 2026</span>
-    </div>
+  <div class="wrap flex flex-col gap-2 border-t border-line py-8 text-sm text-ink-3 sm:flex-row sm:items-center sm:justify-between">
+    <span>© {year} Vahid Alizadeh and contributors</span>
+    <a href={LICENSE} target="_blank" rel="noopener" class="hover:text-ink-2">MIT License</a>
   </div>
 </footer>

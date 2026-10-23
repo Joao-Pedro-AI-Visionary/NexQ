@@ -1,18 +1,18 @@
 #!/usr/bin/env node
-// Stages ONNX Runtime + the MSVC C++ runtime into src-tauri/ort/ so Tauri can bundle
-// them next to nexq.exe (see bundle.resources in tauri.conf.json).
+// Stages the ONNX Runtime shared library into src-tauri/ort/ so Tauri can bundle
+// it with the app (see bundle.resources in tauri.windows.conf.json / tauri.macos.conf.json).
 //
-// Why a DLL instead of the `ort` crate's prebuilt static library: that static build
-// is compiled with BMI2/AVX2 code in shared STL functions, which crashed NexQ at
-// launch (0xC000001D) on CPUs / x64 emulators without those extensions (issue #6).
-// Microsoft's official onnxruntime.dll does runtime CPU dispatch and is only loaded
-// when a local ONNX model is actually used.
+// Why a shared library instead of the `ort` crate's prebuilt static build: that
+// static build is compiled with BMI2/AVX2 code in shared STL functions, which
+// crashed NexQ at launch (0xC000001D) on CPUs lacking those extensions (issue #6).
+// Microsoft's official binary does runtime CPU dispatch and is only loaded when a
+// local ONNX model is actually used.
 //
-// The official DLL links the dynamic MSVC runtime. We ship msvcp140/vcruntime140
-// app-local because the installer skips vc_redist when *any* version is present, and
-// binaries built with recent MSVC crash against an older system msvcp140.dll.
+// Windows also needs the dynamic MSVC runtime shipped app-local because the
+// installer skips vc_redist when *any* version is present, and binaries built with
+// recent MSVC crash against an older system msvcp140.dll.
 //
-// Idempotent: skips the download when the staged files already match.
+// Idempotent: skips the download when the staged file already matches.
 
 import { createHash } from "crypto";
 import { execFileSync } from "child_process";
@@ -23,36 +23,44 @@ import { fileURLToPath } from "url";
 
 // Must be >= the ONNX Runtime minor version the `ort` crate targets (ort 2.0.0-rc.12 → 1.24).
 const ORT_VERSION = "1.24.2";
-const ORT_ZIP_URL = `https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-win-x64-${ORT_VERSION}.zip`;
-const ORT_ZIP_SHA256 = "8e3e9c826375352e29cb2614fe44f3d7a4b0ff7b8028ad7a456af9d949a7e8b0";
+
+// Windows
+const WIN_ZIP_URL = `https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-win-x64-${ORT_VERSION}.zip`;
+const WIN_ZIP_SHA256 = "8e3e9c826375352e29cb2614fe44f3d7a4b0ff7b8028ad7a456af9d949a7e8b0";
 const VC_RUNTIME_DLLS = ["msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll", "vcruntime140_1.dll"];
+
+// macOS (Microsoft publishes arm64 only for 1.24.2 — Apple Silicon)
+const MAC_ARM64_TGZ_URL = `https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-osx-arm64-${ORT_VERSION}.tgz`;
+const MAC_ARM64_TGZ_SHA256 = "0af4fa503e8ea285245b47ee42d0a7461b8156a81270857da0c1d4ecf858abde";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = join(root, "src-tauri", "ort");
 const stampPath = join(outDir, ".version");
 
-if (process.platform !== "win32") {
-  console.log("[fetch-onnxruntime] not on Windows — skipping");
-  process.exit(0);
+const sha256 = (buf) => createHash("sha256").update(buf).digest("hex");
+const isCurrent = (fileName) =>
+  existsSync(join(outDir, fileName)) &&
+  existsSync(stampPath) &&
+  readFileSync(stampPath, "utf8").trim() === ORT_VERSION;
+
+async function download(url, expectedSha) {
+  console.log(`[fetch-onnxruntime] downloading ${url}`);
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  const actual = sha256(buf);
+  if (actual !== expectedSha) {
+    throw new Error(`checksum mismatch for ${url}\n  expected ${expectedSha}\n  got      ${actual}`);
+  }
+  return buf;
 }
 
-const sha256 = (buf) => createHash("sha256").update(buf).digest("hex");
-
-function stageOnnxRuntime() {
-  const dllPath = join(outDir, "onnxruntime.dll");
-  if (existsSync(dllPath) && existsSync(stampPath) && readFileSync(stampPath, "utf8").trim() === ORT_VERSION) {
-    console.log(`[fetch-onnxruntime] onnxruntime.dll ${ORT_VERSION} already staged`);
-    return;
-  }
-  return (async () => {
-    console.log(`[fetch-onnxruntime] downloading ${ORT_ZIP_URL}`);
-    const res = await fetch(ORT_ZIP_URL);
-    if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
-    const zip = Buffer.from(await res.arrayBuffer());
-    const actual = sha256(zip);
-    if (actual !== ORT_ZIP_SHA256) {
-      throw new Error(`checksum mismatch for ${ORT_ZIP_URL}\n  expected ${ORT_ZIP_SHA256}\n  got      ${actual}`);
-    }
+async function stageWindows() {
+  const dll = "onnxruntime.dll";
+  if (isCurrent(dll)) {
+    console.log(`[fetch-onnxruntime] ${dll} ${ORT_VERSION} already staged`);
+  } else {
+    const zip = await download(WIN_ZIP_URL, WIN_ZIP_SHA256);
     const tmp = mkdtempSync(join(tmpdir(), "nexq-ort-"));
     try {
       const zipPath = join(tmp, "ort.zip");
@@ -61,13 +69,44 @@ function stageOnnxRuntime() {
       // from Git Bash / MSYS on PATH (which can't) isn't picked up instead.
       const tar = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe");
       execFileSync(tar, ["-xf", zipPath, "-C", tmp], { stdio: "inherit" });
-      copyFileSync(join(tmp, `onnxruntime-win-x64-${ORT_VERSION}`, "lib", "onnxruntime.dll"), dllPath);
+      copyFileSync(join(tmp, `onnxruntime-win-x64-${ORT_VERSION}`, "lib", "onnxruntime.dll"), join(outDir, dll));
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
     writeFileSync(stampPath, ORT_VERSION + "\n");
-    console.log(`[fetch-onnxruntime] staged onnxruntime.dll ${ORT_VERSION}`);
-  })();
+    console.log(`[fetch-onnxruntime] staged ${dll} ${ORT_VERSION}`);
+  }
+  stageVcRuntime();
+}
+
+async function stageMac() {
+  const dylib = "libonnxruntime.dylib";
+  if (isCurrent(dylib)) {
+    console.log(`[fetch-onnxruntime] ${dylib} ${ORT_VERSION} already staged`);
+    return;
+  }
+  if (process.arch !== "arm64") {
+    throw new Error(
+      `Microsoft does not publish an x86_64 macOS ONNX Runtime for v${ORT_VERSION}. ` +
+        "An Apple Silicon (arm64) Mac is required (or build without local ONNX features)."
+    );
+  }
+  const tgz = await download(MAC_ARM64_TGZ_URL, MAC_ARM64_TGZ_SHA256);
+  const tmp = mkdtempSync(join(tmpdir(), "nexq-ort-"));
+  try {
+    const tgzPath = join(tmp, "ort.tgz");
+    writeFileSync(tgzPath, tgz);
+    // macOS ships bsdtar, which handles .tgz (gzip) natively.
+    execFileSync("tar", ["-xzf", tgzPath, "-C", tmp], { stdio: "inherit" });
+    copyFileSync(
+      join(tmp, `onnxruntime-osx-arm64-${ORT_VERSION}`, "lib", `libonnxruntime.${ORT_VERSION}.dylib`),
+      join(outDir, dylib)
+    );
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+  writeFileSync(stampPath, ORT_VERSION + "\n");
+  console.log(`[fetch-onnxruntime] staged ${dylib} ${ORT_VERSION}`);
 }
 
 /** Newest Microsoft.VC14x.CRT folder from the installed Visual Studio / Build Tools. */
@@ -113,8 +152,13 @@ function stageVcRuntime() {
 
 mkdirSync(outDir, { recursive: true });
 try {
-  await stageOnnxRuntime();
-  stageVcRuntime();
+  if (process.platform === "win32") {
+    await stageWindows();
+  } else if (process.platform === "darwin") {
+    await stageMac();
+  } else {
+    console.log(`[fetch-onnxruntime] ${process.platform} — skipping (no bundled ONNX Runtime)`);
+  }
 } catch (e) {
   console.error(`[fetch-onnxruntime] ${e.message}`);
   process.exit(1);

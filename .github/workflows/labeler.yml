@@ -1,0 +1,20 @@
+name: Labeler
+
+# Adds area/platform labels to pull requests based on the files they change
+# (rules in .github/labeler.yml). pull_request_target is required so the job can label
+# PRs from forks; it never checks out or runs code from the pull request.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@v5
+        with:
+          sync-labels: false

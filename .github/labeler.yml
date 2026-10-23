@@ -1,0 +1,104 @@
+# Path-based pull request labels, applied by .github/workflows/labeler.yml (actions/labeler v5).
+# Label definitions live in .github/labels.yml.
+
+"area: stt":
+  - changed-files:
+      - any-glob-to-any-file:
+          - src-tauri/src/stt/**
+          - src/settings/STTSettings.tsx
+          - src/settings/LocalModelManager.tsx
+          - src/hooks/useSpeechRecognition.ts
+          - src/hooks/useSTTStatus.ts
+
+"area: llm":
+  - changed-files:
+      - any-glob-to-any-file:
+          - src-tauri/src/llm/**
+          - src/settings/LLMSettings.tsx
+
+"area: claude":
+  - changed-files:
+      - any-glob-to-any-file:
+          - src-tauri/src/llm/cli_agent/**
+          - src-tauri/src/commands/claude_cli_commands.rs
+          - src/settings/ClaudeCli*
+
+"area: audio":
+  - changed-files:
+      - any-glob-to-any-file:
+          - src-tauri/src/audio/**
+          - src/settings/MeetingAudioSettings.tsx
+
+"area: overlay":
+  - changed-files:
+      - any-glob-to-any-file:
+          - src/overlay/**
+
+"area: launcher":
+  - changed-files:
+      - any-glob-to-any-file:
+          - src/launcher/**
+
+"area: settings":
+  - changed-files:
+      - any-glob-to-any-file:
+          - src/settings/**
+          - src-tauri/src/commands/settings_commands.rs
+
+"area: intelligence":
+  - changed-files:
+      - any-glob-to-any-file:
+          - src-tauri/src/intelligence/**
+          - src-tauri/src/commands/intelligence_commands.rs
+
+"area: rag":
+  - changed-files:
+      - any-glob-to-any-file:
+          - src-tauri/src/rag/**
+          - src-tauri/src/context/**
+          - src/context/**
+
+"area: translation":
+  - changed-files:
+      - any-glob-to-any-file:
+          - src-tauri/src/translation/**
+          - src-tauri/src/commands/translation*_commands.rs
+
+"area: stealth":
+  - changed-files:
+      - any-glob-to-any-file:
+          - src-tauri/src/commands/stealth_commands.rs
+
+"area: updater":
+  - changed-files:
+      - any-glob-to-any-file:
+          - src-tauri/src/commands/updater_commands.rs
+          - src/hooks/useUpdater.ts
+          - src/stores/updaterStore.ts
+
+"area: build":
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/workflows/**
+          - scripts/**
+          - src-tauri/.cargo/**
+          - src-tauri/tauri*.json
+          - "*.sh"
+
+"area: website":
+  - changed-files:
+      - any-glob-to-any-file:
+          - website/**
+
+"platform: macos":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*macos*"
+          - "**/*.plist"
+          - "*.sh"
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.md"
+          - docs/**

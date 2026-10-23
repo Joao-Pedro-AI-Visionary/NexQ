@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMeetingStore } from "../stores/meetingStore";
 import { useScenarioStore } from "../stores/scenarioStore";
 import { useCallLogStore } from "../stores/callLogStore";
@@ -42,7 +42,11 @@ import {
   PanelLeftClose,
   PanelRightClose,
   Eye,
+  ScreenShare,
+  ScreenShareOff,
 } from "lucide-react";
+import { toggleStealthMode } from "../hooks/useGlobalShortcut";
+import { formatShortcut } from "../lib/shortcutLabel";
 import { formatDuration } from "../lib/utils";
 
 // ════════════════════════════════════════════════════════════════
@@ -59,6 +63,17 @@ export function OverlayView() {
   const [statsOpen, setStatsOpen] = useState(false);
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
   const [layoutMode, setLayoutMode] = useState<"split" | "ai" | "transcript">("split");
+
+  // The overlay window stays mounted between meetings, so reset its local UI
+  // state whenever a new meeting starts (panels, layout, ask input).
+  const activeMeetingId = activeMeeting?.id ?? "";
+  useEffect(() => {
+    setAskInputVisible(false);
+    setDevLogOpen(false);
+    setStatsOpen(false);
+    setBookmarksOpen(false);
+    setLayoutMode("split");
+  }, [activeMeetingId]);
   const cycleLayout = () => setLayoutMode((m) => m === "split" ? "ai" : m === "ai" ? "transcript" : "split");
   const toggleLog = useCallLogStore((s) => s.toggleOpen);
   const logOpen = useCallLogStore((s) => s.isOpen);
@@ -69,6 +84,8 @@ export function OverlayView() {
   const toggleMuteYou = useConfigStore((s) => s.toggleMuteYou);
   const toggleMuteThem = useConfigStore((s) => s.toggleMuteThem);
   const overlayOpacity = useConfigStore((s) => s.overlayOpacity);
+  const stealthMode = useConfigStore((s) => s.stealthMode);
+  const stealthShortcut = useConfigStore((s) => s.stealthShortcut);
   const setOverlayOpacity = useConfigStore((s) => s.setOverlayOpacity);
   const OPACITY_PRESETS = [0.9, 0.65, 0.35, 0.1];
   const cycleOpacity = () => {
@@ -222,6 +239,12 @@ export function OverlayView() {
           <HeaderBtn icon={<Bookmark className="h-3.5 w-3.5" />} active={bookmarksOpen} onClick={() => setBookmarksOpen(p => !p)} tooltip="Bookmarks (K)" />
           <HeaderBtn icon={<Activity className="h-3.5 w-3.5" />} active={logOpen} onClick={toggleLog} tooltip="AI Call Log" />
           <HeaderBtn icon={<Terminal className="h-3.5 w-3.5" />} active={devLogOpen} onClick={() => setDevLogOpen(p => !p)} tooltip="Dev Log (Ctrl+Shift+L)" />
+          <HeaderBtn
+            icon={stealthMode ? <ScreenShareOff className="h-3.5 w-3.5" /> : <ScreenShare className="h-3.5 w-3.5" />}
+            active={stealthMode}
+            onClick={() => { toggleStealthMode().catch(() => {}); }}
+            tooltip={`${stealthMode ? "Hidden from screen share — click to show" : "Visible in screen share — click to hide"} (${formatShortcut(stealthShortcut)})`}
+          />
           <HeaderBtn icon={<Eye className="h-3.5 w-3.5" />} onClick={cycleOpacity} tooltip={`Transparency: ${Math.round(overlayOpacity * 100)}% (click to cycle)`} />
           <HeaderBtn icon={<Settings className="h-3.5 w-3.5" />} onClick={() => setCurrentView("settings")} tooltip="Settings" />
           <HeaderBtn icon={<Minus className="h-3.5 w-3.5" />} onClick={handleMinimizeToDashboard} tooltip="Minimize to Dashboard" />

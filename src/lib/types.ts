@@ -301,6 +301,9 @@ export type LLMProviderType =
   | "custom"
   | "claude_cli";
 
+/** Auth mode for a user-supplied (custom) LLM endpoint. */
+export type CustomLlmAuthType = "none" | "bearer" | "api_key";
+
 export interface LLMProviderConfig {
   type: LLMProviderType;
   name: string;
@@ -1017,6 +1020,13 @@ export interface OpusMtModelStatus {
 // == TRAY TYPES ==
 
 export type TrayState = "idle" | "recording" | "muted" | "stealth" | "ai_processing" | "indexing";
+
+/** Mirrors `StealthSupport` in stealth_commands.rs. */
+export interface StealthSupport {
+  supported: boolean;
+  /** Caveat to show next to the toggle, if any. */
+  note: string | null;
+}
 
 export interface RecentMeeting {
   id: string;

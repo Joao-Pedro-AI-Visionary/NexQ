@@ -597,7 +597,13 @@ impl STTProvider for DeepgramSTT {
 
         let start_time = Instant::now();
         self.start_time = Some(start_time);
-        self.stop_flag.store(false, Ordering::SeqCst);
+        // Cancel any tasks from a previous connection before starting a new one.
+        // The reader/writer tasks each capture their own Arc clone of `stop_flag`,
+        // so replacing it guarantees a stale connection can no longer push results
+        // into this channel — otherwise an auto-reconnect can leave two readers
+        // alive and every final line gets duplicated (and keeps multiplying).
+        self.stop_flag.store(true, Ordering::SeqCst);
+        self.stop_flag = Arc::new(AtomicBool::new(false));
 
         // Create audio data channel
         let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>(512);

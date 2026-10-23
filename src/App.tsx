@@ -2,7 +2,6 @@ import { useEffect, useCallback, useState } from "react";
 import { useMeetingStore } from "./stores/meetingStore";
 import { useConfigStore } from "./stores/configStore";
 import { useAIActionsStore } from "./stores/aiActionsStore";
-import { useStreamStore } from "./stores/streamStore";
 import { LauncherView } from "./launcher/LauncherView";
 import { OverlayView } from "./overlay/OverlayView";
 import { SettingsOverlay } from "./settings/SettingsOverlay";
@@ -21,13 +20,14 @@ import { useTranslationStore } from "./stores/translationStore";
 import { CallLogPanel } from "./calllog";
 import { SelectionToolbar } from "./components/SelectionToolbar";
 import { ActiveMeetingProvider } from "./components/ActiveMeetingProvider";
+import { initMeetingSpeakers, resetMeetingScopedStores } from "./stores/resetMeeting";
 import { listen } from "@tauri-apps/api/event";
 import type { AppView, Meeting, AudioMode, AIScenario } from "./lib/types";
 import { useDemoShortcut } from "./demo/useDemoShortcut";
 import { DemoPicker } from "./demo/DemoPicker";
 import { DemoBadge } from "./demo/DemoBadge";
 import { showLauncherWindow, showOverlayWindow } from "./lib/windows";
-import { emitOverlayMeetingReady, onOverlayMeetingReady } from "./lib/events";
+import { emitOverlayMeetingReady, onOverlayMeetingReady, onStealthModeChanged } from "./lib/events";
 
 function App() {
   const currentView = useMeetingStore((s) => s.currentView);
@@ -36,6 +36,9 @@ function App() {
   const setCurrentView = useMeetingStore((s) => s.setCurrentView);
   const startMeetingFlow = useMeetingStore((s) => s.startMeetingFlow);
   const loadRecentMeetings = useMeetingStore((s) => s.loadRecentMeetings);
+  // Changes on every new meeting → used as a React key to remount overlay UI
+  // so local component state (open panels, tabs, layout) is reset too.
+  const activeMeetingId = useMeetingStore((s) => s.activeMeeting?.id ?? "");
   const firstRunCompleted = useConfigStore((s) => s.firstRunCompleted);
   const configLoaded = useConfigStore((s) => s._loaded);
   const loadConfig = useConfigStore((s) => s.loadConfig);
@@ -156,22 +159,35 @@ function App() {
     let unlisten: (() => void) | undefined;
     listen<{ meeting: Meeting; audioMode: AudioMode; aiScenario: AIScenario }>(
       "nexq:meeting_started",
-      (e) => {
+      async (e) => {
         const { meeting, audioMode, aiScenario } = e.payload;
-        // The answers and request times shown here belong to the previous meeting.
-        useStreamStore.getState().resetForMeeting();
+        const startedAt = Date.now();
+        // Reset ALL per-meeting stores in THIS (overlay) window first. Each Tauri
+        // webview has its own Zustand instances, so the launcher clearing its
+        // copies is not enough. Publishing the meeting before the reset would let
+        // the overlay mount with the previous meeting's transcript (and detect its
+        // questions again).
+        try {
+          await resetMeetingScopedStores();
+          initMeetingSpeakers(audioMode);
+        } catch (err) {
+          console.warn("[App] Failed to reset meeting stores in overlay:", err);
+        }
         useMeetingStore.setState({
           activeMeeting: meeting,
           currentView: "overlay",
           audioMode,
           aiScenario,
           isRecording: true,
-          meetingStartTime: Date.now(),
+          meetingStartTime: startedAt,
           elapsedMs: 0,
           lastPersistedIndex: 0,
+          selectedMeetingId: null,
+          unfinishedMeeting: null,
+          settingsOpen: false,
         });
         useMeetingStore.getState().startTimer();
-        // Tell the launcher this window owns the meeting's speaker/bookmark data
+        // Then tell the launcher this window owns the meeting's speaker/bookmark data.
         emitOverlayMeetingReady(meeting.id).catch(() => {});
       }
     ).then((fn) => { unlisten = fn; });
@@ -247,7 +263,7 @@ function App() {
       const store = useMeetingStore.getState();
       const willHide = !store.overlayHidden;
       store.toggleOverlayHidden();
-      // Hide/show overlay window and toggle capture stealth
+      // Hide/show the overlay window (screen-share stealth is a separate setting)
       import("@tauri-apps/api/webviewWindow").then(async ({ WebviewWindow }) => {
         const overlay = await WebviewWindow.getByLabel("overlay");
         if (overlay) {
@@ -258,11 +274,10 @@ function App() {
           }
         }
       }).catch(() => {});
-      import("./lib/ipc").then(({ setStealthMode }) => {
-        setStealthMode(willHide).catch((e: unknown) =>
-          console.warn("[App] Failed to set stealth mode:", e)
-        );
-      }).catch(() => {});
+    }).then((unlisten) => unlisteners.push(unlisten));
+
+    onStealthModeChanged((enabled) => {
+      useConfigStore.getState().stealthModeApplied(enabled);
     }).then((unlisten) => unlisteners.push(unlisten));
 
     listen("tray_show_overlay", () => {
@@ -312,7 +327,9 @@ function App() {
         <ErrorBoundary fallbackMessage="NexQ encountered an error">
           {currentView === "overlay" && (
             <ErrorBoundary fallbackMessage="Failed to load overlay">
-              <div className="flex h-full">
+              {/* key on the meeting id → remounts overlay UI per meeting so local
+                  state (open panels, tabs, layout mode) does not carry over */}
+              <div key={activeMeetingId || "no-meeting"} className="flex h-full">
                 <div className="flex-1 min-w-0 overflow-hidden">
                   <OverlayView />
                 </div>
@@ -340,7 +357,7 @@ function App() {
         )}
         {resolvedView === "overlay" && (
           <ErrorBoundary fallbackMessage="Failed to load overlay">
-            <div className="flex h-full">
+            <div key={activeMeetingId || "no-meeting"} className="flex h-full">
               <div className="flex-1 min-w-0 overflow-hidden">
                 <OverlayView />
               </div>

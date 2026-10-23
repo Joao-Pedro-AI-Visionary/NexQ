@@ -1,0 +1,42 @@
+name: Documentation issue
+description: Something in the docs is missing, unclear, outdated or wrong
+title: "[Docs]: "
+labels: ["documentation", "needs-triage"]
+body:
+  - type: input
+    id: location
+    attributes:
+      label: Where is the problem?
+      description: Link to the file or page (README, user guide, website, CONTRIBUTING, in-app text).
+      placeholder: "https://github.com/naxhq/NexQ/blob/main/docs/user-guide/audio-setup.md"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Type of problem
+      options:
+        - Incorrect or outdated
+        - Missing information
+        - Unclear or confusing
+        - Broken link or image
+        - Typo or grammar
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What is wrong, and what should it say instead?
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution
+      options:
+        - label: I would like to open a pull request to fix this.

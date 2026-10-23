@@ -3,6 +3,7 @@ import { load, Store } from "@tauri-apps/plugin-store";
 import type {
   ThemeMode,
   LLMProviderType,
+  CustomLlmAuthType,
   STTProviderType,
   HotkeyConfig,
   MeetingAudioConfig,
@@ -114,6 +115,32 @@ function normalizeContextScope(value: Partial<ContextScopeSetting> | null | unde
   return { kind: value.kind as ContextScopeSetting["kind"], minutes: clampMinutes(value.minutes ?? DEFAULT_CONTEXT_SCOPE.minutes) };
 }
 
+/**
+ * Backend config JSON for `provider` from what is stored: its API key, or for
+ * the custom provider the persisted base URL, auth type and token (saved in
+ * the credential manager under "custom").
+ */
+async function storedProviderConfig(provider: LLMProviderType): Promise<string> {
+  const { getApiKey } = await import("../lib/ipc");
+  const config: Record<string, unknown> = { provider_type: provider };
+  if (provider === "custom") {
+    const { customLlmBaseUrl, customLlmAuthType } = useConfigStore.getState();
+    if (customLlmBaseUrl) config.base_url = customLlmBaseUrl;
+    if (customLlmAuthType !== "none") {
+      config.auth_type = customLlmAuthType;
+      const token = await getApiKey("custom").catch(() => null);
+      if (token) config.auth_value = token;
+    }
+  } else if (provider !== "claude_cli") {
+    const key = await getApiKey(provider).catch(() => null);
+    if (key) config.api_key = key;
+  }
+  return JSON.stringify(config);
+}
+
+/** Default global shortcut for stealth mode (Cmd on macOS, Ctrl elsewhere). */
+export const DEFAULT_STEALTH_SHORTCUT = "CmdOrCtrl+Shift+H";
+
 async function persistValue(key: string, value: unknown): Promise<void> {
   try {
     const store = await getStore();
@@ -148,6 +175,10 @@ interface ConfigState {
    * pickers then offer the static aliases.
    */
   claudeModels: ClaudeModelInfo[] | null;
+  // Custom LLM provider (persisted so a custom endpoint survives restarts).
+  // The auth token itself is stored via the credential manager under "custom".
+  customLlmBaseUrl: string;
+  customLlmAuthType: CustomLlmAuthType;
 
   // Audio (legacy — kept for backward compat, new code uses meetingAudioConfig)
   micDeviceId: string | null;
@@ -237,6 +268,12 @@ interface ConfigState {
   trayStartMinimized: boolean;
   trayAutoDetectMeeting: boolean;
   trayStealthEnabled: boolean;
+  /**
+   * Stealth mode ("Hide from screen share"): NexQ's windows stay visible to
+   * the user but are left out of screen sharing, recordings and screenshots.
+   */
+  stealthMode: boolean;
+  /** Global shortcut that toggles stealth mode. */
   stealthShortcut: string;
 
   // Loading state
@@ -280,6 +317,7 @@ interface ConfigState {
   setClaudeCliFallback: (provider: string | null, model: string | null) => void;
   /** Keep the latest Claude model catalog (persisted, shared with every window). */
   setClaudeModels: (models: ClaudeModelInfo[]) => void;
+  setCustomLlmConfig: (baseUrl: string, authType: CustomLlmAuthType) => void;
   setMicDeviceId: (id: string | null) => void;
   setSystemDeviceId: (id: string | null) => void;
   setRecordingEnabled: (enabled: boolean) => void;
@@ -328,6 +366,10 @@ interface ConfigState {
   setTrayStartMinimized: (enabled: boolean) => void;
   setTrayAutoDetectMeeting: (enabled: boolean) => void;
   setTrayStealthEnabled: (enabled: boolean) => void;
+  /** Turn stealth mode on/off (backend first; throws if it refuses, nothing changes). */
+  setStealthMode: (enabled: boolean) => Promise<void>;
+  /** Record a stealth change the backend already applied (tray toggle). */
+  stealthModeApplied: (enabled: boolean) => void;
   setStealthShortcut: (shortcut: string) => void;
   loadConfig: () => Promise<void>;
 }
@@ -355,6 +397,8 @@ export const useConfigStore = create<ConfigState>((set) => ({
   claudeCliConfig: DEFAULT_CLAUDE_CLI_CONFIG,
   claudeCliFallbackPinned: false,
   claudeModels: null,
+  customLlmBaseUrl: "",
+  customLlmAuthType: "none",
   micDeviceId: null,
   systemDeviceId: null,
   recordingEnabled: false,
@@ -400,7 +444,8 @@ export const useConfigStore = create<ConfigState>((set) => ({
   trayStartMinimized: true,
   trayAutoDetectMeeting: false,
   trayStealthEnabled: true,
-  stealthShortcut: "Ctrl+Shift+H",
+  stealthMode: false,
+  stealthShortcut: DEFAULT_STEALTH_SHORTCUT,
   _loaded: false,
   mutedYou: false,
   mutedThem: false,
@@ -456,10 +501,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
     const ipc = await import("../lib/ipc");
     const before = useConfigStore.getState();
     let providerConfig = options.providerConfig;
-    if (providerConfig == null) {
-      const key = provider === "claude_cli" ? null : await ipc.getApiKey(provider).catch(() => null);
-      providerConfig = JSON.stringify({ provider_type: provider, ...(key && { api_key: key }) });
-    }
+    if (providerConfig == null) providerConfig = await storedProviderConfig(provider);
     await ipc.setLLMProvider(providerConfig);
     before.setLLMProvider(provider);
     // An activated provider counts as verified (the "Ready" badge in Settings).
@@ -525,6 +567,11 @@ export const useConfigStore = create<ConfigState>((set) => ({
       fallback_provider: provider,
       fallback_model: provider ? model : null,
     });
+  },
+  setCustomLlmConfig: (baseUrl, authType) => {
+    set({ customLlmBaseUrl: baseUrl, customLlmAuthType: authType });
+    persistValue("customLlmBaseUrl", baseUrl);
+    persistValue("customLlmAuthType", authType);
   },
   setMicDeviceId: (id) => {
     set({ micDeviceId: id });
@@ -824,6 +871,15 @@ export const useConfigStore = create<ConfigState>((set) => ({
     set({ trayStealthEnabled: enabled });
     persistValue("trayStealthEnabled", enabled);
   },
+  setStealthMode: async (enabled) => {
+    const { setStealthMode: applyStealthMode } = await import("../lib/ipc");
+    await applyStealthMode(enabled);
+    useConfigStore.getState().stealthModeApplied(enabled);
+  },
+  stealthModeApplied: (enabled) => {
+    set({ stealthMode: enabled });
+    persistValue("stealthMode", enabled);
+  },
   setStealthShortcut: (shortcut) => {
     set({ stealthShortcut: shortcut });
     persistValue("stealthShortcut", shortcut);
@@ -846,6 +902,8 @@ export const useConfigStore = create<ConfigState>((set) => ({
       const sttLanguage = await store.get<string>("sttLanguage");
       const llmProvider = await store.get<LLMProviderType>("llmProvider");
       const llmModel = await store.get<string>("llmModel");
+      const customLlmBaseUrl = await store.get<string>("customLlmBaseUrl");
+      const customLlmAuthType = await store.get<CustomLlmAuthType>("customLlmAuthType");
       const micDeviceId = await store.get<string | null>("micDeviceId");
       const systemDeviceId = await store.get<string | null>("systemDeviceId");
       const recordingEnabled = await store.get<boolean>("recordingEnabled");
@@ -892,6 +950,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
       const trayAutoDetectMeeting = await store.get<boolean>("trayAutoDetectMeeting");
       const trayStealthEnabled = await store.get<boolean>("trayStealthEnabled");
       const stealthShortcut = await store.get<string>("stealthShortcut");
+      const stealthMode = await store.get<boolean>("stealthMode");
       const storedLastModels = await store.get<Record<string, string>>("lastModelByProvider");
       const storedClaudeCliConfig = await store.get<Partial<ClaudeCliConfig>>("claudeCliConfig");
       const claudeCliFallbackPinned = (await store.get<boolean>("claudeCliFallbackPinned")) ?? false;
@@ -1019,6 +1078,8 @@ export const useConfigStore = create<ConfigState>((set) => ({
         claudeCliConfig,
         claudeCliFallbackPinned,
         ...(Array.isArray(claudeModels) && claudeModels.length > 0 && { claudeModels }),
+        ...(customLlmBaseUrl != null && { customLlmBaseUrl }),
+        ...(customLlmAuthType != null && { customLlmAuthType }),
         ...(micDeviceId !== undefined && { micDeviceId }),
         ...(systemDeviceId !== undefined && { systemDeviceId }),
         ...(recordingEnabled != null && { recordingEnabled }),
@@ -1066,6 +1127,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
         ...(trayAutoDetectMeeting != null && { trayAutoDetectMeeting }),
         ...(trayStealthEnabled != null && { trayStealthEnabled }),
         ...(stealthShortcut != null && { stealthShortcut }),
+        ...(stealthMode != null && { stealthMode }),
       }));
 
       // Post-load: ensure local providers have a local_model_id so footer/backend use the right model
@@ -1141,6 +1203,29 @@ export const useConfigStore = create<ConfigState>((set) => ({
       store.onKeyChange<number>("overlayOpacity", (val) => {
         if (val != null) set({ overlayOpacity: val });
       });
+      store.onKeyChange<string>("customLlmBaseUrl", (val) => {
+        if (val != null) set({ customLlmBaseUrl: val });
+      });
+      store.onKeyChange<CustomLlmAuthType>("customLlmAuthType", (val) => {
+        if (val != null) set({ customLlmAuthType: val });
+      });
+      store.onKeyChange<boolean>("stealthMode", (val) => {
+        if (val != null) set({ stealthMode: val });
+      });
+      store.onKeyChange<string>("stealthShortcut", (val) => {
+        if (val != null) set({ stealthShortcut: val });
+      });
+
+      // The backend already restored it natively at startup; this re-applies it
+      // and, if the windows can't be hidden, shows the setting as off.
+      if (stealthMode) {
+        import("../lib/ipc").then(({ setStealthMode: applyStealthMode }) =>
+          applyStealthMode(true).catch((e) => {
+            console.warn("[configStore] Failed to restore stealth mode:", e);
+            set({ stealthMode: false });
+          }),
+        );
+      }
 
       // Sync persisted STT language to Rust backend on startup.
       const loadedSttLanguage = sttLanguage ?? "en-US";
@@ -1200,14 +1285,9 @@ export const useConfigStore = create<ConfigState>((set) => ({
       const loadedLLMProvider = llmProvider ?? "ollama";
       const loadedLLMModel = loadedLLMProvider === "claude_cli" ? claudeCliConfig.fast_model : (llmModel ?? "");
       if (loadedLLMProvider) {
-        import("../lib/ipc").then(async ({ setLLMProvider: ipcSetLLM, setActiveModel: ipcSetModel, getApiKey: ipcGetKey }) => {
+        import("../lib/ipc").then(async ({ setLLMProvider: ipcSetLLM, setActiveModel: ipcSetModel }) => {
           try {
-            const apiKey = await ipcGetKey(loadedLLMProvider).catch(() => null);
-            const config = JSON.stringify({
-              provider_type: loadedLLMProvider,
-              ...(apiKey && { api_key: apiKey }),
-            });
-            await ipcSetLLM(config);
+            await ipcSetLLM(await storedProviderConfig(loadedLLMProvider));
             if (loadedLLMModel) {
               await ipcSetModel(loadedLLMProvider, loadedLLMModel);
             }

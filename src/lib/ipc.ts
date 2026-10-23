@@ -5,6 +5,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  StealthSupport,
   AllActionConfigs,
   AudioDeviceList,
   AudioSessionInfo,
@@ -686,8 +687,13 @@ export async function rebuildTrayMenu(meetingActive: boolean): Promise<void> {
   return invoke("rebuild_tray_menu", { meetingActive });
 }
 
+/** Stealth mode: keep every NexQ window out of screen sharing, recordings and screenshots. */
 export async function setStealthMode(enabled: boolean): Promise<void> {
   return invoke("set_stealth_mode", { enabled });
+}
+
+export async function getStealthSupport(): Promise<StealthSupport> {
+  return invoke<StealthSupport>("get_stealth_support");
 }
 
 // == IPC: Gemini Context Cache ==

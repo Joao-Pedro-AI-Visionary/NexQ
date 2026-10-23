@@ -13,7 +13,7 @@ crate-type = ["lib", "cdylib", "staticlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "protocol-asset"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-global-shortcut = "2"
@@ -87,3 +87,11 @@ windows = { version = "0.58", features = [
     "Win32_System_LibraryLoader",
 ] }
 wasapi = "0.22"
+
+# macOS-specific
+[target.'cfg(target_os = "macos")'.dependencies]
+# Used by src/commands/stealth_commands.rs to set the overlay NSWindow's
+# `sharingType` to NSWindowSharingNone (equivalent of Windows' WDA_EXCLUDEFROMCAPTURE).
+objc2 = "0.6"
+# macOS Keychain credential backend (src/credentials/macos_keychain.rs).
+security-framework = "3"

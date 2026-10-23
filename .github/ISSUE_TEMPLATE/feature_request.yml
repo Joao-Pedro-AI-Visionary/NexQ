@@ -1,25 +1,62 @@
-name: Feature Request
-description: Suggest a feature for NexQ
-labels: ["enhancement"]
+name: Feature request
+description: Suggest an idea or improvement for NexQ
+title: "[Feature]: "
+labels: ["enhancement", "needs-triage"]
 body:
-  - type: textarea
-    id: use_case
+  - type: markdown
     attributes:
-      label: Use Case
-      description: What are you trying to accomplish?
+      value: |
+        Thanks for helping shape NexQ. Describing the **problem** first helps us find the best solution.
+        For open-ended ideas you would like to talk through first, [start a Discussion](https://github.com/naxhq/NexQ/discussions).
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What are you trying to do, and what gets in the way today?
+      placeholder: "During interviews I often need to ..., but currently ..."
     validations:
       required: true
+
   - type: textarea
     id: solution
     attributes:
-      label: Proposed Solution
-      description: How do you envision this working?
+      label: Proposed solution
+      description: How would you like it to work? Mockups and examples are welcome.
     validations:
       required: true
+
   - type: textarea
     id: alternatives
     attributes:
-      label: Alternatives Considered
-      description: What other approaches did you consider?
+      label: Alternatives considered
+      description: Workarounds you use today, or how other tools solve this.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Transcription (STT)
+        - AI copilot (LLM)
+        - Audio capture
+        - Overlay
+        - Launcher / meeting history
+        - Context / RAG
+        - Translation
+        - Privacy / Stealth Mode
+        - macOS
+        - Other
     validations:
-      required: false
+      required: true
+
+  - type: dropdown
+    id: contribute
+    attributes:
+      label: Would you like to work on this?
+      options:
+        - "No"
+        - Yes, with some guidance
+        - Yes, I can open a pull request
+    validations:
+      required: true

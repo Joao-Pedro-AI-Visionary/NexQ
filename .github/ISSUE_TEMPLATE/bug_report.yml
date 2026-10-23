@@ -1,75 +1,153 @@
-name: Bug Report
-description: Report a bug in NexQ
-labels: ["bug"]
+name: Bug report
+description: Something in NexQ is broken or behaves unexpectedly
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
 body:
-  - type: dropdown
-    id: version
+  - type: markdown
     attributes:
-      label: NexQ Version
-      options:
-        - "2.17.5"
-        - Other
+      value: |
+        Thanks for taking the time to report a bug. A complete report is the fastest way to a fix.
+
+        - **Security vulnerability?** Do not file it here. Follow [SECURITY.md](https://github.com/naxhq/NexQ/blob/main/SECURITY.md).
+        - **Question or setup help?** Ask in [Discussions](https://github.com/naxhq/NexQ/discussions).
+        - Please check that you are on the [latest release](https://github.com/naxhq/NexQ/releases/latest) and search [existing issues](https://github.com/naxhq/NexQ/issues?q=is%3Aissue) first.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: A clear, concise description of the bug.
     validations:
       required: true
-  - type: input
-    id: os
-    attributes:
-      label: Operating System
-      placeholder: "e.g., Windows 11 23H2"
-    validations:
-      required: true
-  - type: dropdown
-    id: stt_provider
-    attributes:
-      label: STT Provider
-      options:
-        - Web Speech API
-        - Deepgram
-        - Groq
-        - Whisper (local)
-        - Other
-        - "N/A"
-    validations:
-      required: true
-  - type: dropdown
-    id: llm_provider
-    attributes:
-      label: LLM Provider
-      options:
-        - Ollama
-        - OpenAI
-        - Anthropic
-        - Groq
-        - Gemini
-        - LM Studio
-        - OpenRouter
-        - Other
-        - "N/A"
-    validations:
-      required: true
+
   - type: textarea
     id: steps
     attributes:
-      label: Steps to Reproduce
-      placeholder: "1. Go to...\n2. Click on...\n3. See error"
+      label: Steps to reproduce
+      placeholder: |
+        1. Start a meeting with ...
+        2. Click ...
+        3. See ...
     validations:
       required: true
+
   - type: textarea
     id: expected
     attributes:
-      label: Expected Behavior
+      label: Expected behavior
     validations:
       required: true
-  - type: textarea
-    id: actual
+
+  - type: input
+    id: version
     attributes:
-      label: Actual Behavior
+      label: NexQ version
+      description: Shown in Settings → About.
+      placeholder: "e.g. 2.24.0"
     validations:
       required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows 11
+        - Windows 10
+        - macOS (Apple Silicon)
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: os_version
+    attributes:
+      label: OS version and hardware
+      description: Optional, but helpful for audio, GPU and local-model issues.
+      placeholder: "e.g. Windows 11 24H2, Intel i7, no dedicated GPU / macOS 15.1, M2"
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Transcription (STT)
+        - AI responses (LLM)
+        - Audio capture / devices
+        - Overlay
+        - Launcher / meeting history
+        - Settings
+        - Context / RAG
+        - Translation
+        - Recording / playback
+        - Stealth Mode
+        - Updater / installer
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stt_provider
+    attributes:
+      label: STT provider(s)
+      description: Select every provider involved ("You" and "Them" can differ).
+      multiple: true
+      options:
+        - Web Speech
+        - Windows Speech
+        - Whisper.cpp
+        - Parakeet TDT
+        - ORT Streaming
+        - Sherpa-ONNX
+        - Deepgram
+        - Groq Whisper
+        - Whisper API (OpenAI)
+        - Azure Speech
+        - Not relevant
+
+  - type: dropdown
+    id: llm_provider
+    attributes:
+      label: LLM provider(s)
+      multiple: true
+      options:
+        - Ollama
+        - LM Studio
+        - OpenAI
+        - Anthropic
+        - Google Gemini
+        - Groq
+        - OpenRouter
+        - Claude (subscription)
+        - Custom endpoint
+        - Not relevant
+
   - type: textarea
     id: logs
     attributes:
-      label: Logs / Screenshots
-      description: Optional — paste any relevant logs or screenshots
-    validations:
-      required: false
+      label: Logs
+      description: |
+        Remove API keys and anything private before pasting.
+        - **Dev Log:** in the overlay, press `Ctrl+Shift+L` (or click the terminal icon) and copy the relevant lines.
+        - **AI Call Log:** for AI issues, the AI Call Log sidebar shows the request, provider, timing and error.
+        - **Backend log:** when running from source (`npx tauri dev`), copy the terminal output.
+        See [docs/DEVELOPMENT.md](https://github.com/naxhq/NexQ/blob/main/docs/DEVELOPMENT.md#logs-and-debugging) for details.
+      render: text
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots or recordings
+      description: Drag and drop images or videos here if they help explain the problem.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I am using the latest release, or I have confirmed the bug still exists on it.
+          required: true
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I removed API keys and personal information from logs and screenshots.
+          required: true
