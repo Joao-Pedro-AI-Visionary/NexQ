@@ -1021,6 +1021,13 @@ export interface OpusMtModelStatus {
 
 export type TrayState = "idle" | "recording" | "muted" | "stealth" | "ai_processing" | "indexing";
 
+/** Mirrors `StealthSupport` in stealth_commands.rs. */
+export interface StealthSupport {
+  supported: boolean;
+  /** Caveat to show next to the toggle, if any. */
+  note: string | null;
+}
+
 export interface RecentMeeting {
   id: string;
   title: string;

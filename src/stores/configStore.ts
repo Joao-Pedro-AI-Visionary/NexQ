@@ -138,6 +138,9 @@ async function storedProviderConfig(provider: LLMProviderType): Promise<string> 
   return JSON.stringify(config);
 }
 
+/** Default global shortcut for stealth mode (Cmd on macOS, Ctrl elsewhere). */
+export const DEFAULT_STEALTH_SHORTCUT = "CmdOrCtrl+Shift+H";
+
 async function persistValue(key: string, value: unknown): Promise<void> {
   try {
     const store = await getStore();
@@ -265,6 +268,12 @@ interface ConfigState {
   trayStartMinimized: boolean;
   trayAutoDetectMeeting: boolean;
   trayStealthEnabled: boolean;
+  /**
+   * Stealth mode ("Hide from screen share"): NexQ's windows stay visible to
+   * the user but are left out of screen sharing, recordings and screenshots.
+   */
+  stealthMode: boolean;
+  /** Global shortcut that toggles stealth mode. */
   stealthShortcut: string;
 
   // Loading state
@@ -357,6 +366,10 @@ interface ConfigState {
   setTrayStartMinimized: (enabled: boolean) => void;
   setTrayAutoDetectMeeting: (enabled: boolean) => void;
   setTrayStealthEnabled: (enabled: boolean) => void;
+  /** Turn stealth mode on/off (backend first; throws if it refuses, nothing changes). */
+  setStealthMode: (enabled: boolean) => Promise<void>;
+  /** Record a stealth change the backend already applied (tray toggle). */
+  stealthModeApplied: (enabled: boolean) => void;
   setStealthShortcut: (shortcut: string) => void;
   loadConfig: () => Promise<void>;
 }
@@ -431,7 +444,8 @@ export const useConfigStore = create<ConfigState>((set) => ({
   trayStartMinimized: true,
   trayAutoDetectMeeting: false,
   trayStealthEnabled: true,
-  stealthShortcut: "Ctrl+Shift+H",
+  stealthMode: false,
+  stealthShortcut: DEFAULT_STEALTH_SHORTCUT,
   _loaded: false,
   mutedYou: false,
   mutedThem: false,
@@ -857,6 +871,15 @@ export const useConfigStore = create<ConfigState>((set) => ({
     set({ trayStealthEnabled: enabled });
     persistValue("trayStealthEnabled", enabled);
   },
+  setStealthMode: async (enabled) => {
+    const { setStealthMode: applyStealthMode } = await import("../lib/ipc");
+    await applyStealthMode(enabled);
+    useConfigStore.getState().stealthModeApplied(enabled);
+  },
+  stealthModeApplied: (enabled) => {
+    set({ stealthMode: enabled });
+    persistValue("stealthMode", enabled);
+  },
   setStealthShortcut: (shortcut) => {
     set({ stealthShortcut: shortcut });
     persistValue("stealthShortcut", shortcut);
@@ -927,6 +950,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
       const trayAutoDetectMeeting = await store.get<boolean>("trayAutoDetectMeeting");
       const trayStealthEnabled = await store.get<boolean>("trayStealthEnabled");
       const stealthShortcut = await store.get<string>("stealthShortcut");
+      const stealthMode = await store.get<boolean>("stealthMode");
       const storedLastModels = await store.get<Record<string, string>>("lastModelByProvider");
       const storedClaudeCliConfig = await store.get<Partial<ClaudeCliConfig>>("claudeCliConfig");
       const claudeCliFallbackPinned = (await store.get<boolean>("claudeCliFallbackPinned")) ?? false;
@@ -1103,6 +1127,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
         ...(trayAutoDetectMeeting != null && { trayAutoDetectMeeting }),
         ...(trayStealthEnabled != null && { trayStealthEnabled }),
         ...(stealthShortcut != null && { stealthShortcut }),
+        ...(stealthMode != null && { stealthMode }),
       }));
 
       // Post-load: ensure local providers have a local_model_id so footer/backend use the right model
@@ -1178,6 +1203,28 @@ export const useConfigStore = create<ConfigState>((set) => ({
       store.onKeyChange<number>("overlayOpacity", (val) => {
         if (val != null) set({ overlayOpacity: val });
       });
+      store.onKeyChange<string>("customLlmBaseUrl", (val) => {
+        if (val != null) set({ customLlmBaseUrl: val });
+      });
+      store.onKeyChange<CustomLlmAuthType>("customLlmAuthType", (val) => {
+        if (val != null) set({ customLlmAuthType: val });
+      });
+      store.onKeyChange<boolean>("stealthMode", (val) => {
+        if (val != null) set({ stealthMode: val });
+      });
+      store.onKeyChange<string>("stealthShortcut", (val) => {
+        if (val != null) set({ stealthShortcut: val });
+      });
+
+      // Windows are left out of screen capture from the start when stealth
+      // mode was on (the backend starts with it off).
+      if (stealthMode) {
+        import("../lib/ipc").then(({ setStealthMode: applyStealthMode }) =>
+          applyStealthMode(true).catch((e) =>
+            console.warn("[configStore] Failed to restore stealth mode:", e),
+          ),
+        );
+      }
 
       // Sync persisted STT language to Rust backend on startup.
       const loadedSttLanguage = sttLanguage ?? "en-US";

@@ -204,6 +204,10 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_updater::Builder::default().build())
+        // Windows opened later (e.g. the dev log) follow stealth mode too.
+        .on_page_load(|webview, _payload| {
+            stealth_commands::apply_to_new_window(&webview.window());
+        })
         .setup(|app| {
             let mut app_state = AppState::new();
 
@@ -467,6 +471,18 @@ pub fn run() {
                     "toggle_stealth" => {
                         let _ = _app.emit("tray_toggle_stealth", ());
                     }
+                    "toggle_screen_share_stealth" => {
+                        let app = app_handle.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let enabled = !stealth_commands::stealth_enabled();
+                            match stealth_commands::set_stealth_mode(app.clone(), enabled).await {
+                                Ok(()) => {
+                                    let _ = app.emit("stealth_mode_changed", enabled);
+                                }
+                                Err(e) => log::warn!("Tray stealth toggle failed: {e}"),
+                            }
+                        });
+                    }
                     "show_overlay" => {
                         let _ = _app.emit("tray_show_overlay", ());
                         show_overlay(&app_handle);
@@ -644,6 +660,7 @@ pub fn run() {
             model_commands::delete_local_stt_model,
             // == COMMANDS: stealth ==
             stealth_commands::set_stealth_mode,
+            stealth_commands::get_stealth_support,
             // == COMMANDS: tray ==
             tray_commands::set_tray_state,
             tray_commands::set_tray_tooltip,

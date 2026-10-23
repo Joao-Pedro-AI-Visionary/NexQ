@@ -50,7 +50,7 @@ pub fn build_tooltip(
             let elapsed = meeting_start
                 .map(|s| format_elapsed(s))
                 .unwrap_or_else(|| "00:00".to_string());
-            format!("NexQ — Stealth · {} elapsed", elapsed)
+            format!("NexQ — Recording (Overlay Hidden) · {} elapsed", elapsed)
         }
         TrayState::AiProcessing => "NexQ — AI Processing...".to_string(),
         TrayState::Indexing => {

@@ -345,6 +345,11 @@ export function onAgentFallback(
 
 // Tray events are handled via raw listen() calls in App.tsx
 
+/** Stealth mode was switched from the tray (the backend already applied it). */
+export function onStealthModeChanged(handler: (enabled: boolean) => void): Promise<UnlistenFn> {
+  return listen<boolean>("stealth_mode_changed", (e) => handler(e.payload));
+}
+
 /** Window -> window: this window showed the pending `agent_fallback` notice. */
 export function emitAgentFallbackShown(): Promise<void> {
   return emit("nexq:agent_fallback_shown");

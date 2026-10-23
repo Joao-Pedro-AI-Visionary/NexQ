@@ -2,7 +2,6 @@ import { useEffect, useCallback, useState } from "react";
 import { useMeetingStore } from "./stores/meetingStore";
 import { useConfigStore } from "./stores/configStore";
 import { useAIActionsStore } from "./stores/aiActionsStore";
-import { useStreamStore } from "./stores/streamStore";
 import { LauncherView } from "./launcher/LauncherView";
 import { OverlayView } from "./overlay/OverlayView";
 import { SettingsOverlay } from "./settings/SettingsOverlay";
@@ -28,7 +27,7 @@ import { useDemoShortcut } from "./demo/useDemoShortcut";
 import { DemoPicker } from "./demo/DemoPicker";
 import { DemoBadge } from "./demo/DemoBadge";
 import { showLauncherWindow, showOverlayWindow } from "./lib/windows";
-import { emitOverlayMeetingReady, onOverlayMeetingReady } from "./lib/events";
+import { emitOverlayMeetingReady, onOverlayMeetingReady, onStealthModeChanged } from "./lib/events";
 
 function App() {
   const currentView = useMeetingStore((s) => s.currentView);
@@ -259,7 +258,7 @@ function App() {
       const store = useMeetingStore.getState();
       const willHide = !store.overlayHidden;
       store.toggleOverlayHidden();
-      // Hide/show overlay window and toggle capture stealth
+      // Hide/show the overlay window (screen-share stealth is a separate setting)
       import("@tauri-apps/api/webviewWindow").then(async ({ WebviewWindow }) => {
         const overlay = await WebviewWindow.getByLabel("overlay");
         if (overlay) {
@@ -270,11 +269,10 @@ function App() {
           }
         }
       }).catch(() => {});
-      import("./lib/ipc").then(({ setStealthMode }) => {
-        setStealthMode(willHide).catch((e: unknown) =>
-          console.warn("[App] Failed to set stealth mode:", e)
-        );
-      }).catch(() => {});
+    }).then((unlisten) => unlisteners.push(unlisten));
+
+    onStealthModeChanged((enabled) => {
+      useConfigStore.getState().stealthModeApplied(enabled);
     }).then((unlisten) => unlisteners.push(unlisten));
 
     listen("tray_show_overlay", () => {

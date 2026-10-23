@@ -120,3 +120,50 @@ describe("configStore: active LLM across windows", () => {
     expect(invoke).toHaveBeenLastCalledWith("set_active_model", { provider: "ollama", modelId: "llama3.2" });
   });
 });
+
+describe("configStore: stealth mode and the custom endpoint across windows", () => {
+  beforeEach(() => {
+    saved.clear();
+    keyListeners.length = 0;
+    invoke.mockReset();
+    invoke.mockImplementation(async () => null);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("stealth mode applies to the backend, reaches the other window and is restored on the next start", async () => {
+    const launcher = await openWindow();
+    const overlay = await openWindow();
+    await launcher.getState().setStealthMode(true);
+    expect(invoke).toHaveBeenCalledWith("set_stealth_mode", { enabled: true });
+    await vi.waitFor(() => expect(overlay.getState().stealthMode).toBe(true));
+
+    invoke.mockClear();
+    await openWindow();
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("set_stealth_mode", { enabled: true }));
+  });
+
+  it("a refused stealth change leaves the setting as it was", async () => {
+    const launcher = await openWindow();
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "set_stealth_mode") throw new Error("not supported");
+      return null;
+    });
+    await expect(launcher.getState().setStealthMode(true)).rejects.toThrow("not supported");
+    expect(launcher.getState().stealthMode).toBe(false);
+    expect(saved.has("stealthMode")).toBe(false);
+  });
+
+  it("activating the custom provider sends the saved endpoint and token", async () => {
+    const launcher = await openWindow();
+    launcher.getState().setCustomLlmConfig("http://localhost:8000/v1", "bearer");
+    invoke.mockImplementation(async (cmd: string) => (cmd === "get_api_key" ? "tok" : null));
+    await launcher.getState().activateLLMProvider("custom", { model: "m" });
+    expect(invoke).toHaveBeenCalledWith("set_llm_provider", {
+      provider: JSON.stringify({ provider_type: "custom", base_url: "http://localhost:8000/v1", auth_type: "bearer", auth_value: "tok" }),
+    });
+  });
+});

@@ -10,6 +10,7 @@ import { runUserAction } from "../lib/userAction";
 import { meetingShortcutAction, showLauncherWindow, showOverlayWindow } from "../lib/windows";
 import { endMeetingFromThisWindow } from "./useUpdater";
 import { showToast } from "../stores/toastStore";
+import { useConfigStore } from "../stores/configStore";
 
 /** Ctrl+M: end the running meeting (in every window that holds it) or start one. */
 async function toggleMeetingFromShortcut(): Promise<void> {
@@ -29,7 +30,42 @@ async function toggleMeetingFromShortcut(): Promise<void> {
   }
 }
 
+/** Stealth shortcut: hide NexQ from screen sharing, or show it again. */
+export async function toggleStealthMode(): Promise<void> {
+  const config = useConfigStore.getState();
+  const enabled = !config.stealthMode;
+  try {
+    await config.setStealthMode(enabled);
+    showToast(enabled ? "Hidden from screen share" : "Visible in screen share", "info");
+  } catch (e) {
+    showToast(`Couldn't change screen-share visibility: ${e instanceof Error ? e.message : String(e)}`, "error");
+  }
+}
+
 export function useGlobalShortcut() {
+  const stealthShortcut = useConfigStore((s) => s.stealthShortcut);
+
+  // Stealth mode shortcut (user-configurable, re-registered when it changes)
+  useEffect(() => {
+    const key = stealthShortcut;
+    if (!key) return;
+    let registered = false;
+    (async () => {
+      try {
+        await unregister(key).catch(() => {});
+        await register(key, (event) => {
+          if (event.state === "Pressed") toggleStealthMode().catch(() => {});
+        });
+        registered = true;
+      } catch (err) {
+        console.warn(`Failed to register stealth shortcut ${key}:`, err);
+      }
+    })();
+    return () => {
+      if (registered) unregister(key).catch(() => {});
+    };
+  }, [stealthShortcut]);
+
   // Global shortcuts (work even when window is not focused)
   useEffect(() => {
     const shortcuts: string[] = [];

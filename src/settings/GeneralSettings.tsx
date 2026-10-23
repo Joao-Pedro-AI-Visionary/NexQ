@@ -3,6 +3,7 @@ import { useConfigStore } from "../stores/configStore";
 import { FolderOpen, Sun, Moon, Monitor } from "lucide-react";
 import type { ThemeMode } from "../lib/types";
 import { Eye } from "lucide-react";
+import { StealthSettings } from "./StealthSettings";
 
 export function GeneralSettings() {
   const theme = useConfigStore((s) => s.theme);
@@ -66,6 +67,9 @@ export function GeneralSettings() {
           </div>
         </div>
       </div>
+
+      {/* Stealth mode */}
+      <StealthSettings />
 
       {/* Toggle Options */}
       <div className="rounded-xl border border-border/30 bg-card/50 p-5 space-y-5">
