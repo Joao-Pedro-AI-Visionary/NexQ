@@ -74,6 +74,9 @@ pub async fn start_capture(
             .map_err(|_| "Audio state lock poisoned".to_string())?;
         let mgr = guard.get_or_insert_with(AudioCaptureManager::new);
         mgr.start_capture(&mic_device_id, &system_device_id, false, tx)?;
+        if let Some(warning) = mgr.take_system_warning() {
+            let _ = app.emit("capture_warning", warning);
+        }
     }
 
     // ---- System Audio STT (for remote party in calls) ----
@@ -960,6 +963,9 @@ pub async fn start_capture_per_party(
             mic_device, system_device
         );
         mgr.start_capture(&mic_device, &system_device, system_is_input, tx)?;
+        if let Some(warning) = mgr.take_system_warning() {
+            let _ = app.emit("capture_warning", warning);
+        }
     }
 
     // ── Create STT provider for "You" party (if not web_speech) ──

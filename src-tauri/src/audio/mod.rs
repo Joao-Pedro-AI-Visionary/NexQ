@@ -63,6 +63,9 @@ pub struct AudioCaptureManager {
     system_thread: Option<std::thread::JoinHandle<()>>,
     /// System capture via input device (cpal stream, for virtual cables tagged as System)
     system_input_stream: Option<cpal::Stream>,
+    /// Why the other party ("Them") isn't being captured, when only that side
+    /// failed to start (the mic keeps running). Taken by the caller to warn the user.
+    system_warning: Option<String>,
     /// Active recorder (if recording is enabled)
     recorder: Option<SharedRecorder>,
     /// Current meeting ID for recording file naming
@@ -99,6 +102,7 @@ impl AudioCaptureManager {
             mic_stream: None,
             system_thread: None,
             system_input_stream: None,
+            system_warning: None,
             recorder: None,
             meeting_id: None,
             mic_vad: VoiceActivityDetector::new(),
@@ -134,6 +138,7 @@ impl AudioCaptureManager {
         }
 
         log::info!("Starting audio capture pipeline");
+        self.system_warning = None;
 
         // Reset stop flag
         self.stop_flag.store(false, Ordering::SeqCst);
@@ -190,8 +195,9 @@ impl AudioCaptureManager {
                     log::info!("System audio capture started via input device (tagged as System)");
                 }
                 Err(e) => {
-                    self.mic_stream.take();
-                    return Err(format!("System input capture failed: {e}"));
+                    // Keep "You" running; the caller warns about the other side.
+                    log::error!("System input capture failed: {e}. The other party won't be captured.");
+                    self.system_warning = Some(format!("Couldn't capture the other side ({e}). Your microphone is still transcribed."));
                 }
             }
         } else {
@@ -208,8 +214,9 @@ impl AudioCaptureManager {
                     log::info!("System output audio capture started");
                 }
                 Err(e) => {
-                    self.mic_stream.take();
-                    return Err(format!("System output capture failed: {e}"));
+                    // Keep "You" running; the caller warns about the other side.
+                    log::error!("System output capture failed: {e}. The other party won't be captured.");
+                    self.system_warning = Some(format!("Couldn't capture the other side ({e}). Your microphone is still transcribed."));
                 }
             }
         }
@@ -222,6 +229,11 @@ impl AudioCaptureManager {
         self.is_capturing = true;
         log::info!("Audio capture pipeline started");
         Ok(())
+    }
+
+    /// Why only the mic started (the other party's capture failed), once.
+    pub fn take_system_warning(&mut self) -> Option<String> {
+        self.system_warning.take()
     }
 
     /// Stop all audio capture.

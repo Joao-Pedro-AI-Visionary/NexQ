@@ -7,6 +7,7 @@ import { OverlayView } from "./overlay/OverlayView";
 import { SettingsOverlay } from "./settings/SettingsOverlay";
 import { FirstRunWizard } from "./components/wizard/FirstRunWizard";
 import { ToastContainer } from "./components/Toast";
+import { showToast } from "./stores/toastStore";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { UpdateReadyToast } from "./components/UpdateToast";
 import { useTheme } from "./hooks/useTheme";
@@ -27,7 +28,7 @@ import { useDemoShortcut } from "./demo/useDemoShortcut";
 import { DemoPicker } from "./demo/DemoPicker";
 import { DemoBadge } from "./demo/DemoBadge";
 import { SHOW_MEETING_OVERLAY_EVENT, showLauncherWindow, showMeetingOverlay, showOverlayWindow } from "./lib/windows";
-import { emitOverlayMeetingReady, onOverlayMeetingReady, onStartDetectedMeeting, onStealthModeChanged } from "./lib/events";
+import { emitOverlayMeetingReady, onCaptureWarning, onOverlayMeetingReady, onStartDetectedMeeting, onStealthModeChanged } from "./lib/events";
 
 function App() {
   const currentView = useMeetingStore((s) => s.currentView);
@@ -313,6 +314,10 @@ function App() {
           }
         }
       }).catch(() => {});
+    }).then((unlisten) => unlisteners.push(unlisten));
+
+    onCaptureWarning((message) => {
+      showToast(message, "error");
     }).then((unlisten) => unlisteners.push(unlisten));
 
     onStealthModeChanged((enabled) => {

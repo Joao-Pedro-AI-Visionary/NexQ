@@ -347,6 +347,11 @@ export function onAgentFallback(
 
 // Tray events are handled via raw listen() calls in App.tsx
 
+/** Audio capture started with the mic only: the other party couldn't be captured. */
+export function onCaptureWarning(handler: (message: string) => void): Promise<UnlistenFn> {
+  return listen<string>("capture_warning", (e) => handler(e.payload));
+}
+
 /** Another app started a call (the meeting prompt shows it). */
 export function onMeetingDetected(handler: (info: MeetingPromptInfo) => void): Promise<UnlistenFn> {
   return listen<MeetingPromptInfo>("meeting_detected", (e) => handler(e.payload));
