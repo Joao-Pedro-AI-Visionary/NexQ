@@ -4,13 +4,14 @@ import type { Meeting } from "../lib/types";
 
 const shortcuts = vi.hoisted(() => new Map<string, (event: { state: string }) => void>());
 const captureFailure = vi.hoisted(() => ({ message: "" }));
+const emitted = vi.hoisted(() => [] as Array<[string, unknown]>);
 vi.mock("@tauri-apps/plugin-global-shortcut", () => ({
   register: async (key: string, handler: (event: { state: string }) => void) => { shortcuts.set(key, handler); },
   unregister: async (key: string) => { shortcuts.delete(key); },
 }));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: async () => () => {},
-  emit: async () => {},
+  emit: async (event: string, payload?: unknown) => { emitted.push([event, payload]); },
 }));
 vi.mock("@tauri-apps/plugin-store", () => ({
   load: async () => ({ set: async () => {}, get: async () => undefined }),
@@ -75,11 +76,11 @@ it("reports denied audio capture while retaining the created meeting", async () 
   captureFailure.message = "System audio recording permission denied";
   vi.spyOn(console, "warn").mockImplementation(() => {});
   const launcher = await mountWindow("launcher");
-  const { useToastStore } = await import("../stores/toastStore");
   await act(async () => { shortcuts.get("CmdOrCtrl+M")!({ state: "Pressed" }); });
   await waitFor(() => expect(launcher.getState().isRecording).toBe(true));
-  expect(useToastStore.getState().toasts).toEqual(expect.arrayContaining([
-    expect.objectContaining({ type: "error", message: expect.stringContaining("System audio recording permission denied") }),
-  ]));
+  // Every window is told (the overlay is the one on screen).
+  await waitFor(() => expect(emitted).toEqual(expect.arrayContaining([
+    ["capture_warning", expect.stringContaining("System audio recording permission denied")],
+  ])));
   expect(launcher.getState().activeMeeting?.id).toBe("shortcut-meeting");
 });

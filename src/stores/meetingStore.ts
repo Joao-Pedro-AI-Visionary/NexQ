@@ -226,7 +226,9 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
         }
       } catch (err) {
         console.warn("[meetingStore] Audio capture failed to start:", err);
-        showToast(`Audio capture failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+        // Every window shows it (the overlay is the one on screen).
+        const message = `Audio capture failed: ${err instanceof Error ? err.message : String(err)}`;
+        import("@tauri-apps/api/event").then(({ emit }) => emit("capture_warning", message)).catch(() => {});
         // Continue anyway — meeting is created, user can still use AI features
       }
 

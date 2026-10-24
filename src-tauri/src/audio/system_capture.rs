@@ -43,24 +43,43 @@ pub fn start_system_capture_device(
     log::info!("Starting system audio capture on: {}", label);
 
     // Everything runs inside the spawned thread because cpal::Stream is !Send.
-    // The stream must be created and kept alive on the same thread.
+    // The stream must be created and kept alive on the same thread; the thread
+    // reports whether it started so the caller can warn the user.
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
     let handle = std::thread::Builder::new()
         .name("system-audio-capture".into())
         .spawn(move || {
-            if let Err(e) = run_cpal_loopback(tx, stop_flag, device_name) {
+            if let Err(e) = run_cpal_loopback(tx, stop_flag, device_name, &ready_tx) {
                 log::error!("System audio capture failed: {}", e);
+                let _ = ready_tx.send(Err(e));
             }
         })
         .map_err(|e| format!("Failed to spawn system capture thread: {}", e))?;
 
-    Ok(handle)
+    match ready_rx.recv_timeout(LOOPBACK_START_TIMEOUT) {
+        Ok(Ok(())) => Ok(handle),
+        Ok(Err(e)) => Err(e),
+        // Still opening (slow Bluetooth device): let it continue; errors are logged.
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            log::warn!("System capture on '{}' is slow to start", label);
+            Ok(handle)
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err("System capture thread ended before starting".to_string())
+        }
+    }
 }
+
+/// How long starting a meeting waits for the loopback stream to open.
+#[cfg(not(target_os = "macos"))]
+const LOOPBACK_START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[cfg(not(target_os = "macos"))]
 fn run_cpal_loopback(
     tx: mpsc::Sender<AudioChunk>,
     stop_flag: Arc<AtomicBool>,
     device_name: Option<String>,
+    ready: &std::sync::mpsc::Sender<Result<(), String>>,
 ) -> Result<(), String> {
     let host = cpal::default_host();
 
@@ -150,6 +169,7 @@ fn run_cpal_loopback(
 
     stream.play().map_err(|e| format!("Failed to play loopback stream: {}", e))?;
     log::info!("System audio loopback ACTIVE on '{}'", actual_name);
+    let _ = ready.send(Ok(()));
 
     // Keep stream alive until stop flag
     while !stop_flag.load(Ordering::Relaxed) {

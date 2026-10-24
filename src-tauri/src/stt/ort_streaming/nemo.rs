@@ -180,6 +180,13 @@ fn recognize(
     Ok(decode_tokens(&tokens, vocab))
 }
 
+/// Mean power below this is silence (no decoding, counts toward a pause).
+const SILENCE_ENERGY: f64 = 1e-6;
+
+fn epoch_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64
+}
+
 pub(super) fn run(
     encoder: &mut Session, decoder: &mut Session, joiner: &mut Session,
     vocab: &HashMap<i64, String>, language: &str, stop: &AtomicBool,
@@ -200,16 +207,33 @@ pub(super) fn run(
     let features = Features::new();
     let mut samples = Vec::new();
     let mut silence = 0;
+    // Whether the buffer holds any speech-energy frame (silent buffers aren't decoded).
+    let mut heard = false;
+    // Epoch ms of the buffer's first sample.
+    let mut segment_start_ms = 0u64;
     let mut received = Instant::now();
     loop {
         let mut finished = false;
         let mut flush = false;
-        match audio_rx.recv_timeout(Duration::from_millis(100)) {
+        // A stop request flushes only what is already buffered; queued audio is dropped.
+        let message = if stop.load(Ordering::SeqCst) {
+            Ok(AudioMessage::Stop)
+        } else {
+            audio_rx.recv_timeout(Duration::from_millis(100))
+        };
+        match message {
             Ok(AudioMessage::Samples(audio)) => {
                 received = Instant::now();
-                for chunk in audio.chunks(160) {
+                // The chunk just arrived: its first sample was captured `len / 16` ms ago.
+                let chunk_start_ms = epoch_ms().saturating_sub(audio.len() as u64 * 1000 / SAMPLE_RATE as u64);
+                for (i, chunk) in audio.chunks(160).enumerate() {
+                    if samples.is_empty() {
+                        segment_start_ms = chunk_start_ms + (i as u64 * 160 * 1000 / SAMPLE_RATE as u64);
+                    }
                     let energy = chunk.iter().map(|&x| (x as f64 / 32768.0).powi(2)).sum::<f64>() / chunk.len() as f64;
-                    silence = if energy < 1e-6 { silence + chunk.len() } else { 0 };
+                    let speech = energy >= SILENCE_ENERGY;
+                    heard |= speech;
+                    silence = if speech { 0 } else { silence + chunk.len() };
                     samples.extend(chunk.iter().map(|&x| x as f32 / 32768.0));
                     if (silence >= 12800 && samples.len() >= SAMPLE_RATE as usize) || samples.len() >= SAMPLE_RATE as usize * 20 {
                         flush = true;
@@ -226,15 +250,21 @@ pub(super) fn run(
             }
         }
         if flush && !samples.is_empty() {
-            let text = recognize(encoder, decoder, joiner, &features, &samples, vocab, blank)?;
+            let text = if heard {
+                recognize(encoder, decoder, joiner, &features, &samples, vocab, blank)?
+            } else {
+                String::new()
+            };
+            let duration_ms = samples.len() as u64 * 1000 / SAMPLE_RATE as u64;
             samples.clear();
             silence = 0;
+            heard = false;
             if !text.is_empty() {
                 result_tx.blocking_send(TranscriptResult {
                     text, is_final: true, confidence: 0.9,
-                    timestamp_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64,
+                    timestamp_ms: segment_start_ms,
                     speaker: None, language: Some(language.to_owned()), segment_id: Some(format!("ort_{segment}")),
-                    duration_ms: None, speaker_tag: None,
+                    duration_ms: Some(duration_ms), speaker_tag: None,
                 }).map_err(|e| e.to_string())?;
                 segment += 1;
             }
