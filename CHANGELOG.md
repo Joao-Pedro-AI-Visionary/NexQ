@@ -3,6 +3,9 @@
 ### Bug Fixes
 
 * **audio:** distinguish same-named input and output devices in meeting settings and first-run setup, preserve the selected direction, and choose the correct default source for each party.
+* **macos:** capture the selected system output with Core Audio taps (macOS 14.2+), instead of reopening its microphone; release selected microphone streams on stop and roll back failed output startup.
+* **meeting:** let only the launcher own the start/end shortcut and show audio capture startup errors.
+* **stt:** decode local Parakeet TDT models with their NeMo feature layout, recurrent decoder states, and token-duration outputs; finalize buffered utterances after pauses and on stop.
 
 # [2.25.0](https://github.com/naxhq/NexQ/compare/v2.24.0...v2.25.0) (2026-10-23)
 
