@@ -1,6 +1,57 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
+
+/* Keep v3 hover behaviour: apply on :hover everywhere, not only on hover-capable devices. */
+@custom-variant hover (&:hover);
+
+/*
+ * Tailwind theme. Mirrors the tokens below (hex so opacity modifiers work).
+ * Warm slate-blue neutrals. Every accent carries meaning:
+ * blue = primary action / brand, green = live / success,
+ * amber = the other party / caution, red = recording / destructive.
+ */
+@theme {
+  --color-bg: #0b0d13;
+  --color-bg-raised: #11141c;
+  --color-bg-sunken: #08090e;
+  --color-bg-panel: #161a24;
+
+  --color-ink: #eef1f7;
+  --color-ink-2: #a3aabd;
+  --color-ink-3: #838aa0;
+
+  --color-line: rgba(160, 175, 215, 0.1);
+  --color-line-strong: rgba(160, 175, 215, 0.18);
+
+  --color-brand: #3b82f6;
+  --color-brand-ink: #7aa7ff;
+  --color-brand-btn: #2563eb;
+
+  --color-live: #3ddc97;
+  --color-them: #f2b84b;
+  --color-rec: #f26d6d;
+
+  --font-sans: Geist, ui-sans-serif, system-ui, 'Segoe UI', sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, 'Cascadia Code', Menlo, monospace;
+  --font-serif: 'Instrument Serif', ui-serif, Georgia, serif;
+
+  --container-page: 72rem;
+
+  /*
+   * Tailwind v3 font-size line-heights (absolute rem). v4 defaults are unitless ratios,
+   * which change text that overrides the size or inherits the line-height (chips, kbd).
+   */
+  --text-xs--line-height: 1rem;
+  --text-sm--line-height: 1.25rem;
+  --text-base--line-height: 1.5rem;
+  --text-lg--line-height: 1.75rem;
+  --text-xl--line-height: 1.75rem;
+  --text-2xl--line-height: 2rem;
+  --text-3xl--line-height: 2.25rem;
+  --text-4xl--line-height: 2.5rem;
+
+  /* Critically damped spring approximation: fast start, no overshoot. */
+  --ease-spring: cubic-bezier(0.22, 1, 0.36, 1);
+}
 
 /* ─── Tokens ─── */
 :root {
@@ -31,6 +82,12 @@
 
 /* ─── Base ─── */
 @layer base {
+  /* Tailwind v3 preflight gave buttons a pointer cursor; v4 does not. */
+  button:not(:disabled),
+  [role='button']:not(:disabled) {
+    cursor: pointer;
+  }
+
   html {
     background-color: var(--bg);
     scroll-behavior: smooth;
@@ -41,7 +98,7 @@
   body {
     background-color: var(--bg);
     color: var(--ink);
-    font-family: theme('fontFamily.sans');
+    font-family: var(--font-sans);
     font-feature-settings: 'ss01', 'cv11';
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -68,7 +125,7 @@
   }
 
   kbd {
-    font-family: theme('fontFamily.mono');
+    font-family: var(--font-mono);
   }
 }
 
@@ -87,23 +144,26 @@
   }
 
   .h2 {
-    @apply text-[2rem] font-semibold leading-[1.08] tracking-[-0.03em] text-ink sm:text-5xl;
+    @apply text-[2rem] font-semibold leading-[1.08] tracking-[-0.03em] text-ink sm:text-5xl sm:leading-none;
   }
 
   .lede {
     @apply mt-5 max-w-2xl text-lg leading-relaxed text-ink-2;
   }
 
-  .btn {
-    @apply inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl px-5 text-[0.9375rem] font-medium transition-[background-color,border-color,transform,box-shadow] duration-200 ease-spring active:scale-[0.98];
+  /* .btn-primary and .btn-ghost share the .btn base (v4 cannot @apply a custom class). */
+  .btn,
+  .btn-primary,
+  .btn-ghost {
+    @apply inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl px-5 text-[0.9375rem] font-medium transition-[background-color,border-color,transform,scale,box-shadow] duration-200 ease-spring active:scale-[0.98];
   }
 
   .btn-primary {
-    @apply btn bg-brand-btn text-white shadow-[0_1px_0_0_rgba(255,255,255,0.18)_inset,0_8px_24px_-8px_rgba(37,99,235,0.6)] hover:bg-[#3471f0];
+    @apply bg-brand-btn text-white shadow-[0_1px_0_0_rgba(255,255,255,0.18)_inset,0_8px_24px_-8px_rgba(37,99,235,0.6)] hover:bg-[#3471f0];
   }
 
   .btn-ghost {
-    @apply btn border border-line-strong text-ink hover:border-[rgba(160,175,215,0.32)] hover:bg-bg-raised;
+    @apply border border-line-strong text-ink hover:border-[rgba(160,175,215,0.32)] hover:bg-bg-raised;
   }
 
   .kbd {

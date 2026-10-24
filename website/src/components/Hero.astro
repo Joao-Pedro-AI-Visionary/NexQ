@@ -32,19 +32,19 @@ const proof = [
 
     <h1
       id="hero-title"
-      class="hero-in mt-7 max-w-4xl text-[2.6rem] font-semibold leading-[1.02] tracking-[-0.045em] text-ink sm:text-6xl lg:text-[5.25rem]"
+      class="hero-in mt-7 max-w-4xl text-[2.6rem] font-semibold leading-[1.02] tracking-[-0.045em] text-ink sm:text-6xl sm:leading-none lg:text-[5.25rem]"
       style="--d: 80ms"
     >
       The meeting copilot that stays on <span class="font-serif font-normal italic tracking-[-0.02em] text-ink">your side</span> of the screen.
     </h1>
 
-    <p class="hero-in mt-6 max-w-2xl text-lg leading-relaxed text-ink-2 sm:text-xl" style="--d: 160ms">
+    <p class="hero-in mt-6 max-w-2xl text-lg leading-relaxed text-ink-2 sm:text-xl sm:leading-7" style="--d: 160ms">
       NexQ transcribes both sides of the call in real time and helps you answer in seconds, from a private overlay
       you can hide from screen share. No bot joins. Bring local models, any API, or your Claude subscription. Free and open source.
     </p>
 
     <div class="hero-in mt-9 flex flex-col gap-3 sm:flex-row sm:items-center" style="--d: 240ms">
-      <a href={RELEASES_LATEST} class="btn-primary sm:!px-6" data-download-cta>
+      <a href={RELEASES_LATEST} class="btn-primary sm:px-6!" data-download-cta>
         <Icon name="download" />
         <span data-download-label>Download for Windows</span>
       </a>
@@ -78,7 +78,7 @@ const proof = [
         <button
           id="hero-video-toggle"
           type="button"
-          class="absolute bottom-3 right-3 hidden h-9 items-center gap-2 rounded-full border border-line-strong bg-bg/80 px-3 text-xs font-medium text-ink-2 backdrop-blur hover:text-ink"
+          class="absolute bottom-3 right-3 hidden h-9 items-center gap-2 rounded-full border border-line-strong bg-bg/80 px-3 text-xs font-medium text-ink-2 backdrop-blur-sm hover:text-ink"
           aria-pressed="false"
         >
           <span data-state-label>Pause</span>

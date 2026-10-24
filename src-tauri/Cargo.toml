@@ -37,10 +37,9 @@ anyhow = "1"
 thiserror = "1"
 log = "0.4"
 env_logger = "0.11"
-cpal = "0.15"
 hound = "3.5"
-pdf-extract = "0.7"
-lopdf = "0.32"
+pdf-extract = "0.12"
+lopdf = "0.42"
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 url = "2"
 base64 = "0.22"
@@ -48,16 +47,19 @@ whisper-rs = "0.16"
 sha2 = "0.10"
 zip = "2"
 # load-dynamic: onnxruntime.dll is bundled and loaded on first use (see src/ort_runtime.rs)
-ort = { version = "2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "tracing", "api-24", "load-dynamic"] }
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "tracing", "api-24", "load-dynamic"] }
 ndarray = "0.17"  # Must match ort's ndarray version
 rustfft = "6"
-tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
+tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 tar = "0.4"
 bzip2 = "0.5"
 ogg = "0.9"
-libopus_sys = { version = "0.3", features = ["static", "bundled"] }
+libopus_sys = { version = "0.4", features = ["static", "bundled"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 encoding_rs = "0.8"
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+cpal = "0.15"
 
 # Windows-specific
 [target.'cfg(windows)'.dependencies]
@@ -90,8 +92,11 @@ wasapi = "0.22"
 
 # macOS-specific
 [target.'cfg(target_os = "macos")'.dependencies]
+cpal = "0.16"
 # Used by src/commands/stealth_commands.rs to set the overlay NSWindow's
 # `sharingType` to NSWindowSharingNone (equivalent of Windows' WDA_EXCLUDEFROMCAPTURE).
 objc2 = "0.6"
+coreaudio-sys = "0.2"
+core-foundation = "0.10"
 # macOS Keychain credential backend (src/credentials/macos_keychain.rs).
 security-framework = "3"

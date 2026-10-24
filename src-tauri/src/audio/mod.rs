@@ -63,6 +63,9 @@ pub struct AudioCaptureManager {
     system_thread: Option<std::thread::JoinHandle<()>>,
     /// System capture via input device (cpal stream, for virtual cables tagged as System)
     system_input_stream: Option<cpal::Stream>,
+    /// Why the other party ("Them") isn't being captured, when only that side
+    /// failed to start (the mic keeps running). Taken by the caller to warn the user.
+    system_warning: Option<String>,
     /// Active recorder (if recording is enabled)
     recorder: Option<SharedRecorder>,
     /// Current meeting ID for recording file naming
@@ -99,6 +102,7 @@ impl AudioCaptureManager {
             mic_stream: None,
             system_thread: None,
             system_input_stream: None,
+            system_warning: None,
             recorder: None,
             meeting_id: None,
             mic_vad: VoiceActivityDetector::new(),
@@ -134,6 +138,7 @@ impl AudioCaptureManager {
         }
 
         log::info!("Starting audio capture pipeline");
+        self.system_warning = None;
 
         // Reset stop flag
         self.stop_flag.store(false, Ordering::SeqCst);
@@ -181,7 +186,7 @@ impl AudioCaptureManager {
         // Start system audio capture (only if not already handled by same-device path)
         if same_device {
             // Already handled above — both Mic and System chunks from single stream
-        } else if system_is_input && !system_device_id.is_empty() && system_device_id != "default" {
+        } else if system_is_input {
             // "Them" is a different input device — capture tagged as System
             let system_tx = tx.clone();
             match mic_capture::start_mic_capture(system_device_id, system_tx, AudioSource::System) {
@@ -190,14 +195,12 @@ impl AudioCaptureManager {
                     log::info!("System audio capture started via input device (tagged as System)");
                 }
                 Err(e) => {
-                    log::error!(
-                        "Failed to start system input capture: {}. System audio will not be captured.",
-                        e
-                    );
+                    // Keep "You" running; the caller warns about the other side.
+                    log::error!("System input capture failed: {e}. The other party won't be captured.");
+                    self.system_warning = Some(format!("Couldn't capture the other side ({e}). Your microphone is still transcribed."));
                 }
             }
         } else {
-            // Standard path: WASAPI loopback on output device
             let system_tx = tx.clone();
             let stop_flag = Arc::clone(&self.stop_flag);
             let device_name = if system_device_id.is_empty() || system_device_id == "default" {
@@ -208,13 +211,12 @@ impl AudioCaptureManager {
             match system_capture::start_system_capture_device(system_tx, stop_flag, device_name) {
                 Ok(handle) => {
                     self.system_thread = Some(handle);
-                    log::info!("System audio capture started via WASAPI loopback");
+                    log::info!("System output audio capture started");
                 }
                 Err(e) => {
-                    log::error!(
-                        "WASAPI loopback failed: {}. System audio (remote party) will not be captured.",
-                        e
-                    );
+                    // Keep "You" running; the caller warns about the other side.
+                    log::error!("System output capture failed: {e}. The other party won't be captured.");
+                    self.system_warning = Some(format!("Couldn't capture the other side ({e}). Your microphone is still transcribed."));
                 }
             }
         }
@@ -227,6 +229,11 @@ impl AudioCaptureManager {
         self.is_capturing = true;
         log::info!("Audio capture pipeline started");
         Ok(())
+    }
+
+    /// Why only the mic started (the other party's capture failed), once.
+    pub fn take_system_warning(&mut self) -> Option<String> {
+        self.system_warning.take()
     }
 
     /// Stop all audio capture.

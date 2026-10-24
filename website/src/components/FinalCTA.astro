@@ -13,12 +13,12 @@ const base = import.meta.env.BASE_URL;
   ></div>
   <div class="wrap relative flex flex-col items-center text-center" data-reveal>
     <img src={`${base}img/logo-96.png`} alt="" width="56" height="56" class="rounded-2xl shadow-[0_12px_40px_-12px_rgba(59,130,246,0.6)]" loading="lazy" />
-    <h2 id="cta-title" class="mt-8 max-w-3xl text-[2.25rem] font-semibold leading-[1.05] tracking-[-0.04em] text-ink sm:text-6xl">
+    <h2 id="cta-title" class="mt-8 max-w-3xl text-[2.25rem] font-semibold leading-[1.05] tracking-[-0.04em] text-ink sm:text-6xl sm:leading-none">
       Walk into your next call <span class="font-serif font-normal italic tracking-[-0.02em]">prepared.</span>
     </h2>
     <p class="mt-5 max-w-xl text-lg text-ink-2">Free, open source, and running on your own machine in minutes.</p>
     <div class="mt-9 flex w-full flex-col gap-3 sm:w-auto sm:flex-row">
-      <a href={RELEASES_LATEST} class="btn-primary sm:!px-6">
+      <a href={RELEASES_LATEST} class="btn-primary sm:px-6!">
         <Icon name="download" />
         <span data-download-label>Download for Windows</span>
       </a>

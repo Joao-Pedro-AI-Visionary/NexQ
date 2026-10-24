@@ -114,10 +114,10 @@ fn extract_with_lopdf(file_path: &str) -> Result<String, String> {
 fn get_page_font_maps(doc: &lopdf::Document, page_id: lopdf::ObjectId) -> HashMap<String, CharMap> {
     let mut maps: HashMap<String, CharMap> = HashMap::new();
 
-    let (resources, _) = doc.get_page_resources(page_id);
-    let resources = match resources {
-        Some(r) => r,
-        None => return maps,
+    // lopdf >= 0.33 returns a Result (e.g. on a cyclic /Parent chain).
+    let resources = match doc.get_page_resources(page_id) {
+        Ok((Some(r), _)) => r,
+        _ => return maps,
     };
 
     let font_dict = match resources.get(b"Font") {
@@ -442,4 +442,91 @@ fn glyph_name_to_char(name: &str) -> Option<char> {
         "trademark"=>'™',"Euro"=>'€',
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lopdf::content::{Content, Operation};
+    use lopdf::{dictionary, Document, Object, Stream};
+
+    /// One-page PDF with a Type1 Helvetica font and two text runs.
+    fn write_sample_pdf(path: &Path) {
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let font_id = doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica",
+            "Encoding" => "WinAnsiEncoding",
+        });
+        let content = Content {
+            operations: vec![
+                Operation::new("BT", vec![]),
+                Operation::new("Tf", vec!["F1".into(), 24.into()]),
+                Operation::new("Td", vec![72.into(), 700.into()]),
+                Operation::new("Tj", vec![Object::string_literal("Hello NexQ")]),
+                Operation::new("Td", vec![0.into(), (-30).into()]),
+                Operation::new(
+                    "TJ",
+                    vec![Object::Array(vec![
+                        Object::string_literal("PDF"),
+                        (-250).into(),
+                        Object::string_literal("upgrade"),
+                    ])],
+                ),
+                Operation::new("ET", vec![]),
+            ],
+        };
+        let content_id = doc.add_object(Stream::new(dictionary! {}, content.encode().unwrap()));
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "Contents" => content_id,
+            "Resources" => dictionary! { "Font" => dictionary! { "F1" => font_id } },
+            "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+        });
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![page_id.into()],
+                "Count" => 1,
+            }),
+        );
+        let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        doc.trailer.set("Root", catalog_id);
+        doc.save(path).unwrap();
+    }
+
+    fn sample_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("nexq-pdf-{}-{}.pdf", name, std::process::id()))
+    }
+
+    #[test]
+    fn extracts_text_with_pdf_extract() {
+        let path = sample_path("primary");
+        write_sample_pdf(&path);
+        let text = extract_text_from_pdf(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let text = text.unwrap();
+        assert!(text.contains("Hello NexQ"), "got: {text:?}");
+        assert!(text.contains("upgrade"), "got: {text:?}");
+    }
+
+    #[test]
+    fn extracts_text_with_lopdf_fallback() {
+        let path = sample_path("fallback");
+        write_sample_pdf(&path);
+        let text = extract_with_lopdf(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let text = text.unwrap();
+        assert!(text.contains("Hello NexQ"), "got: {text:?}");
+        assert!(text.contains("PDFupgrade"), "got: {text:?}");
+    }
+
+    #[test]
+    fn missing_file_is_an_error() {
+        assert!(extract_text_from_pdf("Z:/definitely/not/here.pdf").is_err());
+    }
 }
