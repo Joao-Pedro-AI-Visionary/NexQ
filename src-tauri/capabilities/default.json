@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capability set for NexQ",
-  "windows": ["launcher", "overlay", "devlog"],
+  "windows": ["launcher", "overlay", "devlog", "meeting-prompt"],
   "permissions": [
     "core:default",
     "core:window:default",

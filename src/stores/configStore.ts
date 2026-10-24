@@ -4,6 +4,7 @@ import type {
   ThemeMode,
   LLMProviderType,
   CustomLlmAuthType,
+  MeetingDetectionConfig,
   STTProviderType,
   HotkeyConfig,
   MeetingAudioConfig,
@@ -136,6 +137,27 @@ async function storedProviderConfig(provider: LLMProviderType): Promise<string> 
     if (key) config.api_key = key;
   }
   return JSON.stringify(config);
+}
+
+/** Meeting detection defaults: on for the main meeting apps. */
+export const DEFAULT_MEETING_DETECTION: MeetingDetectionConfig = {
+  enabled: true,
+  zoom: true,
+  teams: true,
+  google_meet: true,
+  webex: true,
+  slack: false,
+  discord: false,
+  auto_dismiss_secs: 60,
+  default_scenario: "team_meeting",
+};
+
+function pushMeetingDetection(config: MeetingDetectionConfig): void {
+  import("../lib/ipc").then(({ setMeetingDetectionConfig }) =>
+    setMeetingDetectionConfig(config).catch((e) =>
+      console.warn("[configStore] Failed to apply meeting detection settings:", e),
+    ),
+  );
 }
 
 /** Default global shortcut for stealth mode (Cmd on macOS, Ctrl elsewhere). */
@@ -275,6 +297,8 @@ interface ConfigState {
   stealthMode: boolean;
   /** Global shortcut that toggles stealth mode. */
   stealthShortcut: string;
+  /** Offer to start NexQ when Zoom, Teams, Meet… start a call. */
+  meetingDetection: MeetingDetectionConfig;
 
   // Loading state
   _loaded: boolean;
@@ -371,6 +395,8 @@ interface ConfigState {
   /** Record a stealth change the backend already applied (tray toggle). */
   stealthModeApplied: (enabled: boolean) => void;
   setStealthShortcut: (shortcut: string) => void;
+  /** Replace the meeting detection settings (persisted + pushed to the backend). */
+  setMeetingDetection: (config: MeetingDetectionConfig) => void;
   loadConfig: () => Promise<void>;
 }
 
@@ -446,6 +472,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
   trayStealthEnabled: true,
   stealthMode: false,
   stealthShortcut: DEFAULT_STEALTH_SHORTCUT,
+  meetingDetection: DEFAULT_MEETING_DETECTION,
   _loaded: false,
   mutedYou: false,
   mutedThem: false,
@@ -884,6 +911,11 @@ export const useConfigStore = create<ConfigState>((set) => ({
     set({ stealthShortcut: shortcut });
     persistValue("stealthShortcut", shortcut);
   },
+  setMeetingDetection: (config) => {
+    set({ meetingDetection: config });
+    persistValue("meetingDetection", config);
+    pushMeetingDetection(config);
+  },
 
   /**
    * Load all persisted config values from the Tauri plugin-store on app start.
@@ -951,6 +983,8 @@ export const useConfigStore = create<ConfigState>((set) => ({
       const trayStealthEnabled = await store.get<boolean>("trayStealthEnabled");
       const stealthShortcut = await store.get<string>("stealthShortcut");
       const stealthMode = await store.get<boolean>("stealthMode");
+      const savedMeetingDetection = await store.get<Partial<MeetingDetectionConfig>>("meetingDetection");
+      const meetingDetection = { ...DEFAULT_MEETING_DETECTION, ...(savedMeetingDetection ?? {}) };
       const storedLastModels = await store.get<Record<string, string>>("lastModelByProvider");
       const storedClaudeCliConfig = await store.get<Partial<ClaudeCliConfig>>("claudeCliConfig");
       const claudeCliFallbackPinned = (await store.get<boolean>("claudeCliFallbackPinned")) ?? false;
@@ -1128,6 +1162,7 @@ export const useConfigStore = create<ConfigState>((set) => ({
         ...(trayStealthEnabled != null && { trayStealthEnabled }),
         ...(stealthShortcut != null && { stealthShortcut }),
         ...(stealthMode != null && { stealthMode }),
+        meetingDetection,
       }));
 
       // Post-load: ensure local providers have a local_model_id so footer/backend use the right model
@@ -1215,6 +1250,12 @@ export const useConfigStore = create<ConfigState>((set) => ({
       store.onKeyChange<string>("stealthShortcut", (val) => {
         if (val != null) set({ stealthShortcut: val });
       });
+      store.onKeyChange<MeetingDetectionConfig>("meetingDetection", (val) => {
+        if (val != null) set({ meetingDetection: { ...DEFAULT_MEETING_DETECTION, ...val } });
+      });
+
+      // The backend detector stays idle until it has the saved settings.
+      pushMeetingDetection(meetingDetection);
 
       // The backend already restored it natively at startup; this re-applies it
       // and, if the windows can't be hidden, shows the setting as off.

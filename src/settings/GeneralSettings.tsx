@@ -4,6 +4,7 @@ import { FolderOpen, Sun, Moon, Monitor } from "lucide-react";
 import type { ThemeMode } from "../lib/types";
 import { Eye } from "lucide-react";
 import { StealthSettings } from "./StealthSettings";
+import { MeetingDetectionSettings } from "./MeetingDetectionSettings";
 
 export function GeneralSettings() {
   const theme = useConfigStore((s) => s.theme);
@@ -70,6 +71,9 @@ export function GeneralSettings() {
 
       {/* Stealth mode */}
       <StealthSettings />
+
+      {/* Meeting detection */}
+      <MeetingDetectionSettings />
 
       {/* Toggle Options */}
       <div className="rounded-xl border border-border/30 bg-card/50 p-5 space-y-5">

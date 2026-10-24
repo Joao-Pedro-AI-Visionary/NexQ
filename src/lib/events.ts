@@ -4,6 +4,8 @@
 
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  AIScenario,
+  MeetingPromptInfo,
   AgentSessionStatus,
   AgentFallbackEvent,
   AudioLevelEvent,
@@ -344,6 +346,30 @@ export function onAgentFallback(
 }
 
 // Tray events are handled via raw listen() calls in App.tsx
+
+/** Another app started a call (the meeting prompt shows it). */
+export function onMeetingDetected(handler: (info: MeetingPromptInfo) => void): Promise<UnlistenFn> {
+  return listen<MeetingPromptInfo>("meeting_detected", (e) => handler(e.payload));
+}
+
+/** The detected call ended. */
+export function onDetectedMeetingEnded(handler: () => void): Promise<UnlistenFn> {
+  return listen("detected_meeting_ended", () => handler());
+}
+
+/** Prompt -> launcher: start a NexQ meeting for the detected call. */
+export interface StartDetectedMeetingEvent {
+  title: string;
+  scenario: AIScenario;
+}
+
+export function emitStartDetectedMeeting(payload: StartDetectedMeetingEvent): Promise<void> {
+  return emit("nexq:start_detected_meeting", payload);
+}
+
+export function onStartDetectedMeeting(handler: (e: StartDetectedMeetingEvent) => void): Promise<UnlistenFn> {
+  return listen<StartDetectedMeetingEvent>("nexq:start_detected_meeting", (e) => handler(e.payload));
+}
 
 /** Stealth mode was switched from the tray (the backend already applied it). */
 export function onStealthModeChanged(handler: (enabled: boolean) => void): Promise<UnlistenFn> {

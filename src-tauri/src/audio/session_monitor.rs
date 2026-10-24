@@ -210,6 +210,12 @@ fn get_device_name(device: &windows::Win32::Media::Audio::IMMDevice) -> Option<S
     }
 }
 
+/// Executable file name of a process (e.g. "Zoom.exe"), if it can be opened.
+#[cfg(target_os = "windows")]
+pub(crate) fn process_exe_name(pid: u32) -> Option<String> {
+    get_process_name(pid)
+}
+
 /// Get process name from PID.
 #[cfg(target_os = "windows")]
 fn get_process_name(pid: u32) -> Option<String> {

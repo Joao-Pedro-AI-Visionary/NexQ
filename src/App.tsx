@@ -27,7 +27,7 @@ import { useDemoShortcut } from "./demo/useDemoShortcut";
 import { DemoPicker } from "./demo/DemoPicker";
 import { DemoBadge } from "./demo/DemoBadge";
 import { SHOW_MEETING_OVERLAY_EVENT, showLauncherWindow, showMeetingOverlay, showOverlayWindow } from "./lib/windows";
-import { emitOverlayMeetingReady, onOverlayMeetingReady, onStealthModeChanged } from "./lib/events";
+import { emitOverlayMeetingReady, onOverlayMeetingReady, onStartDetectedMeeting, onStealthModeChanged } from "./lib/events";
 
 function App() {
   const currentView = useMeetingStore((s) => s.currentView);
@@ -154,6 +154,19 @@ function App() {
       });
       useMeetingStore.getState().loadRecentMeetings().catch(() => {});
       showLauncherWindow().catch(() => {});
+    }).then((fn) => { unlisten = fn; });
+    return () => { unlisten?.(); };
+  }, [windowLabel]);
+
+  // LAUNCHER window: start the meeting the meeting-detection prompt asked for
+  useEffect(() => {
+    if (windowLabel !== "launcher") return;
+    let unlisten: (() => void) | undefined;
+    onStartDetectedMeeting(({ title, scenario }) => {
+      if (useMeetingStore.getState().activeMeeting) return;
+      useMeetingStore.getState().startMeetingFlow(title, "online", scenario).catch((err) => {
+        console.error("[App] Starting the detected meeting failed:", err);
+      });
     }).then((fn) => { unlisten = fn; });
     return () => { unlisten?.(); };
   }, [windowLabel]);
