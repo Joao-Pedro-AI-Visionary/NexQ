@@ -125,6 +125,12 @@ fn native_app(exe: &str) -> Option<CallApp> {
     })
 }
 
+/// Whether any capturing process could be a call (window titles are only
+/// read then, keeping the usual idle pass to the mic-session check).
+pub fn may_be_call(capturing: &[String]) -> bool {
+    capturing.iter().any(|e| native_app(e).is_some() || BROWSERS.contains(&e.as_str()))
+}
+
 /// The meeting in progress, if a call app is using the microphone.
 /// `capturing` holds the lowercase executable names of processes with an
 /// active microphone session (NexQ itself excluded).

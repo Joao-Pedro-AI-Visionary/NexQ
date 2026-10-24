@@ -6,7 +6,11 @@
 //! A background thread samples every [`POLL_EVERY`]; [`rules::Tracker`] turns
 //! samples into one prompt per call. The prompt is a small always-on-top
 //! window (`meeting-prompt`, `index.html?view=meeting-prompt`) shown without
-//! taking focus from the call.
+//! taking focus from the call, created when needed and closed afterwards.
+//!
+//! Cost: an idle pass reads the microphone sessions only (~3 ms, mostly
+//! waiting on the Windows audio service; device handles are reused); window
+//! titles are read only while a call app or browser holds the mic.
 
 pub mod probe;
 pub mod rules;
@@ -69,7 +73,12 @@ pub fn start(app: &AppHandle) {
             // Sampling is skipped while off; while NexQ records the tracker still
             // follows the call so it doesn't prompt for it once NexQ stops.
             let seen = if config.enabled {
-                rules::detect(&probe::capturing_processes(), &probe::visible_windows(), &config)
+                let capturing = probe::capturing_processes();
+                if rules::may_be_call(&capturing) {
+                    rules::detect(&capturing, &probe::visible_windows(), &config)
+                } else {
+                    None
+                }
             } else {
                 None
             };
@@ -148,9 +157,11 @@ fn show_prompt(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Close the prompt window entirely: a webview costs memory, and a call
+/// prompts rarely (it is recreated, in well under a second, for the next).
 fn hide_prompt(app: &AppHandle) {
     if let Some(w) = app.get_webview_window(PROMPT_WINDOW) {
-        let _ = w.hide();
+        let _ = w.destroy();
     }
 }
 

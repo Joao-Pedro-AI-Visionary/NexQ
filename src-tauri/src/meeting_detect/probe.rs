@@ -16,19 +16,60 @@ pub fn capturing_processes() -> Vec<String> {
     };
     use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
 
+    // Per (detector) thread: one session manager per microphone, refreshed
+    // every REFRESH_EVERY passes to pick up plugged/unplugged devices.
+    // Activating them is most of a pass's cost, so they are kept between passes.
+    const REFRESH_EVERY: u32 = 20;
+    thread_local! {
+        static MANAGERS: std::cell::RefCell<(u32, Vec<IAudioSessionManager2>)> =
+            const { std::cell::RefCell::new((0, Vec::new())) };
+    }
+    fn session_managers() -> Vec<IAudioSessionManager2> {
+        let mut managers = Vec::new();
+        unsafe {
+            let Ok(enumerator) = CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL) else {
+                return managers;
+            };
+            // DEVICE_STATE_ACTIVE
+            let Ok(devices) = enumerator.EnumAudioEndpoints(eCapture, DEVICE_STATE(0x1)) else {
+                return managers;
+            };
+            for i in 0..devices.GetCount().unwrap_or(0) {
+                if let Ok(mgr) = devices.Item(i).and_then(|d| d.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None)) {
+                    managers.push(mgr);
+                }
+            }
+        }
+        managers
+    }
+    thread_local! {
+        // pid -> lowercase exe name (cleared on refresh, so reused pids heal).
+        static EXE_NAMES: std::cell::RefCell<std::collections::HashMap<u32, Option<String>>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+    fn cached_exe_name(pid: u32) -> Option<String> {
+        EXE_NAMES.with(|names| {
+            names
+                .borrow_mut()
+                .entry(pid)
+                .or_insert_with(|| crate::audio::session_monitor::process_exe_name(pid).map(|e| e.to_lowercase()))
+                .clone()
+        })
+    }
+    let managers = MANAGERS.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        if cell.0 % REFRESH_EVERY == 0 || cell.1.is_empty() {
+            cell.1 = session_managers();
+            EXE_NAMES.with(|names| names.borrow_mut().clear());
+        }
+        cell.0 = cell.0.wrapping_add(1);
+        cell.1.clone()
+    });
+
     let own_pid = std::process::id();
     let mut exes = Vec::new();
     unsafe {
-        let Ok(enumerator) = CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL) else {
-            return exes;
-        };
-        // DEVICE_STATE_ACTIVE
-        let Ok(devices) = enumerator.EnumAudioEndpoints(eCapture, DEVICE_STATE(0x1)) else {
-            return exes;
-        };
-        for i in 0..devices.GetCount().unwrap_or(0) {
-            let Ok(device) = devices.Item(i) else { continue };
-            let Ok(mgr) = device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) else { continue };
+        for mgr in &managers {
             let Ok(sessions) = mgr.GetSessionEnumerator() else { continue };
             let sessions: IAudioSessionEnumerator = sessions;
             for j in 0..sessions.GetCount().unwrap_or(0) {
@@ -42,8 +83,7 @@ pub fn capturing_processes() -> Vec<String> {
                 if pid == 0 || pid == own_pid {
                     continue;
                 }
-                if let Some(exe) = crate::audio::session_monitor::process_exe_name(pid) {
-                    let exe = exe.to_lowercase();
+                if let Some(exe) = cached_exe_name(pid) {
                     if !exes.contains(&exe) {
                         exes.push(exe);
                     }
@@ -121,6 +161,14 @@ mod tests {
             let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
         }
         println!("capturing: {:?}", super::capturing_processes());
+        let n = 50;
+        let t = std::time::Instant::now();
+        for _ in 0..n { let _ = super::capturing_processes(); }
+        let cap = t.elapsed() / n;
+        let t = std::time::Instant::now();
+        for _ in 0..n { let _ = super::visible_windows(); }
+        let win = t.elapsed() / n;
+        println!("per pass: mic sessions {:?}, windows {:?}", cap, win);
         for w in super::visible_windows().iter().take(40) {
             println!("{:<22} {:<28} {}", w.exe, w.class, w.title);
         }
