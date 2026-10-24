@@ -41,7 +41,7 @@ const actions = [
           <p class="mb-3 text-sm text-ink-3">10 speech engines. Six need no API key, five run entirely offline.</p>
           <ul class="flex flex-wrap gap-2" aria-label="Speech-to-text engines">
             {STT_PROVIDERS.map((p) => (
-              <li class:list={['chip !py-0.5 !text-[0.8125rem]', p.local && '!border-live/25 !text-ink']}>
+              <li class:list={['chip py-0.5! text-[0.8125rem]!', p.local && 'border-live/25! text-ink!']}>
                 {p.local && <span class="h-1.5 w-1.5 rounded-full bg-live" aria-hidden="true"></span>}
                 {p.name}
                 {p.local && <span class="sr-only">(no API key)</span>}
