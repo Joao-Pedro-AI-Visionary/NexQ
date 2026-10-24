@@ -35,6 +35,10 @@ updates:
       prefix: chore
       include: scope
     labels: ["dependencies", "javascript", "area: website"]
+    ignore:
+      # @astrojs/check supports TypeScript 5-6 only.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
     groups:
       website-minor-patch:
         update-types: ["minor", "patch"]
