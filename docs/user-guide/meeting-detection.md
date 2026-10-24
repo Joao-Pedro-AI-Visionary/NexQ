@@ -4,7 +4,7 @@ When a call starts in Zoom, Microsoft Teams, Google Meet or Webex, NexQ shows a 
 
 ## How it works
 
-NexQ checks which app is using your microphone, about every 1.5 seconds. When a call app holds the microphone for a few seconds, NexQ treats that as a meeting. **It never listens to audio before you click Start**: it only reads which process has the microphone open, and the titles of that app's windows.
+NexQ checks which app is using your microphone every 3 seconds (you can change this from every second to every 10 seconds). Each check takes a few milliseconds. When a call app holds the microphone for a few seconds, NexQ treats that as a meeting. **It never listens to audio before you click Start**: it only reads which process has the microphone open, and the titles of that app's windows.
 
 - **Desktop apps.** Zoom, Teams and Webex count as soon as they use the microphone.
 - **Browsers.** A browser that uses the microphone counts only when its active tab is a meeting (Google Meet, Teams or Zoom on the web). Browsers use the microphone for other things too, such as voice typing and recorders.
@@ -33,6 +33,7 @@ The chevron next to **Start NexQ** picks the meeting type (Team Meeting, Intervi
 - **On/off.** Detection is on by default.
 - **Apps.** Zoom, Microsoft Teams, Google Meet, Webex, Slack huddles and Discord. Slack and Discord are off by default.
 - **Start as.** The meeting type a prompt starts with.
+- **Check for calls.** How often NexQ checks: every 1, 2, 3 (default), 5 or 10 seconds.
 - **Hide the prompt after.** 30 seconds, 1 minute, 2 minutes, or until the call ends. The timer pauses while your mouse is over the prompt.
 
 Keyboard: **Enter** starts the meeting and **Esc** dismisses the prompt. When [stealth mode](../../README.md#whats-new) is on, the prompt is hidden from screen sharing too.

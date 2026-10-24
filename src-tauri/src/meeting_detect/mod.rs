@@ -3,12 +3,13 @@
 //! meeting detection. Only *which process* holds an active microphone session
 //! and its window titles are read — never any audio.
 //!
-//! A background thread samples every [`POLL_EVERY`]; [`rules::Tracker`] turns
+//! A background thread samples every `check_interval_secs` (3 s by default,
+//! at least 1 s); [`rules::Tracker`] turns
 //! samples into one prompt per call. The prompt is a small always-on-top
 //! window (`meeting-prompt`, `index.html?view=meeting-prompt`) shown without
 //! taking focus from the call, created when needed and closed afterwards.
 //!
-//! Cost: an idle pass reads the microphone sessions only (~3 ms, mostly
+//! Cost: an idle check reads the microphone sessions only (~3 ms, mostly
 //! waiting on the Windows audio service; device handles are reused); window
 //! titles are read only while a call app or browser holds the mic.
 
@@ -17,7 +18,7 @@ pub mod rules;
 
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use tauri::{command, AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
@@ -39,7 +40,6 @@ fn prompt_info(meeting: DetectedMeeting) -> MeetingPromptInfo {
 use rules::{Tracker, TrackerEvent};
 
 pub const PROMPT_WINDOW: &str = "meeting-prompt";
-const POLL_EVERY: Duration = Duration::from_millis(1500);
 const PROMPT_WIDTH: f64 = 480.0;
 const PROMPT_HEIGHT: f64 = 104.0;
 const PROMPT_TOP_MARGIN: f64 = 14.0;
@@ -67,7 +67,8 @@ pub fn start(app: &AppHandle) {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         }
         loop {
-            std::thread::sleep(POLL_EVERY);
+            let interval = with_detector(|d| d.config.check_interval());
+            std::thread::sleep(interval);
             let config = with_detector(|d| d.config.clone());
             let meeting_active = app.state::<AppState>().meeting_active.load(Ordering::SeqCst);
             // Sampling is skipped while off; while NexQ records the tracker still

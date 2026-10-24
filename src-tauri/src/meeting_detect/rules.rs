@@ -21,6 +21,18 @@ pub struct MeetingDetectionConfig {
     pub auto_dismiss_secs: u32,
     /// AI scenario a meeting started from the prompt uses (`AIScenario`).
     pub default_scenario: String,
+    /// Seconds between checks (at least [`MIN_CHECK_SECS`]).
+    pub check_interval_secs: u32,
+}
+
+pub const MIN_CHECK_SECS: u32 = 1;
+pub const MAX_CHECK_SECS: u32 = 60;
+
+impl MeetingDetectionConfig {
+    /// Time between checks, kept within 1–60 s.
+    pub fn check_interval(&self) -> Duration {
+        Duration::from_secs(u64::from(self.check_interval_secs.clamp(MIN_CHECK_SECS, MAX_CHECK_SECS)))
+    }
 }
 
 impl Default for MeetingDetectionConfig {
@@ -36,6 +48,7 @@ impl Default for MeetingDetectionConfig {
             discord: false,
             auto_dismiss_secs: 60,
             default_scenario: "team_meeting".to_string(),
+            check_interval_secs: 3,
         }
     }
 }
@@ -395,6 +408,18 @@ mod tests {
         let code = detect(&caps(&["msedge.exe"]), &[win("msedge.exe", "Meet - abc-defg-hij and 2 more pages - Personal - Microsoft\u{200b} Edge")], &cfg()).unwrap();
         assert_eq!((code.app.as_str(), code.title), ("google_meet", None));
         assert_eq!(detect(&caps(&["chrome.exe"]), &[win("chrome.exe", "Quora - Google Chrome")], &cfg()), None);
+    }
+
+    #[test]
+    fn check_interval_defaults_to_3s_and_stays_in_range() {
+        assert_eq!(MeetingDetectionConfig::default().check_interval(), Duration::from_secs(3));
+        let at = |s| MeetingDetectionConfig { check_interval_secs: s, ..Default::default() }.check_interval();
+        assert_eq!(at(0), Duration::from_secs(1));
+        assert_eq!(at(1), Duration::from_secs(1));
+        assert_eq!(at(600), Duration::from_secs(60));
+        // Older saved settings without the field get the default.
+        let old: MeetingDetectionConfig = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
+        assert_eq!(old.check_interval(), Duration::from_secs(3));
     }
 
     #[test]

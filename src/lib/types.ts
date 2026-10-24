@@ -1034,6 +1034,8 @@ export interface MeetingDetectionConfig {
   auto_dismiss_secs: number;
   /** AI scenario for meetings started from the prompt. */
   default_scenario: AIScenario;
+  /** Seconds between checks (1–60, default 3). */
+  check_interval_secs: number;
 }
 
 /** A call in progress in another app (mirrors `DetectedMeeting`). */

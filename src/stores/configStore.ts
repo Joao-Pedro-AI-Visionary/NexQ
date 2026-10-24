@@ -150,6 +150,7 @@ export const DEFAULT_MEETING_DETECTION: MeetingDetectionConfig = {
   discord: false,
   auto_dismiss_secs: 60,
   default_scenario: "team_meeting",
+  check_interval_secs: 3,
 };
 
 function pushMeetingDetection(config: MeetingDetectionConfig): void {

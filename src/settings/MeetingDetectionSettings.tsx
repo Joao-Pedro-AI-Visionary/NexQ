@@ -22,6 +22,14 @@ const DISMISS_OPTIONS: Array<{ value: number; label: string }> = [
   { value: 0, label: "Until the call ends" },
 ];
 
+const CHECK_OPTIONS: Array<{ value: number; label: string }> = [
+  { value: 1, label: "Every second" },
+  { value: 2, label: "Every 2 seconds" },
+  { value: 3, label: "Every 3 seconds" },
+  { value: 5, label: "Every 5 seconds" },
+  { value: 10, label: "Every 10 seconds" },
+];
+
 /** Settings → General: offer to start NexQ when a call app starts a meeting. */
 export function MeetingDetectionSettings() {
   const config = useConfigStore((s) => s.meetingDetection);
@@ -99,7 +107,7 @@ export function MeetingDetectionSettings() {
               </p>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-3 gap-3">
               <label className="block">
                 <span className="text-xs font-medium text-foreground/80">Start as</span>
                 <select
@@ -128,7 +136,24 @@ export function MeetingDetectionSettings() {
                   ))}
                 </select>
               </label>
+              <label className="block">
+                <span className="text-xs font-medium text-foreground/80">Check for calls</span>
+                <select
+                  value={config.check_interval_secs}
+                  onChange={(e) => update({ check_interval_secs: Math.max(1, Number(e.target.value)) })}
+                  className="mt-1.5 w-full cursor-pointer rounded-lg border border-border/50 bg-background px-3 py-2 text-xs text-foreground focus:border-primary focus:outline-none"
+                >
+                  {CHECK_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
+            <p className="text-meta text-muted-foreground/60">
+              Each check takes a few milliseconds. More often means the prompt appears sooner after a call starts.
+            </p>
           </>
         )
       )}
