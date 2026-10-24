@@ -32,7 +32,8 @@ describe("MeetingPrompt", () => {
     expect(onStart).toHaveBeenLastCalledWith("Zoom — Meeting 2026-10-23 15:02", "interview");
 
     fireEvent.change(screen.getByLabelText("Meeting name"), { target: { value: "Board review" } });
-    fireEvent.change(screen.getByLabelText(/Meeting type/), { target: { value: "team_meeting" } });
+    fireEvent.click(screen.getByRole("button", { name: /Meeting type/ }));
+    fireEvent.click(screen.getByRole("option", { name: /Team Meeting/ }));
     fireEvent.click(screen.getByRole("button", { name: /Start NexQ/ }));
     expect(onStart).toHaveBeenLastCalledWith("Board review — Meeting 2026-10-23 15:02", "team_meeting");
   });
@@ -56,6 +57,37 @@ describe("MeetingPrompt", () => {
     const onDismiss = vi.fn();
     render(<MeetingPrompt info={info({}, 0)} onStart={() => {}} onDismiss={onDismiss} />);
     act(() => vi.advanceTimersByTime(600_000));
+    expect(onDismiss).not.toHaveBeenCalled();
+  });
+
+  it("picks the meeting type from its menu with the keyboard, making room for it", () => {
+    const onStart = vi.fn();
+    const onMenuToggle = vi.fn();
+    render(<MeetingPrompt info={info()} onStart={onStart} onDismiss={() => {}} onMenuToggle={onMenuToggle} />);
+    const chevron = screen.getByRole("button", { name: "Meeting type: Interview" });
+    fireEvent.click(chevron);
+    expect(onMenuToggle).toHaveBeenLastCalledWith(true);
+    const options = screen.getAllByRole("option");
+    expect(options).toHaveLength(5);
+    expect(screen.getByRole("option", { selected: true })).toHaveTextContent("Interview");
+    expect(document.activeElement).toBe(screen.getByRole("option", { name: /Interview/ }));
+
+    fireEvent.keyDown(window, { key: "ArrowDown" }); // Webinar
+    fireEvent.keyDown(window, { key: "Enter" });
+    expect(onMenuToggle).toHaveBeenLastCalledWith(false);
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(onStart).not.toHaveBeenCalled(); // Enter chose, it didn't start
+
+    fireEvent.click(screen.getByRole("button", { name: /Start NexQ/ }));
+    expect(onStart).toHaveBeenLastCalledWith("Zoom — Meeting 2026-10-23 15:02", "webinar");
+  });
+
+  it("Escape closes the open menu without dismissing the prompt", () => {
+    const onDismiss = vi.fn();
+    render(<MeetingPrompt info={info()} onStart={() => {}} onDismiss={onDismiss} />);
+    fireEvent.click(screen.getByRole("button", { name: /Meeting type/ }));
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
     expect(onDismiss).not.toHaveBeenCalled();
   });
 });
