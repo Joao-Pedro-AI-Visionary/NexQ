@@ -16,6 +16,10 @@ updates:
       prefix: chore
       include: scope
     labels: ["dependencies", "javascript"]
+    ignore:
+      # tailwind-merge 3 requires Tailwind CSS 4; the app is on Tailwind 3.
+      - dependency-name: tailwind-merge
+        update-types: ["version-update:semver-major"]
     groups:
       npm-minor-patch:
         update-types: ["minor", "patch"]
