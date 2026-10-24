@@ -1,3 +1,14 @@
+## [2.26.1](https://github.com/naxhq/NexQ/compare/v2.26.0...v2.26.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **audio:** distinguish same-named input and output devices ([a28dce2](https://github.com/naxhq/NexQ/commit/a28dce2de3cdc7d945db7b1e02038133c897c146))
+* **audio:** keep transcribing your mic when the other side can't be captured ([d964ab8](https://github.com/naxhq/NexQ/commit/d964ab8b4677e96cf66726c797953e81fab236ad)), closes [#26](https://github.com/naxhq/NexQ/issues/26)
+* **audio:** report loopback startup failures; NeMo stop, silence and timestamps ([bb725d1](https://github.com/naxhq/NexQ/commit/bb725d1849243ba87122e3186da4ad54a6457bfe))
+* **deps:** resolve Rust security alerts and fold in Dependabot Cargo updates ([0e98df0](https://github.com/naxhq/NexQ/commit/0e98df07f380f6adc76e6622e2ca76561f9b6106)), closes [#23](https://github.com/naxhq/NexQ/issues/23) [#25](https://github.com/naxhq/NexQ/issues/25) [#24](https://github.com/naxhq/NexQ/issues/24)
+* **macos:** separate output capture and restore local transcription ([803d2a1](https://github.com/naxhq/NexQ/commit/803d2a111c053351341ea256e95cfda061f40ee0))
+* **meetings:** styled meeting-type menu in the detection prompt ([33cd1f0](https://github.com/naxhq/NexQ/commit/33cd1f0d7469d538a8e884ba9d37655695f4a1ae))
 # [2.26.0](https://github.com/naxhq/NexQ/compare/v2.25.0...v2.26.0) (2026-10-24)
 
 
