@@ -1,3 +1,9 @@
+# Unreleased
+
+### Bug Fixes
+
+* **audio:** distinguish same-named input and output devices in meeting settings and first-run setup, preserve the selected direction, and choose the correct default source for each party.
+
 # [2.25.0](https://github.com/naxhq/NexQ/compare/v2.24.0...v2.25.0) (2026-10-23)
 
 
