@@ -1,12 +1,20 @@
-# Unreleased
+# [2.26.0](https://github.com/naxhq/NexQ/compare/v2.25.0...v2.26.0) (2026-10-24)
+
 
 ### Bug Fixes
 
-* **audio:** distinguish same-named input and output devices in meeting settings and first-run setup, preserve the selected direction, and choose the correct default source for each party.
-* **macos:** capture the selected system output with Core Audio taps (macOS 14.2+), instead of reopening its microphone; release selected microphone streams on stop and roll back failed output startup.
-* **meeting:** let only the launcher own the start/end shortcut and show audio capture startup errors.
-* **stt:** decode local Parakeet TDT models with their NeMo feature layout, recurrent decoder states, and token-duration outputs; finalize buffered utterances after pauses and on stop.
+* **overlay:** bring the meeting overlay back after minimizing, fix tray Show Overlay ([280e0af](https://github.com/naxhq/NexQ/commit/280e0afce466f78e6eb99a0a5cec760b8b4a9e76))
 
+
+### Features
+
+* **meetings:** check for calls every 3 s by default, configurable down to 1 s ([5eec839](https://github.com/naxhq/NexQ/commit/5eec839ae218328a01c0f05ec8fa0fc543e659c3))
+* **meetings:** detect Zoom, Teams, Meet and Webex calls and offer to start NexQ ([cc8e5fa](https://github.com/naxhq/NexQ/commit/cc8e5fa7c6fa1972d35fa4a8c47326ba6c618048))
+
+
+### Performance Improvements
+
+* **meetings:** lighter detection passes and no idle prompt window ([c733504](https://github.com/naxhq/NexQ/commit/c7335040eb7586eeb615520e69754b89a6a169ad))
 # [2.25.0](https://github.com/naxhq/NexQ/compare/v2.24.0...v2.25.0) (2026-10-23)
 
 

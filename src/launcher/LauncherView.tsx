@@ -14,7 +14,7 @@ import { TokenBudget } from "../context/TokenBudget";
 import { TestSearchDialog } from "../context/TestSearchDialog";
 import { NEXQ_VERSION, NEXQ_DEVELOPER } from "../lib/version";
 import { ServiceStatusBar } from "../components/ServiceStatusBar";
-import { showOverlayWindow } from "../lib/windows";
+import { showMeetingOverlay } from "../lib/windows";
 import { endMeetingFromThisWindow } from "../hooks/useUpdater";
 import type { MeetingSummary, AudioMode, AIScenario } from "../lib/types";
 import {
@@ -206,17 +206,15 @@ export function LauncherView() {
 
   const handleSelectMeeting = useCallback((meetingId: string) => {
     if (activeMeeting?.id === meetingId) {
-      setCurrentView("overlay");
-      showOverlayWindow().catch(() => {});
+      showMeetingOverlay().catch(() => {});
       return;
     }
     setSelectedMeetingId(meetingId);
-  }, [activeMeeting, setCurrentView]);
+  }, [activeMeeting]);
 
   const handleReturnToMeeting = useCallback(() => {
-    setCurrentView("overlay");
-    showOverlayWindow().catch(() => {});
-  }, [setCurrentView]);
+    showMeetingOverlay().catch(() => {});
+  }, []);
 
   const handleRagUpdate = useCallback(async () => {
     setRagStatus("updating");

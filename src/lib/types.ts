@@ -1021,6 +1021,38 @@ export interface OpusMtModelStatus {
 
 export type TrayState = "idle" | "recording" | "muted" | "stealth" | "ai_processing" | "indexing";
 
+/** Meeting detection settings (mirrors `MeetingDetectionConfig` in meeting_detect/rules.rs). */
+export interface MeetingDetectionConfig {
+  enabled: boolean;
+  zoom: boolean;
+  teams: boolean;
+  google_meet: boolean;
+  webex: boolean;
+  slack: boolean;
+  discord: boolean;
+  /** Seconds before an unanswered prompt goes away (0 = until the call ends). */
+  auto_dismiss_secs: number;
+  /** AI scenario for meetings started from the prompt. */
+  default_scenario: AIScenario;
+  /** Seconds between checks (1–60, default 3). */
+  check_interval_secs: number;
+}
+
+/** A call in progress in another app (mirrors `DetectedMeeting`). */
+export interface DetectedMeeting {
+  /** "zoom" | "teams" | "google_meet" | "webex" | "slack" | "discord" */
+  app: string;
+  app_name: string;
+  title: string | null;
+}
+
+/** Payload of `meeting_detected` / `get_detected_meeting` (mirrors `MeetingPromptInfo`). */
+export interface MeetingPromptInfo {
+  meeting: DetectedMeeting;
+  auto_dismiss_secs: number;
+  default_scenario: AIScenario;
+}
+
 /** Mirrors `StealthSupport` in stealth_commands.rs. */
 export interface StealthSupport {
   supported: boolean;

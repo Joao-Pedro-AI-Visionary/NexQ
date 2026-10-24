@@ -4,36 +4,56 @@
  * Keeping show/hide/focus in one place prevents the React view state from
  * drifting away from the actual native windows.
  */
+/** Show the launcher window and hide the overlay (whichever window asks). */
 export async function showLauncherWindow(): Promise<void> {
-  const { WebviewWindow, getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-  const current = getCurrentWebviewWindow();
+  const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
   const launcher = await WebviewWindow.getByLabel("launcher");
+  const overlay = await WebviewWindow.getByLabel("overlay");
 
   if (launcher) {
     await launcher.show().catch(() => {});
     await launcher.unminimize().catch(() => {});
     await launcher.setFocus().catch(() => {});
   }
-
-  if (current.label === "overlay") {
-    await current.hide().catch(() => {});
-  }
+  await overlay?.hide().catch(() => {});
 }
 
+/**
+ * Show the overlay window and hide the launcher. Only the overlay window's
+ * own view decides what it renders, so callers outside it should use
+ * {@link showMeetingOverlay}.
+ */
 export async function showOverlayWindow(): Promise<void> {
-  const { WebviewWindow, getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-  const current = getCurrentWebviewWindow();
+  const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
   const overlay = await WebviewWindow.getByLabel("overlay");
+  const launcher = await WebviewWindow.getByLabel("launcher");
 
   if (overlay) {
     await overlay.show().catch(() => {});
     await overlay.unminimize().catch(() => {});
     await overlay.setFocus().catch(() => {});
   }
+  await launcher?.hide().catch(() => {});
+}
 
-  if (current.label === "launcher") {
-    await current.hide().catch(() => {});
-  }
+/** Window -> overlay window: bring back the floating meeting overlay. */
+export const SHOW_MEETING_OVERLAY_EVENT = "nexq:show_meeting_overlay";
+
+/**
+ * Bring back the floating meeting overlay from any window (launcher RETURN,
+ * Ctrl+B, tray). The overlay window switches itself to the meeting view and
+ * shows; without a running meeting it shows the launcher instead.
+ */
+export async function showMeetingOverlay(): Promise<void> {
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit(SHOW_MEETING_OVERLAY_EVENT);
+}
+
+/** Whether the overlay window is on screen. */
+export async function isOverlayVisible(): Promise<boolean> {
+  const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+  const overlay = await WebviewWindow.getByLabel("overlay");
+  return overlay ? overlay.isVisible().catch(() => false) : false;
 }
 
 /**

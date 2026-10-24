@@ -116,3 +116,29 @@ describe("ContextScopePicker", () => {
     expect(chip()).toHaveAccessibleName(/next action only/);
   });
 });
+
+describe("ContextScopePicker: what Action default means", () => {
+  beforeEach(() => {
+    useConfigStore.setState({ contextScope: { kind: "default", minutes: 5 }, contextScopeSticky: true });
+  });
+
+  it("with Claude, explains the session already holds the whole meeting", () => {
+    useConfigStore.setState({ llmProvider: "claude_cli" });
+    render(<ContextScopePicker />);
+    openPicker();
+    expect(screen.getByText("Claude decides from the whole meeting")).toBeInTheDocument();
+    expect(screen.getByText(/already holds the whole meeting/)).toBeInTheDocument();
+  });
+
+  it("with other providers, links to the per-action windows in Settings", async () => {
+    useConfigStore.setState({ llmProvider: "openai" });
+    const { useMeetingStore } = await import("../stores/meetingStore");
+    useMeetingStore.setState({ currentView: "overlay", settingsOpen: false, settingsTab: null });
+    render(<ContextScopePicker />);
+    openPicker();
+    expect(screen.getByText("Each action's own transcript window")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Settings → AI Actions" }));
+    expect(useMeetingStore.getState()).toMatchObject({ settingsOpen: true, settingsTab: "ai_actions" });
+    expect(screen.queryByRole("dialog", { name: "Transcript scope" })).not.toBeInTheDocument();
+  });
+});

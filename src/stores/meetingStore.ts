@@ -20,6 +20,8 @@ interface MeetingState {
   currentView: AppView;
   previousView: AppView | null;
   settingsOpen: boolean;
+  /** Tab the settings panel opens on next (cleared when it opens). */
+  settingsTab: string | null;
 
   // Active meeting
   activeMeeting: Meeting | null;
@@ -57,6 +59,8 @@ interface MeetingState {
   // Actions
   setCurrentView: (view: AppView) => void;
   setSettingsOpen: (open: boolean) => void;
+  /** Open settings (modal over the meeting, else the settings view) at `tab`. */
+  openSettings: (tab?: string) => void;
   setActiveMeeting: (meeting: Meeting | null) => void;
   setIsRecording: (recording: boolean) => void;
   setMeetingStartTime: (time: number | null) => void;
@@ -84,6 +88,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
   currentView: "launcher",
   previousView: null,
   settingsOpen: false,
+  settingsTab: null,
   activeMeeting: null,
   isRecording: false,
   meetingStartTime: null,
@@ -113,6 +118,11 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
     }
   },
   setSettingsOpen: (open) => set({ settingsOpen: open }),
+  openSettings: (tab) => {
+    set({ settingsTab: tab ?? null });
+    if (get().currentView === "overlay") set({ settingsOpen: true });
+    else get().setCurrentView("settings");
+  },
   setActiveMeeting: (meeting) => set({ activeMeeting: meeting }),
   setIsRecording: (recording) => set({ isRecording: recording }),
   setMeetingStartTime: (time) => set({ meetingStartTime: time }),

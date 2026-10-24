@@ -7,7 +7,17 @@ import "./index.css";
 const params = new URLSearchParams(window.location.search);
 const view = params.get("view");
 
-if (view === "devlog") {
+if (view === "meeting-prompt") {
+  // Meeting detection prompt: its own tiny root, none of the app's hooks
+  // (global shortcuts, config sync) run in this window.
+  import("./meeting-prompt/MeetingPrompt").then(({ MeetingPromptWindow }) => {
+    ReactDOM.createRoot(document.getElementById("root")!).render(
+      <React.StrictMode>
+        <MeetingPromptWindow />
+      </React.StrictMode>
+    );
+  });
+} else if (view === "devlog") {
   // Render only the DevLog in this window — it subscribes to Tauri events
   // independently and reads from the shared devLogStore.
   import("./components/DevLogPanel").then(({ DevLogFullPage }) => {

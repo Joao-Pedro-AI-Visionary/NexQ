@@ -5,6 +5,8 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  MeetingDetectionConfig,
+  MeetingPromptInfo,
   StealthSupport,
   AllActionConfigs,
   AudioDeviceList,
@@ -690,6 +692,21 @@ export async function rebuildTrayMenu(meetingActive: boolean): Promise<void> {
 /** Stealth mode: keep every NexQ window out of screen sharing, recordings and screenshots. */
 export async function setStealthMode(enabled: boolean): Promise<void> {
   return invoke("set_stealth_mode", { enabled });
+}
+
+/** Meeting detection: apply the user's settings in the backend detector. */
+export async function setMeetingDetectionConfig(config: MeetingDetectionConfig): Promise<void> {
+  return invoke("set_meeting_detection_config", { config });
+}
+
+/** The call the meeting prompt is about, if one is in progress. */
+export async function getDetectedMeeting(): Promise<MeetingPromptInfo | null> {
+  return invoke<MeetingPromptInfo | null>("get_detected_meeting");
+}
+
+/** Close the meeting prompt (dismissed, timed out or started). */
+export async function dismissMeetingPrompt(): Promise<void> {
+  return invoke("dismiss_meeting_prompt");
 }
 
 export async function getStealthSupport(): Promise<StealthSupport> {
