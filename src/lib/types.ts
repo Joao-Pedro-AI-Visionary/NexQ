@@ -1053,6 +1053,15 @@ export interface MeetingPromptInfo {
   default_scenario: AIScenario;
 }
 
+/** Mirrors `LogInfo` in log_commands.rs. */
+export interface LogInfo {
+  /** Folder holding nexq.log and its rotated copies. */
+  dir: string;
+  /** Full path of the current log file. */
+  file: string;
+  verbose: boolean;
+}
+
 /** Mirrors `StealthSupport` in stealth_commands.rs. */
 export interface StealthSupport {
   supported: boolean;

@@ -164,7 +164,7 @@ function pushMeetingDetection(config: MeetingDetectionConfig): void {
 /** Default global shortcut for stealth mode (Cmd on macOS, Ctrl elsewhere). */
 export const DEFAULT_STEALTH_SHORTCUT = "CmdOrCtrl+Shift+H";
 
-async function persistValue(key: string, value: unknown): Promise<void> {
+export async function persistValue(key: string, value: unknown): Promise<void> {
   try {
     const store = await getStore();
     await store.set(key, value);

@@ -3,9 +3,16 @@ import {
   FileText,
   AlertCircle,
   HelpCircle,
+  FolderOpen,
+  Copy,
+  Check,
 } from "lucide-react";
 import { NEXQ_VERSION, NEXQ_BUILD_DATE, NEXQ_DEVELOPER } from "../lib/version";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { getLogInfo, getRecentLogs, openLogFolder, setVerboseLogging } from "../lib/ipc";
+import type { LogInfo } from "../lib/types";
+import { persistValue } from "../stores/configStore";
+import { showToast } from "../stores/toastStore";
 import { useUpdaterStore } from "../stores/updaterStore";
 import {
   checkForUpdates,
@@ -37,6 +44,95 @@ function formatBuildDate(dateStr: string): string {
   } catch {
     return dateStr;
   }
+}
+
+/** The app log: where it is, a copy of its end for bug reports, verbose mode. */
+function Diagnostics() {
+  const [info, setInfo] = useState<LogInfo | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    getLogInfo().then(setInfo).catch(() => setInfo(null));
+  }, []);
+
+  const copyRecent = async () => {
+    try {
+      await navigator.clipboard.writeText(await getRecentLogs(400));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      showToast(`Couldn't copy the log: ${err instanceof Error ? err.message : String(err)}`, "error");
+    }
+  };
+
+  const toggleVerbose = async () => {
+    if (!info) return;
+    const verbose = !info.verbose;
+    await setVerboseLogging(verbose);
+    persistValue("verboseLogging", verbose);
+    setInfo({ ...info, verbose });
+  };
+
+  const openFolder = () =>
+    openLogFolder().catch((err) => showToast(String(err), "error"));
+
+  const buttonClass =
+    "inline-flex items-center gap-1.5 rounded-lg border border-border/40 bg-secondary/50 px-3 py-2 text-xs font-medium text-foreground/80 transition-colors hover:bg-secondary disabled:opacity-50";
+
+  return (
+    <div className="rounded-xl border border-border/30 bg-card/50 p-5 space-y-5">
+      <div>
+        <p className="text-sm font-medium text-foreground">Diagnostics</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          NexQ keeps a log on this computer to help diagnose problems. API keys are removed
+          automatically; attach it when you report an issue.
+        </p>
+        {info && (
+          <p className="mt-2 truncate font-mono text-meta text-muted-foreground/60" title={info.file}>
+            {info.file}
+          </p>
+        )}
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <button onClick={openFolder} disabled={!info} className={buttonClass}>
+          <FolderOpen className="h-3.5 w-3.5" />
+          Open log folder
+        </button>
+        <button onClick={copyRecent} disabled={!info} className={buttonClass}>
+          {copied ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />}
+          {copied ? "Copied" : "Copy recent log"}
+        </button>
+      </div>
+
+      <div className="h-px bg-border/20" />
+
+      <div className="flex items-center justify-between">
+        <div>
+          <label className="text-sm font-medium text-foreground">Verbose logging</label>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Records more detail while you reproduce a problem. Turn it off afterwards.
+          </p>
+        </div>
+        <button
+          onClick={toggleVerbose}
+          disabled={!info}
+          role="switch"
+          aria-checked={!!info?.verbose}
+          aria-label="Toggle verbose logging"
+          className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full transition-all duration-200 disabled:opacity-50 ${
+            info?.verbose ? "bg-primary shadow-[0_0_0_3px_hsl(var(--primary)/0.12)]" : "bg-muted"
+          }`}
+        >
+          <span
+            className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-all duration-200 ${
+              info?.verbose ? "translate-x-5 scale-[1.05]" : "translate-x-0"
+            }`}
+          />
+        </button>
+      </div>
+    </div>
+  );
 }
 
 export function AboutSettings() {
@@ -210,6 +306,8 @@ export function AboutSettings() {
           </button>
         </div>
       </div>
+
+      <Diagnostics />
 
       {/* Quick Links Row */}
       <div className="grid grid-cols-4 gap-3">

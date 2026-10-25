@@ -8,6 +8,7 @@ import type {
   MeetingDetectionConfig,
   MeetingPromptInfo,
   StealthSupport,
+  LogInfo,
   AllActionConfigs,
   AudioDeviceList,
   AudioSessionInfo,
@@ -711,6 +712,24 @@ export async function dismissMeetingPrompt(): Promise<void> {
 
 export async function getStealthSupport(): Promise<StealthSupport> {
   return invoke<StealthSupport>("get_stealth_support");
+}
+
+/** Diagnostics: where the app log lives and whether verbose logging is on. */
+export async function getLogInfo(): Promise<LogInfo> {
+  return invoke<LogInfo>("get_log_info");
+}
+
+export async function setVerboseLogging(enabled: boolean): Promise<void> {
+  return invoke("set_verbose_logging", { enabled });
+}
+
+export async function openLogFolder(): Promise<void> {
+  return invoke("open_log_folder");
+}
+
+/** The last `maxLines` lines of the app log (API keys already removed). */
+export async function getRecentLogs(maxLines?: number): Promise<string> {
+  return invoke<string>("get_recent_logs", { maxLines });
 }
 
 // == IPC: Gemini Context Cache ==

@@ -2,10 +2,13 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./index.css";
+import { installFrontendLogging } from "./lib/logger";
 
 // Check if this window was opened as a detached DevLog view
 const params = new URLSearchParams(window.location.search);
 const view = params.get("view");
+
+installFrontendLogging();
 
 if (view === "meeting-prompt") {
   // Meeting detection prompt: its own tiny root, none of the app's hooks

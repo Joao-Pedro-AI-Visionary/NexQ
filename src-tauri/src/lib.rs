@@ -4,6 +4,7 @@ pub mod context;
 pub mod credentials;
 pub mod db;
 pub mod intelligence;
+pub mod logging;
 pub mod rag;
 pub mod llm;
 pub mod meeting_detect;
@@ -26,6 +27,7 @@ use commands::audio_commands;
 use commands::stt_commands;
 // == MODULE COMMANDS: llm ==
 use commands::llm_commands;
+use commands::log_commands;
 // == MODULE COMMANDS: intelligence ==
 use commands::intelligence_commands;
 // == MODULE COMMANDS: context ==
@@ -184,11 +186,9 @@ pub fn run() {
         return;
     }
 
-    // Initialize env_logger so all log::info/warn/error macros produce output.
-    // Without this, every log statement in the backend is a no-op.
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info")
-    ).init();
+    // App log: stderr plus a rotating file (opened in setup, once the log
+    // folder is known). Without a logger every log statement is a no-op.
+    logging::init();
 
     tauri::Builder::default()
         // Must be first: a second launch forwards to this process and exits,
@@ -210,6 +210,7 @@ pub fn run() {
             stealth_commands::apply_to_new_window(&webview.window());
         })
         .setup(|app| {
+            log_commands::start(app.handle());
             let mut app_state = AppState::new();
 
             // -- Initialize DatabaseManager --
@@ -669,6 +670,11 @@ pub fn run() {
             // == COMMANDS: stealth ==
             stealth_commands::set_stealth_mode,
             stealth_commands::get_stealth_support,
+            log_commands::get_log_info,
+            log_commands::set_verbose_logging,
+            log_commands::open_log_folder,
+            log_commands::get_recent_logs,
+            log_commands::write_frontend_log,
             // == COMMANDS: meeting detection ==
             meeting_detect::set_meeting_detection_config,
             meeting_detect::get_detected_meeting,

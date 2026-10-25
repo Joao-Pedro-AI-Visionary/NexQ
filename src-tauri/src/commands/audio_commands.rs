@@ -16,6 +16,45 @@ use crate::state::AppState;
 /// accumulator output, under `id` and labelled `speaker`. A diarized line
 /// also carries `speaker_tag` ("S1") and, for in-person mode, the matching
 /// `speaker_id` ("speaker_0").
+/// Counts a party's STT results for the log (no text): the first one, and a
+/// summary when the meeting's stream ends. "Audio flowing, no transcript"
+/// shows up as a missing "first transcript" line.
+struct TranscriptTally {
+    party: &'static str,
+    provider: String,
+    results: u64,
+    finals: u64,
+}
+
+impl TranscriptTally {
+    fn new(party: &'static str, provider: &str) -> Self {
+        Self { party, provider: provider.to_string(), results: 0, finals: 0 }
+    }
+
+    fn record(&mut self, is_final: bool) {
+        self.results += 1;
+        if is_final {
+            self.finals += 1;
+        }
+        if self.results == 1 {
+            log::info!("First '{}' transcript result from {}", self.party, self.provider);
+        }
+    }
+}
+
+impl Drop for TranscriptTally {
+    fn drop(&mut self) {
+        if self.results == 0 {
+            log::warn!("'{}' STT ({}) ended without producing any transcript", self.party, self.provider);
+        } else {
+            log::info!(
+                "'{}' STT ({}) ended: {} results, {} final",
+                self.party, self.provider, self.results, self.finals
+            );
+        }
+    }
+}
+
 fn accumulator_segment_json(id: &str, speaker: &str, output: &AccumulatorOutput) -> serde_json::Value {
     let mut seg = serde_json::json!({
         "id": id,
@@ -1048,6 +1087,7 @@ pub async fn start_capture_per_party(
         let prefix = session_prefix.clone();
         let use_accumulator = you.stt_provider != "web_speech"
             && you.stt_provider != "whisper_cpp";
+        let mut tally = TranscriptTally::new("You", &you.stt_provider);
         let pause_threshold = if use_accumulator {
             Some(app.state::<AppState>().pause_threshold_ms.clone())
         } else {
@@ -1062,6 +1102,7 @@ pub async fn start_capture_per_party(
                     crate::stt::segment_accumulator::SegmentAccumulator::new(threshold);
 
                 while let Some(result) = you_stt_rx.recv().await {
+                    tally.record(result.is_final);
                     let current_threshold = pause_threshold.load(Ordering::Relaxed);
                     accumulator.set_pause_threshold(current_threshold);
 
@@ -1106,6 +1147,7 @@ pub async fn start_capture_per_party(
                 // Direct path: web_speech / whisper_cpp handle their own segmentation
                 let mut counter = 0u64;
                 while let Some(result) = you_stt_rx.recv().await {
+                    tally.record(result.is_final);
                     let seg_id = if let Some(ref custom_id) = result.segment_id {
                         format!("you_{}_{}", prefix, custom_id)
                     } else {
@@ -1147,6 +1189,7 @@ pub async fn start_capture_per_party(
         let prefix = session_prefix.clone();
         let intel_arc = app.state::<AppState>().intelligence.clone();
         let pause_threshold = app.state::<AppState>().pause_threshold_ms.clone();
+        let mut tally = TranscriptTally::new("Them", &them.stt_provider);
         tokio::spawn(async move {
             use std::sync::atomic::Ordering;
             let threshold = pause_threshold.load(Ordering::Relaxed);
@@ -1154,6 +1197,7 @@ pub async fn start_capture_per_party(
                 crate::stt::segment_accumulator::SegmentAccumulator::new(threshold);
 
             while let Some(result) = them_stt_rx.recv().await {
+                tally.record(result.is_final);
                 // Live-update threshold from settings changes
                 let current_threshold = pause_threshold.load(Ordering::Relaxed);
                 accumulator.set_pause_threshold(current_threshold);
