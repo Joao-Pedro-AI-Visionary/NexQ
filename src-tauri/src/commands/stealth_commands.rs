@@ -321,13 +321,8 @@ mod visibility_hook {
                 let pos = &*(lparam.0 as *const WINDOWPOS);
                 // About to be shown: hide it from capture first when stealth
                 // is on, so no frame of it reaches a screen share.
-                if pos.flags.contains(SWP_SHOWWINDOW) {
-                    if super::stealth_enabled() {
-                        set_affinity(hwnd, true);
-                    }
-                    if wants_blur(hwnd) {
-                        set_blur(hwnd, true);
-                    }
+                if pos.flags.contains(SWP_SHOWWINDOW) && super::stealth_enabled() {
+                    set_affinity(hwnd, true);
                 }
                 // About to be hidden: drop the blur first, or it stays on screen.
                 if pos.flags.contains(SWP_HIDEWINDOW) && wants_blur(hwnd) {
@@ -339,6 +334,10 @@ mod visibility_hook {
                 let pos = &*(lparam.0 as *const WINDOWPOS);
                 if pos.flags.contains(SWP_HIDEWINDOW) {
                     set_affinity(hwnd, false);
+                }
+                // Shown: the accent only takes on a visible window.
+                if pos.flags.contains(SWP_SHOWWINDOW) && wants_blur(hwnd) {
+                    set_blur(hwnd, true);
                 }
             }
             WM_NCDESTROY => {
