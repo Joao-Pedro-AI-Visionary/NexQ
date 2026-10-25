@@ -8,11 +8,12 @@ import { useAudioLevel } from "../hooks/useAudioLevel";
 import { useConfigStore } from "../stores/configStore";
 import { TranscriptLine } from "./TranscriptLine";
 import { SpeakerNamingBanner } from "./SpeakerNamingBanner";
+import { NoTranscriptBanner } from "./NoTranscriptBanner";
 import { mergeConsecutiveSegments } from "../lib/mergeSegments";
 import { Mic, MicOff, Volume2, VolumeX, Search, X, Radio } from "lucide-react";
 import { ColorPickerButton } from "../components/ColorPickerButton";
 
-export function TranscriptPanel() {
+export function TranscriptPanel({ onOpenDevLog }: { onOpenDevLog?: () => void } = {}) {
   const segments = useTranscriptStore((s) => s.segments);
   const searchQuery = useTranscriptStore((s) => s.searchQuery);
   const autoScroll = useTranscriptStore((s) => s.autoScroll);
@@ -142,6 +143,7 @@ export function TranscriptPanel() {
   if (segments.length === 0) {
     return (
       <div className="flex flex-1 min-h-0 flex-col">
+        <NoTranscriptBanner onOpenDevLog={onOpenDevLog} />
         <div className="flex flex-1 flex-col items-center justify-center gap-2">
           {isRecording ? (
             <>
@@ -210,6 +212,7 @@ export function TranscriptPanel() {
 
   return (
     <div className="flex flex-1 min-h-0 flex-col">
+      <NoTranscriptBanner onOpenDevLog={onOpenDevLog} />
       {/* Search bar (shown when there's a search query or toggled) */}
       <div className="flex items-center gap-2 rounded-lg bg-muted/20 mx-1 mt-1 mb-1.5 px-2.5 py-1.5">
         <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />

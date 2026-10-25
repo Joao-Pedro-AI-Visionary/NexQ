@@ -35,7 +35,7 @@ const LLM_LABELS: Record<string, string> = {
   claude_cli: "Claude",
 };
 
-const STT_LABELS: Record<string, string> = {
+export const STT_LABELS: Record<string, string> = {
   web_speech: "Web Speech",
   whisper_cpp: "Whisper.cpp",
   deepgram: "Deepgram",

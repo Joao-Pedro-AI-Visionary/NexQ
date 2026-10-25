@@ -321,7 +321,7 @@ export function OverlayView() {
               <span className="text-meta font-semibold uppercase tracking-wider text-muted-foreground/60">Transcript</span>
             </div>
             <div className="flex flex-1 flex-col min-h-0 overflow-hidden p-2.5">
-              <TranscriptPanel />
+              <TranscriptPanel onOpenDevLog={() => setDevLogOpen(true)} />
             </div>
           </div>
         ) : (
