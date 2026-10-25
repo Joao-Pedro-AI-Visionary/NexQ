@@ -1,3 +1,14 @@
+# [2.28.0](https://github.com/naxhq/NexQ/compare/v2.27.2...v2.28.0) (2026-10-25)
+
+
+### Bug Fixes
+
+* **settings:** Free preset transcribes the other side with Parakeet, not Windows Speech ([cfa2d60](https://github.com/naxhq/NexQ/commit/cfa2d60f94ba012d79e63b786613514cd29df2a0))
+
+
+### Features
+
+* **transcript:** warn when a party's audio comes in but its provider returns nothing ([fbd169c](https://github.com/naxhq/NexQ/commit/fbd169c1d06189befe6363d885431e5fee27a48a))
 ## [2.27.2](https://github.com/naxhq/NexQ/compare/v2.27.1...v2.27.2) (2026-10-25)
 
 
