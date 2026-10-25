@@ -75,20 +75,10 @@ pub async fn set_stealth_mode(app: AppHandle, enabled: bool) -> Result<(), Strin
             .into_iter()
             .map(|(label, w)| (label, w.as_ref().window()))
             .collect();
-        let hidden: Vec<&Window> = windows
-            .iter()
-            .filter(|(_, w)| !w.is_visible().unwrap_or(true))
-            .map(|(_, w)| w)
-            .collect();
-        let result = transition(&windows, stealth_enabled(), enabled, |w, on| set_capture_excluded(w, on));
-        // Changing capture visibility must never put a hidden window (e.g. the
-        // overlay between meetings) on screen.
-        for window in hidden {
-            if window.is_visible().unwrap_or(false) {
-                log::warn!("Stealth change showed hidden window '{}'; hiding it again", window.label());
-                let _ = window.hide();
-            }
+        for (_, window) in &windows {
+            track_visibility(window);
         }
+        let result = transition(&windows, stealth_enabled(), enabled, apply_setting);
         if result.is_ok() {
             STEALTH.store(enabled, Ordering::SeqCst);
             log::info!(
@@ -139,10 +129,119 @@ fn transition<W>(
 /// (e.g. the dev log window), so it is never captured before it is hidden.
 pub fn apply_to_new_window<R: Runtime>(window: &Window<R>) {
     let _guard = TRANSITION.lock().unwrap_or_else(|e| e.into_inner());
+    track_visibility(window);
     if stealth_enabled() {
-        if let Err(e) = set_capture_excluded(window, true) {
+        if let Err(e) = apply_setting(window, true) {
             log::warn!("Stealth mode: couldn't hide window '{}': {e}", window.label());
         }
+    }
+}
+
+/// Set a window's capture visibility for the stealth setting `on`.
+///
+/// Windows: only a window on screen is excluded. A hidden, transparent
+/// WebView2 window that is excluded from capture leaves a blurred ghost of its
+/// frame on the desktop (the overlay between meetings, the launcher during
+/// one). [`track_visibility`] applies the setting as a window is shown and
+/// clears it when the window is hidden.
+fn apply_setting<R: Runtime>(window: &Window<R>, on: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    let on = on && window.is_visible().unwrap_or(true);
+    set_capture_excluded(window, on)
+}
+
+/// Keep a window's capture visibility in step with whether it is shown.
+#[cfg(target_os = "windows")]
+fn track_visibility<R: Runtime>(window: &Window<R>) {
+    let Ok(hwnd) = window.hwnd() else { return };
+    let hwnd = hwnd.0 as isize;
+    let target = window.clone();
+    // A subclass must be installed from the thread that owns the window.
+    let installed = window.run_on_main_thread(move || {
+        if let Err(e) = visibility_hook::install(hwnd) {
+            log::warn!("Stealth mode: can't follow visibility of '{}': {e}", target.label());
+        }
+    });
+    if let Err(e) = installed {
+        log::warn!("Stealth mode: couldn't reach the main thread: {e}");
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn track_visibility<R: Runtime>(_window: &Window<R>) {}
+
+/// A window subclass that excludes a window from capture just before it is
+/// shown (when stealth mode is on) and makes it capturable again once hidden.
+#[cfg(target_os = "windows")]
+mod visibility_hook {
+    use std::sync::Mutex;
+
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowDisplayAffinity, SWP_HIDEWINDOW, SWP_SHOWWINDOW, WINDOWPOS, WINDOW_DISPLAY_AFFINITY,
+        WM_NCDESTROY, WM_WINDOWPOSCHANGED, WM_WINDOWPOSCHANGING,
+    };
+
+    const SUBCLASS_ID: usize = 0x4E58_5153; // "NXQS"
+    const WDA_EXCLUDEFROMCAPTURE: u32 = 0x0000_0011;
+    const WDA_NONE: u32 = 0;
+
+    static HOOKED: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+
+    /// Install once per window (page reloads call this again). Main thread only.
+    pub fn install(hwnd: isize) -> Result<(), String> {
+        let mut hooked = HOOKED.lock().unwrap_or_else(|e| e.into_inner());
+        if hooked.contains(&hwnd) {
+            return Ok(());
+        }
+        let ok = unsafe { SetWindowSubclass(HWND(hwnd as *mut _), Some(subclass_proc), SUBCLASS_ID, 0) };
+        if !ok.as_bool() {
+            return Err("SetWindowSubclass failed".into());
+        }
+        hooked.push(hwnd);
+        Ok(())
+    }
+
+    fn set_affinity(hwnd: HWND, excluded: bool) {
+        let affinity = WINDOW_DISPLAY_AFFINITY(if excluded { WDA_EXCLUDEFROMCAPTURE } else { WDA_NONE });
+        if let Err(e) = unsafe { SetWindowDisplayAffinity(hwnd, affinity) } {
+            log::warn!("Stealth mode: SetWindowDisplayAffinity failed: {e}");
+        }
+    }
+
+    unsafe extern "system" fn subclass_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        _id: usize,
+        _data: usize,
+    ) -> LRESULT {
+        match msg {
+            // About to be shown: hide it from capture first when stealth is on,
+            // so no frame of it reaches a screen share.
+            WM_WINDOWPOSCHANGING => {
+                let pos = &*(lparam.0 as *const WINDOWPOS);
+                if pos.flags.contains(SWP_SHOWWINDOW) && super::stealth_enabled() {
+                    set_affinity(hwnd, true);
+                }
+            }
+            // Hidden: an excluded hidden window would leave a ghost on screen.
+            WM_WINDOWPOSCHANGED => {
+                let pos = &*(lparam.0 as *const WINDOWPOS);
+                if pos.flags.contains(SWP_HIDEWINDOW) {
+                    set_affinity(hwnd, false);
+                }
+            }
+            WM_NCDESTROY => {
+                let _ = RemoveWindowSubclass(hwnd, Some(subclass_proc), SUBCLASS_ID);
+                let mut hooked = HOOKED.lock().unwrap_or_else(|e| e.into_inner());
+                hooked.retain(|&h| h != hwnd.0 as isize);
+            }
+            _ => {}
+        }
+        DefSubclassProc(hwnd, msg, wparam, lparam)
     }
 }
 
@@ -165,12 +264,17 @@ pub fn restore_on_startup(app: &AppHandle) {
         .into_iter()
         .map(|(label, w)| (label, w.as_ref().window()))
         .collect();
-    match transition(&windows, false, true, |w, on| set_capture_excluded(w, on)) {
-        Ok(()) => {
-            STEALTH.store(true, Ordering::SeqCst);
-            log::info!("Stealth mode restored at startup");
+    // Stealth is on from here, so windows shown later are hidden from capture.
+    STEALTH.store(true, Ordering::SeqCst);
+    for (_, window) in &windows {
+        track_visibility(window);
+    }
+    match transition(&windows, false, true, apply_setting) {
+        Ok(()) => log::info!("Stealth mode restored at startup"),
+        Err(e) => {
+            STEALTH.store(false, Ordering::SeqCst);
+            log::warn!("Stealth mode: couldn't restore at startup: {e}");
         }
-        Err(e) => log::warn!("Stealth mode: couldn't restore at startup: {e}"),
     }
 }
 
