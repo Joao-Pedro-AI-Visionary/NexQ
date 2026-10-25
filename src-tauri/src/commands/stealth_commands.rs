@@ -170,8 +170,32 @@ fn track_visibility<R: Runtime>(window: &Window<R>) {
 #[cfg(not(target_os = "windows"))]
 fn track_visibility<R: Runtime>(_window: &Window<R>) {}
 
-/// A window subclass that excludes a window from capture just before it is
-/// shown (when stealth mode is on) and makes it capturable again once hidden.
+/// Live blur of the desktop behind `window` (the overlay's glass), only while
+/// it is on screen. Windows keeps drawing an accent blur for a hidden window
+/// whenever it recomposites it, which showed as a pinned blurred box where the
+/// overlay sits between meetings.
+#[cfg(target_os = "windows")]
+pub fn blur_behind_while_visible<R: Runtime>(window: &Window<R>) {
+    let Ok(hwnd) = window.hwnd() else { return };
+    let hwnd = hwnd.0 as isize;
+    let visible = window.is_visible().unwrap_or(false);
+    let target = window.clone();
+    let queued = window.run_on_main_thread(move || {
+        if let Err(e) = visibility_hook::install(hwnd) {
+            log::warn!("Can't follow visibility of '{}': {e}", target.label());
+            return;
+        }
+        visibility_hook::blur_while_visible(hwnd, visible);
+    });
+    if let Err(e) = queued {
+        log::warn!("Blur behind: couldn't reach the main thread: {e}");
+    }
+}
+
+/// A window subclass that follows a window being shown and hidden: it excludes
+/// the window from capture just before it is shown (when stealth mode is on)
+/// and makes it capturable again once hidden, and turns its blur-behind on
+/// and off with it.
 #[cfg(target_os = "windows")]
 mod visibility_hook {
     use std::sync::Mutex;
@@ -188,6 +212,80 @@ mod visibility_hook {
     const WDA_NONE: u32 = 0;
 
     static HOOKED: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+    /// Windows whose desktop blur follows their visibility.
+    static BLURRED: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+
+    /// Turn blur-behind on for `hwnd` while it's visible (main thread only).
+    pub fn blur_while_visible(hwnd: isize, visible_now: bool) {
+        let mut blurred = BLURRED.lock().unwrap_or_else(|e| e.into_inner());
+        if !blurred.contains(&hwnd) {
+            blurred.push(hwnd);
+        }
+        drop(blurred);
+        set_blur(HWND(hwnd as *mut _), visible_now);
+    }
+
+    fn wants_blur(hwnd: HWND) -> bool {
+        BLURRED.lock().unwrap_or_else(|e| e.into_inner()).contains(&(hwnd.0 as isize))
+    }
+
+    /// Live blur of what's behind the window, via the undocumented
+    /// `SetWindowCompositionAttribute` (user32): `DwmEnableBlurBehindWindow`
+    /// is a no-op on Windows 10/11, and this one composites the live desktop.
+    /// The gradient alpha is 1 (0 would disable the blur); the overlay's CSS
+    /// (`.overlay-bg`) provides the tint.
+    fn set_blur(hwnd: HWND, on: bool) {
+        use std::ffi::c_void;
+        use windows::core::PCSTR;
+        use windows::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+
+        #[repr(C)]
+        struct AccentPolicy {
+            accent_state: u32,
+            accent_flags: u32,
+            gradient_color: u32,
+            animation_id: u32,
+        }
+
+        #[repr(C)]
+        struct WindowCompositionAttribData {
+            attrib: u32,
+            pv_data: *mut c_void,
+            cb_data: usize,
+        }
+
+        const WCA_ACCENT_POLICY: u32 = 19;
+        const ACCENT_DISABLED: u32 = 0;
+        const ACCENT_ENABLE_BLURBEHIND: u32 = 3;
+
+        // Not in user32.lib's import table: resolved at runtime.
+        type SetWindowCompositionAttributeFn =
+            unsafe extern "system" fn(HWND, *mut WindowCompositionAttribData) -> i32;
+
+        unsafe {
+            let Ok(module) = GetModuleHandleA(PCSTR(b"user32.dll\0".as_ptr())) else {
+                return;
+            };
+            let Some(proc) = GetProcAddress(module, PCSTR(b"SetWindowCompositionAttribute\0".as_ptr()))
+            else {
+                return;
+            };
+            let set_window_composition_attribute: SetWindowCompositionAttributeFn =
+                std::mem::transmute(proc);
+            let mut policy = AccentPolicy {
+                accent_state: if on { ACCENT_ENABLE_BLURBEHIND } else { ACCENT_DISABLED },
+                accent_flags: 0,
+                gradient_color: if on { 0x0100_0000 } else { 0 },
+                animation_id: 0,
+            };
+            let mut data = WindowCompositionAttribData {
+                attrib: WCA_ACCENT_POLICY,
+                pv_data: &mut policy as *mut _ as *mut c_void,
+                cb_data: std::mem::size_of::<AccentPolicy>(),
+            };
+            set_window_composition_attribute(hwnd, &mut data);
+        }
+    }
 
     /// Install once per window (page reloads call this again). Main thread only.
     pub fn install(hwnd: isize) -> Result<(), String> {
@@ -219,15 +317,24 @@ mod visibility_hook {
         _data: usize,
     ) -> LRESULT {
         match msg {
-            // About to be shown: hide it from capture first when stealth is on,
-            // so no frame of it reaches a screen share.
             WM_WINDOWPOSCHANGING => {
                 let pos = &*(lparam.0 as *const WINDOWPOS);
-                if pos.flags.contains(SWP_SHOWWINDOW) && super::stealth_enabled() {
-                    set_affinity(hwnd, true);
+                // About to be shown: hide it from capture first when stealth
+                // is on, so no frame of it reaches a screen share.
+                if pos.flags.contains(SWP_SHOWWINDOW) {
+                    if super::stealth_enabled() {
+                        set_affinity(hwnd, true);
+                    }
+                    if wants_blur(hwnd) {
+                        set_blur(hwnd, true);
+                    }
+                }
+                // About to be hidden: drop the blur first, or it stays on screen.
+                if pos.flags.contains(SWP_HIDEWINDOW) && wants_blur(hwnd) {
+                    set_blur(hwnd, false);
                 }
             }
-            // Hidden: an excluded hidden window would leave a ghost on screen.
+            // Hidden: nothing of it should stay excluded (or composited).
             WM_WINDOWPOSCHANGED => {
                 let pos = &*(lparam.0 as *const WINDOWPOS);
                 if pos.flags.contains(SWP_HIDEWINDOW) {
@@ -238,6 +345,8 @@ mod visibility_hook {
                 let _ = RemoveWindowSubclass(hwnd, Some(subclass_proc), SUBCLASS_ID);
                 let mut hooked = HOOKED.lock().unwrap_or_else(|e| e.into_inner());
                 hooked.retain(|&h| h != hwnd.0 as isize);
+                drop(hooked);
+                BLURRED.lock().unwrap_or_else(|e| e.into_inner()).retain(|&h| h != hwnd.0 as isize);
             }
             _ => {}
         }
