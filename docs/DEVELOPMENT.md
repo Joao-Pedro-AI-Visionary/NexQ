@@ -63,10 +63,12 @@ Do not run `npm run release`; releases are cut by maintainers (see [CONTRIBUTING
 
 ### Logs
 
+Logging never blocks the caller: `log` macros hand the line to a writer thread over a bounded channel, so audio callbacks and STT loops can log freely. Lines that look like API keys or bearer tokens are masked before they're written. Never log transcript text, prompts or responses; log counts and lengths instead.
+
 | Source | How to see it |
 |---|---|
-| Rust backend (`log::info!` and friends) | Printed by `env_logger` to the terminal running `npx tauri dev`. The default level is `info`; override it with `RUST_LOG`, for example `RUST_LOG=debug npx tauri dev` (bash) or `$env:RUST_LOG="debug"; npx tauri dev` (PowerShell). Release builds have no console window, so run from source to capture backend logs. |
-| Dev Log panel | In the overlay, press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd> or click the terminal icon. Shows STT connection status and debug messages; it can be detached into its own window. Works in release builds too, which makes it the best thing to ask users for. |
+| App log file | `src-tauri/src/logging.rs`. Every `log::info!`/`warn!`/`error!` from our crate, warnings from dependencies, frontend `console.error`/`console.warn`, uncaught errors and Rust panics go to `nexq.log` in the OS log folder, and to the terminal running `npx tauri dev`. Settings → About → Diagnostics opens the folder, copies the last 400 lines, and toggles **Verbose logging** (adds our `debug!` lines and dependencies' `info!`). This is what to ask users for. |
+| Dev Log panel | In the overlay, press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd> or click the terminal icon. Shows STT connection status and debug messages live; it can be detached into its own window. |
 | AI Call Log | Sidebar listing every LLM request with provider, model, prompt, timing, usage and errors. |
 | Frontend console | Dev builds include WebView devtools: press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>I</kbd> (<kbd>Cmd</kbd>+<kbd>Option</kbd>+<kbd>I</kbd> on macOS). Each window (launcher, overlay) has its own console. |
 
@@ -75,6 +77,7 @@ Do not run `npm run release`; releases are cut by maintainers (see [CONTRIBUTING
 | | Windows | macOS |
 |---|---|---|
 | App data (database `nexq.db`, `models/`, `recordings/`, settings) | `%APPDATA%\com.nexq.app\` | `~/Library/Application Support/com.nexq.app/` |
+| App log (`nexq.log`, rotated to `nexq.1.log`…`nexq.4.log` at 4 MB) | `%LOCALAPPDATA%\com.nexq.app\logs\` | `~/Library/Logs/com.nexq.app/` |
 | API keys | Windows Credential Manager | Keychain |
 
 Deleting `nexq.db` (with the app closed) gives you a clean database; migrations recreate it on next launch. Back it up first if it holds meetings you care about.

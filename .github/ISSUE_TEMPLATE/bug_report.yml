@@ -12,6 +12,9 @@ body:
         - **Question or setup help?** Ask in [Discussions](https://github.com/naxhq/NexQ/discussions).
         - Please check that you are on the [latest release](https://github.com/naxhq/NexQ/releases/latest) and search [existing issues](https://github.com/naxhq/NexQ/issues?q=is%3Aissue) first.
 
+        > [!IMPORTANT]
+        > **Please include your log.** In NexQ, open **Settings → About → Diagnostics** and click **Copy recent log**, then paste it in the *Logs* field below. Most bugs can't be diagnosed without it. API keys are removed automatically and transcript text is never logged. [How to collect logs](https://github.com/naxhq/NexQ/blob/main/docs/user-guide/troubleshooting.md#collecting-logs-for-a-bug-report)
+
   - type: textarea
     id: summary
     attributes:
@@ -127,18 +130,19 @@ body:
     attributes:
       label: Logs
       description: |
-        Remove API keys and anything private before pasting.
-        - **Dev Log:** in the overlay, press `Ctrl+Shift+L` (or click the terminal icon) and copy the relevant lines.
-        - **AI Call Log:** for AI issues, the AI Call Log sidebar shows the request, provider, timing and error.
-        - **Backend log:** when running from source (`npx tauri dev`), copy the terminal output.
-        See [docs/DEVELOPMENT.md](https://github.com/naxhq/NexQ/blob/main/docs/DEVELOPMENT.md#logs-and-debugging) for details.
+        **Settings → About → Diagnostics → Copy recent log**, then paste here. Or click **Open log folder** and drag `nexq.log` into the box below.
+        - Can't reproduce reliably? Turn on **Verbose logging** in the same place, reproduce, then copy.
+        - On a version before v2.27: in the meeting window press `Ctrl+Shift+L` and copy the Dev Log.
+        - AI issues: the AI Call Log sidebar shows the request, provider, timing and error.
+        [How to collect logs](https://github.com/naxhq/NexQ/blob/main/docs/user-guide/troubleshooting.md#collecting-logs-for-a-bug-report)
+      placeholder: Paste the recent log here
       render: text
 
   - type: textarea
     id: screenshots
     attributes:
-      label: Screenshots or recordings
-      description: Drag and drop images or videos here if they help explain the problem.
+      label: Screenshots, recordings or log files
+      description: Drag and drop images, videos or `nexq.log` here.
 
   - type: checkboxes
     id: checks
@@ -149,5 +153,7 @@ body:
           required: true
         - label: I searched existing issues and this is not a duplicate.
           required: true
-        - label: I removed API keys and personal information from logs and screenshots.
+        - label: I included my log, or explained why I can't.
+          required: true
+        - label: I checked logs and screenshots for personal information.
           required: true

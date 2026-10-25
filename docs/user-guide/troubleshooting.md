@@ -2,6 +2,8 @@
 
 Common issues and solutions for NexQ. For detailed setup instructions, see the [Audio Setup Guide](audio-setup.md) and [AI Providers Guide](ai-providers.md).
 
+Reporting a bug? Start with [Collecting logs for a bug report](#collecting-logs-for-a-bug-report).
+
 ## Installation Issues
 
 ### Windows SmartScreen Warning
@@ -205,6 +207,38 @@ This includes:
 ### API Keys
 
 API keys are stored in **Windows Credential Manager**, not in files. You can view or remove them through Windows Settings > Credential Manager, or through NexQ's Settings panel.
+
+## Collecting Logs for a Bug Report
+
+NexQ (v2.27 and later) writes a log file on your computer. It records what the app did: audio devices opened, STT connections, errors, and how many transcript lines each side produced. It never contains your transcript text, and API keys are removed automatically.
+
+### Quick way: copy the recent log
+
+1. Open **Settings → About → Diagnostics**.
+2. Click **Copy recent log**.
+3. Paste it into the **Logs** field of the [bug report](https://github.com/naxhq/NexQ/issues/new?template=bug_report.yml).
+
+### Attach the whole file
+
+Click **Open log folder** in the same section, then drag `nexq.log` into the bug report. The folder is:
+
+| Windows | macOS |
+|---|---|
+| `%LOCALAPPDATA%\com.nexq.app\logs\` | `~/Library/Logs/com.nexq.app/` |
+
+Older logs are kept as `nexq.1.log` to `nexq.4.log`; the folder never grows past about 20 MB.
+
+### For hard-to-reproduce problems
+
+1. Turn on **Verbose logging** in Settings → About → Diagnostics.
+2. Reproduce the problem (for example, start a meeting and talk for 30 seconds).
+3. Copy the recent log or attach `nexq.log`, then turn verbose logging off again.
+
+### During a meeting
+
+The **Dev Log** shows the same STT and audio messages live: press `Ctrl+Shift+L` in the meeting window (or click the terminal icon). A screenshot of it helps when the log file isn't available, for example on versions before v2.27.
+
+Glance over a log before posting it publicly: file names, device names and provider error messages can appear in it.
 
 ## Still Need Help?
 

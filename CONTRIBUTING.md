@@ -23,7 +23,7 @@ By participating you agree to follow our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 You do not need to write Rust to help.
 
-- **Report bugs.** Use the [bug report form](https://github.com/naxhq/NexQ/issues/new?template=bug_report.yml). Your NexQ version, OS, providers and logs make a bug fixable.
+- **Report bugs.** Use the [bug report form](https://github.com/naxhq/NexQ/issues/new?template=bug_report.yml). Your NexQ version, OS, providers and log make a bug fixable: copy the log from **Settings → About → Diagnostics** ([details](docs/user-guide/troubleshooting.md#collecting-logs-for-a-bug-report)).
 - **Test on macOS.** macOS support (Apple Silicon) is in beta. Real-world reports on different Macs, audio setups and meeting apps are very valuable.
 - **Improve the docs.** The [user guide](docs/user-guide/) and developer docs ([architecture](docs/ARCHITECTURE.md), [development](docs/DEVELOPMENT.md)) always need clearer steps and fresh screenshots.
 - **Suggest features.** Use the [feature request form](https://github.com/naxhq/NexQ/issues/new?template=feature_request.yml) and describe the problem before the solution.

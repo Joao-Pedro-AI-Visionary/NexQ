@@ -243,7 +243,7 @@ Contributions of every size are welcome: bug reports, docs, translations, new pr
 ## Community and support
 
 - **Questions and ideas:** [GitHub Discussions](https://github.com/naxhq/NexQ/discussions)
-- **Bugs and feature requests:** [Issues](https://github.com/naxhq/NexQ/issues/new/choose)
+- **Bugs and feature requests:** [Issues](https://github.com/naxhq/NexQ/issues/new/choose). For bugs, include your log: **Settings → About → Diagnostics → Copy recent log** ([how](docs/user-guide/troubleshooting.md#collecting-logs-for-a-bug-report))
 - **Security reports:** privately, via [SECURITY.md](SECURITY.md)
 - More in [SUPPORT.md](SUPPORT.md)
 

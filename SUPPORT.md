@@ -26,8 +26,9 @@ Use the [issue forms](https://github.com/naxhq/NexQ/issues/new/choose). Before o
 
 1. Update to the [latest release](https://github.com/naxhq/NexQ/releases/latest); the bug may already be fixed.
 2. Search [existing issues](https://github.com/naxhq/NexQ/issues?q=is%3Aissue), including closed ones.
-3. Include your NexQ version, OS, STT and LLM providers, and logs. See
-   [where to find logs](docs/DEVELOPMENT.md#logs-and-debugging).
+3. Include your NexQ version, OS, STT and LLM providers, and **your log**: in NexQ, open
+   **Settings → About → Diagnostics** and click **Copy recent log**. See
+   [collecting logs](docs/user-guide/troubleshooting.md#collecting-logs-for-a-bug-report).
 
 ## Security issues
 
