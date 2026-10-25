@@ -25,11 +25,14 @@ export type DeviceHint =
 
 export const BUILT_IN_PRESETS: MeetingPreset[] = [
   {
-    name: "Zero Setup",
-    description: "Web Speech + Windows built-in — works instantly",
+    // Windows Speech can't transcribe system audio (it only listens to the
+    // default mic), so the other side uses a local model instead.
+    name: "Free",
+    description: "Web Speech for you, Parakeet TDT for the other side — free and private (one-time model download)",
     badge: "Default",
     you: { hint: "default_mic", stt: "web_speech" },
-    them: { hint: "default_output", stt: "windows_native" },
+    them: { hint: "default_output", stt: "parakeet_tdt" },
+    requiresDownload: "parakeet_tdt",
   },
   {
     name: "Best Quality",
