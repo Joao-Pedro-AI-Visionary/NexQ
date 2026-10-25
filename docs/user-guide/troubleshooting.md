@@ -68,17 +68,19 @@ This only appears the first time you install. Subsequent launches will not trigg
 
 ### STT Not Working
 
-**Problem**: Audio levels show activity but no transcript appears.
+**Problem**: Audio levels show activity but no transcript appears. After about 30 seconds of audio with no text, the meeting window shows a "No transcript from You/Them" warning naming the provider.
 
 **Solution**:
 
-1. **Check provider config**: Open Settings > STT and verify your provider is correctly configured
-2. **Test connection**: Click **Test Connection** to verify the STT provider is reachable
-3. **Check API key**: For cloud providers (Deepgram, Groq), ensure your API key is valid and has not expired
-4. **Check internet connection**: Cloud STT providers require a stable internet connection. If your connection is intermittent, transcription may fail silently
-5. **Try Web Speech API**: Switch to Web Speech API temporarily to verify audio is reaching the STT pipeline. If Web Speech works but your chosen provider does not, the issue is with the provider configuration
-6. **Check STT debug log**: Look at the STT connection status indicators in the overlay for error messages
-7. See the [AI Providers Guide](ai-providers.md) for provider-specific setup instructions
+1. **Update NexQ**: versions before v2.26.1 couldn't decode the Parakeet TDT 0.6B v3 model, so it heard audio but returned no text. Update from Settings > About.
+2. **Don't use Windows Speech for "Them"**: Windows Speech only listens to your default microphone. It can't transcribe audio playing on your computer (Zoom, Teams, YouTube). Use Parakeet TDT, Deepgram or Groq for the other side.
+3. **Check provider config**: Open Settings > STT and verify your provider is correctly configured
+4. **Test connection**: Click **Test Connection** to verify the STT provider is reachable
+5. **Check API key**: For cloud providers (Deepgram, Groq), ensure your API key is valid and has not expired
+6. **Check internet connection**: Cloud STT providers require a stable internet connection. If your connection is intermittent, transcription may fail silently
+7. **Try Web Speech API**: Switch to Web Speech API temporarily to verify audio is reaching the STT pipeline. If Web Speech works but your chosen provider does not, the issue is with the provider configuration
+8. **Check the Dev Log**: press `Ctrl+Shift+L` in the meeting window for STT errors, or send your log (see [Collecting logs](#collecting-logs-for-a-bug-report))
+9. See the [AI Providers Guide](ai-providers.md) for provider-specific setup instructions
 
 ### Web Speech API Stops Working
 

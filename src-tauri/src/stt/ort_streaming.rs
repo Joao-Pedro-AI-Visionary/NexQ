@@ -1332,3 +1332,47 @@ fn run_joiner(
 
     Ok(data.to_vec())
 }
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+    use crate::audio::AudioSource;
+
+    /// Streams a 16 kHz mono WAV through the provider in 100 ms chunks, like a
+    /// meeting does, and prints what comes back. Needs a downloaded model:
+    ///
+    /// `NEXQ_PARAKEET_DIR=<model dir> NEXQ_TEST_WAV=<wav> cargo test --lib transcribes_a_wav -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn transcribes_a_wav_like_a_meeting() {
+        let dir = std::env::var("NEXQ_PARAKEET_DIR").expect("set NEXQ_PARAKEET_DIR");
+        let wav = std::env::var("NEXQ_TEST_WAV").expect("set NEXQ_TEST_WAV");
+        crate::ort_runtime::ensure_loaded().expect("ONNX Runtime");
+        let samples: Vec<i16> = hound::WavReader::open(&wav)
+            .expect("wav")
+            .into_samples::<i16>()
+            .map(|s| s.expect("sample"))
+            .collect();
+
+        let texts = tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let mut stt = OrtStreamingSTT::new(PathBuf::from(dir));
+            let (tx, mut rx) = mpsc::channel(256);
+            stt.start_stream(tx).await.expect("start");
+            for chunk in samples.chunks(1600) {
+                let chunk = AudioChunk { pcm_data: chunk.to_vec(), source: AudioSource::System, timestamp_ms: 0, is_speech: true };
+                stt.feed_audio(chunk).await.expect("feed");
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            // Let it see the pause, then stop (which flushes the rest).
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            stt.stop_stream().await.expect("stop");
+            let mut texts = Vec::new();
+            while let Ok(result) = rx.try_recv() {
+                texts.push(result.text);
+            }
+            texts
+        });
+        println!("{} results: {:#?}", texts.len(), texts);
+        assert!(texts.iter().any(|t| !t.trim().is_empty()), "no transcript");
+    }
+}
