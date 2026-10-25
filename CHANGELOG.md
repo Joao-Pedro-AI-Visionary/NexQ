@@ -1,3 +1,10 @@
+## [2.27.1](https://github.com/naxhq/NexQ/compare/v2.27.0...v2.27.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* **stealth:** never leave a hidden window on screen after a stealth change; log overlay shows ([27c4f63](https://github.com/naxhq/NexQ/commit/27c4f6367dd928038f3a89460ed569c034a0a8cd))
+* **stealth:** no blurred box on screen when a hidden window is excluded from capture ([94621c7](https://github.com/naxhq/NexQ/commit/94621c7f005e32e502417c837695d8040772af52))
 # [2.27.0](https://github.com/naxhq/NexQ/compare/v2.26.1...v2.27.0) (2026-10-25)
 
 
