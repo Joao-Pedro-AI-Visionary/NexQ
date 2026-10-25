@@ -28,6 +28,7 @@ import { useDemoShortcut } from "./demo/useDemoShortcut";
 import { DemoPicker } from "./demo/DemoPicker";
 import { DemoBadge } from "./demo/DemoBadge";
 import { SHOW_MEETING_OVERLAY_EVENT, showLauncherWindow, showMeetingOverlay, showOverlayWindow } from "./lib/windows";
+import { logToFile } from "./lib/logger";
 import { emitOverlayMeetingReady, onCaptureWarning, onOverlayMeetingReady, onStartDetectedMeeting, onStealthModeChanged } from "./lib/events";
 
 function App() {
@@ -310,6 +311,7 @@ function App() {
           if (willHide) {
             await overlay.hide().catch(() => {});
           } else {
+            logToFile("info", "tray", "Hide Overlay toggled: showing the overlay window");
             await overlay.show().catch(() => {});
           }
         }

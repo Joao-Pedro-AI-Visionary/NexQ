@@ -4,6 +4,8 @@
  * Keeping show/hide/focus in one place prevents the React view state from
  * drifting away from the actual native windows.
  */
+import { logToFile } from "./logger";
+
 /** Show the launcher window and hide the overlay (whichever window asks). */
 export async function showLauncherWindow(): Promise<void> {
   const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
@@ -24,6 +26,7 @@ export async function showLauncherWindow(): Promise<void> {
  * {@link showMeetingOverlay}.
  */
 export async function showOverlayWindow(): Promise<void> {
+  logToFile("info", "windows", "Showing the overlay window");
   const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
   const overlay = await WebviewWindow.getByLabel("overlay");
   const launcher = await WebviewWindow.getByLabel("launcher");

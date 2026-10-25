@@ -75,7 +75,20 @@ pub async fn set_stealth_mode(app: AppHandle, enabled: bool) -> Result<(), Strin
             .into_iter()
             .map(|(label, w)| (label, w.as_ref().window()))
             .collect();
+        let hidden: Vec<&Window> = windows
+            .iter()
+            .filter(|(_, w)| !w.is_visible().unwrap_or(true))
+            .map(|(_, w)| w)
+            .collect();
         let result = transition(&windows, stealth_enabled(), enabled, |w, on| set_capture_excluded(w, on));
+        // Changing capture visibility must never put a hidden window (e.g. the
+        // overlay between meetings) on screen.
+        for window in hidden {
+            if window.is_visible().unwrap_or(false) {
+                log::warn!("Stealth change showed hidden window '{}'; hiding it again", window.label());
+                let _ = window.hide();
+            }
+        }
         if result.is_ok() {
             STEALTH.store(enabled, Ordering::SeqCst);
             log::info!(
