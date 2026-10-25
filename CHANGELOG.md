@@ -1,3 +1,10 @@
+## [2.27.2](https://github.com/naxhq/NexQ/compare/v2.27.1...v2.27.2) (2026-10-25)
+
+
+### Bug Fixes
+
+* **overlay:** apply the overlay blur once it is shown (Windows ignores it on a hidden window) ([2f55ff7](https://github.com/naxhq/NexQ/commit/2f55ff78c147db988c394b35b45cdabd256d9c81))
+* **overlay:** turn the overlay's desktop blur off while it's hidden ([975080a](https://github.com/naxhq/NexQ/commit/975080a08427ba7d3a9377295b3398b8d119d9c6))
 ## [2.27.1](https://github.com/naxhq/NexQ/compare/v2.27.0...v2.27.1) (2026-10-25)
 
 
