@@ -1,3 +1,9 @@
+# [2.27.0](https://github.com/naxhq/NexQ/compare/v2.26.1...v2.27.0) (2026-10-25)
+
+
+### Features
+
+* **diagnostics:** rotating app log file with Settings → About → Diagnostics ([70f79ec](https://github.com/naxhq/NexQ/commit/70f79ec67c3fd06a306d60495894d17ee4c41fc0))
 ## [2.26.1](https://github.com/naxhq/NexQ/compare/v2.26.0...v2.26.1) (2026-10-24)
 
 
