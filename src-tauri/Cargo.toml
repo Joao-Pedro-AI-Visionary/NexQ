@@ -41,7 +41,7 @@ pdf-extract = "0.12"
 lopdf = "0.42"
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 url = "2"
-base64 = "0.22"
+base64 = "0.23"
 whisper-rs = "0.16"
 sha2 = "0.10"
 zip = "2"

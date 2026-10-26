@@ -3189,7 +3189,7 @@ version = "2.28.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bzip2",
  "chrono",
  "core-foundation 0.10.1",
