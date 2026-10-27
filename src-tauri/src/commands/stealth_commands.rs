@@ -335,6 +335,11 @@ mod visibility_hook {
                 if pos.flags.contains(SWP_HIDEWINDOW) {
                     set_affinity(hwnd, false);
                 }
+                // Shown: some systems refuse the affinity on a window that
+                // is not on screen yet (0x80070008); apply it again now.
+                if pos.flags.contains(SWP_SHOWWINDOW) && super::stealth_enabled() {
+                    set_affinity(hwnd, true);
+                }
                 // Shown: the accent only takes on a visible window.
                 if pos.flags.contains(SWP_SHOWWINDOW) && wants_blur(hwnd) {
                     set_blur(hwnd, true);

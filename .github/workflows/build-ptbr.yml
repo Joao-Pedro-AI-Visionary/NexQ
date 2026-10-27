@@ -1,0 +1,31 @@
+name: Build Windows (pt-BR auto-assist)
+
+on:
+  push:
+    branches: [ptbr-autoassist]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          prefix-key: v1-ggml-portable
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npx vitest run src/overlay/QuestionDetector.test.tsx
+      - run: node scripts/fetch-onnxruntime.mjs
+      - run: npx tauri build --no-bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexq-ptbr-exe
+          path: src-tauri/target/release/nexq.exe
+          retention-days: 7

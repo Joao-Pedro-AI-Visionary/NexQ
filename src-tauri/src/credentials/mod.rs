@@ -41,7 +41,33 @@ impl CredentialManager {
     /// Retrieve an API key for the given provider. Returns None if not stored.
     pub fn get_key(&self, provider: &str) -> Result<Option<String>, String> {
         let provider = Self::normalize_provider(provider);
-        backend::credential_read(&provider)
+        match backend::credential_read(&provider)? {
+            Some(k) => Ok(Some(k)),
+            None => Ok(Self::env_key(&provider)),
+        }
+    }
+
+    /// Fallback: read the key from the environment when the credential store
+    /// has none. `NEXQ_<PROVIDER>_API_KEY` always works; a few providers also
+    /// accept their usual variable (GROQ_API_KEY, OPENAI_API_KEY, ...).
+    fn env_key(provider: &str) -> Option<String> {
+        let mut names = vec![format!("NEXQ_{}_API_KEY", provider.to_uppercase())];
+        let common = match provider {
+            "groq_whisper" | "groq" => Some("GROQ_API_KEY"),
+            "openai" | "whisper_api" => Some("OPENAI_API_KEY"),
+            "anthropic" => Some("ANTHROPIC_API_KEY"),
+            "deepgram" => Some("DEEPGRAM_API_KEY"),
+            "gemini" => Some("GEMINI_API_KEY"),
+            _ => None,
+        };
+        if let Some(c) = common {
+            names.push(c.to_string());
+        }
+        names
+            .iter()
+            .filter_map(|n| std::env::var(n).ok())
+            .map(|v| v.trim().to_string())
+            .find(|v| !v.is_empty())
     }
 
     /// Delete the API key for the given provider.
@@ -52,9 +78,7 @@ impl CredentialManager {
 
     /// Check whether an API key exists for the given provider.
     pub fn has_key(&self, provider: &str) -> Result<bool, String> {
-        let provider = Self::normalize_provider(provider);
-        let key = backend::credential_read(&provider)?;
-        Ok(key.is_some())
+        Ok(self.get_key(provider)?.is_some())
     }
 
     /// Normalize provider name to lowercase for consistent key naming.

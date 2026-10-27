@@ -24,6 +24,9 @@ const INTERROGATIVE_STARTERS: &[&str] = &[
     "can", "could", "would", "should",
     "do", "does", "is", "are", "will", "have", "has",
     "tell",
+    // pt-BR
+    "qual", "quais", "quanto", "quanta", "quantos", "quantas", "quando",
+    "onde", "aonde", "quem", "poderia", "explique", "descreva",
 ];
 
 /// Interview-specific patterns that indicate a question or prompt.
@@ -48,6 +51,11 @@ const INTERVIEW_PATTERNS: &[&str] = &[
     "what approach would you",
     "what's your approach to",
     "what is your approach to",
+    // pt-BR
+    "o que você", "o que voce", "por que você", "por que voce", "me conta", "me fala",
+    "me explica", "me diga", "fala um pouco", "conta um pouco", "fale sobre",
+    "me dá um exemplo", "me de um exemplo", "qual a sua", "qual é a sua", "qual sua",
+    "como você", "como voce", "você já", "voce ja", "você tem", "voce tem",
 ];
 
 impl QuestionDetector {

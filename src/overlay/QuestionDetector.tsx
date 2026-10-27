@@ -1,9 +1,12 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { HelpCircle, Sparkles, Check, Clock, X } from "lucide-react";
-import { onQuestionDetected } from "../lib/events";
+import { onQuestionDetected, onStreamEnd } from "../lib/events";
 import { runUserAction } from "../lib/userAction";
+import { logToFile } from "../lib/logger";
 import { useTranscriptStore } from "../stores/transcriptStore";
 import { useMeetingStore } from "../stores/meetingStore";
+import { useStreamStore } from "../stores/streamStore";
+import { useAIActionsStore } from "../stores/aiActionsStore";
 import type { DetectedQuestion } from "../lib/types";
 
 export function looksLikeQuestion(text: string): boolean {
@@ -14,8 +17,21 @@ export function looksLikeQuestion(text: string): boolean {
     "what ", "how ", "why ", "when ", "where ", "who ", "which ",
     "can you", "could you", "would you", "do you", "are you",
     "is there", "have you", "tell me", "explain",
+    // pt-BR
+    "o que ", "o quê", "qual ", "quais ", "quanto ", "quanta ", "quantos ", "quantas ",
+    "por que ", "quando ", "onde ", "aonde ", "quem ",
+    "me conta", "me fala", "me diga", "me explica", "conta pra mim", "fala um pouco",
+    "fale sobre", "descreva", "explique", "pode me ", "poderia ", "você consegue", "voce consegue",
+    "e você", "e voce",
   ];
-  return qWords.some((w) => lower.startsWith(w));
+  if (qWords.some((w) => lower.startsWith(w))) return true;
+  // pt-BR prompts that are questions even without "?"
+  const ptPatterns = [
+    "me conta", "me fala", "me explica", "fala um pouco", "conta um pouco", "me dá um exemplo",
+    "me de um exemplo", "qual a sua", "qual é a sua", "qual sua", "como você", "como voce",
+    "o que você", "o que voce", "por que você", "por que voce", "você já", "voce ja", "você tem", "voce tem",
+  ];
+  return ptPatterns.some((w) => lower.includes(w));
 }
 
 /**
@@ -47,7 +63,43 @@ export function QuestionDetector() {
     checkedTextRef.current = new Map();
   }, [activeMeetingId]);
 
+  // Auto-assist: when the other party asks a question and auto-trigger is on,
+  // run Assist by itself after a short pause (no click needed), like Persua.
+  const autoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastAutoRef = useRef<{ text: string; at: number }>({ text: "", at: 0 });
+  const scheduleAutoAssist = useCallback((text: string) => {
+    const enabled = useAIActionsStore.getState().configs.globalDefaults.autoTrigger;
+    if (!enabled || !text || text.trim().length < 8) return;
+    if (autoTimerRef.current) clearTimeout(autoTimerRef.current);
+    autoTimerRef.current = setTimeout(() => {
+      autoTimerRef.current = null;
+      const now = Date.now();
+      const last = lastAutoRef.current;
+      if (last.text === text || now - last.at < 6000) return;
+      const st = useStreamStore.getState();
+      if (st.isStreaming || st.phase === "sending") return;
+      lastAutoRef.current = { text, at: now };
+      logToFile("info", "auto-assist", `pergunta detectada, rodando Assist: "${text}"`);
+      setQuestions((prev) => prev.map((p) => (p.text === text ? { ...p, assisted: true } : p)));
+      runUserAction("Assist", text).catch(() => {});
+    }, 1200);
+  }, []);
+  useEffect(() => () => { if (autoTimerRef.current) clearTimeout(autoTimerRef.current); }, []);
+
+  // Log each AI answer (short) so the diagnostics log shows question -> answer.
+  useEffect(() => {
+    const p = onStreamEnd((e) => {
+      setTimeout(() => {
+        const st = useStreamStore.getState();
+        const text = (st.currentContent || "").replace(/\s+/g, " ").trim();
+        if (text) logToFile("info", "auto-assist", `resposta IA (${st.currentMode ?? "?"}, ${e.latency_ms ?? "?"}ms): ${text.slice(0, 400)}`);
+      }, 300);
+    });
+    return () => { p.then((u) => u()); };
+  }, []);
+
   const addQuestion = useCallback((q: DetectedQuestion, segmentId?: string) => {
+    scheduleAutoAssist(q.text);
     setQuestions((prev) => {
       // The same line grew: update its question in place (unless already answered).
       if (segmentId) {
@@ -60,7 +112,7 @@ export function QuestionDetector() {
       if (prev.length > 0 && prev[0].text === q.text) return prev;
       return [{ ...q, assisted: false, segmentId }, ...prev].slice(0, 10);
     });
-  }, []);
+  }, [scheduleAutoAssist]);
 
   useEffect(() => {
     const p = onQuestionDetected((event) => {
