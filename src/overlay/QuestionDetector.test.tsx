@@ -5,7 +5,7 @@ vi.mock("../lib/events", () => ({ onQuestionDetected: () => Promise.resolve(() =
 vi.mock("../lib/logger", () => ({ logToFile: vi.fn() }));
 vi.mock("../lib/userAction", () => ({ runUserAction: vi.fn(() => Promise.resolve()) }));
 
-import { QuestionDetector, lastSentence, looksLikeQuestion } from "./QuestionDetector";
+import { QuestionDetector, lastSentence, latestQuestion, looksLikeQuestion } from "./QuestionDetector";
 import { runUserAction } from "../lib/userAction";
 import { useTranscriptStore } from "../stores/transcriptStore";
 import type { TranscriptSegment } from "../lib/types";
@@ -17,6 +17,7 @@ describe("QuestionDetector", () => {
   it("checks the newest sentence of a line", () => {
     expect(lastSentence("So here's the situation. What would you do?")).toBe("What would you do?");
     expect(looksLikeQuestion(lastSentence("We run preview days. How many do you run"))).toBe(true);
+    expect(latestQuestion("Olá, tudo bem? Para começar, me conto... um pouco sobre a sua experiência com desenvolvimento de sofrimento Por que você quer trabalhar aqui? E aí")).toBe("um pouco sobre a sua experiência com desenvolvimento de sofrimento Por que você quer trabalhar aqui?");
   });
 
   it("finds a question a line gains after its first final", () => {

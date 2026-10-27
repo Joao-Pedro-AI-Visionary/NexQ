@@ -36,6 +36,9 @@ export async function showOverlayWindow(): Promise<void> {
     await overlay.unminimize().catch(() => {});
     await overlay.setFocus().catch(() => {});
   }
+  // Minimize before hiding: hiding a WebView2 window outright can leave its
+  // last composition frame on screen as an empty white rectangle.
+  await launcher?.minimize().catch(() => {});
   await launcher?.hide().catch(() => {});
 }
 

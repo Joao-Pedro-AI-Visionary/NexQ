@@ -43,6 +43,20 @@ export function lastSentence(text: string): string {
   return (sentences[sentences.length - 1] ?? "").trim();
 }
 
+/**
+ * Newest question in a transcript line. Whisper often appends filler like
+ * "E aí" or "Tchau" after a question (silence hallucinations), so the last
+ * sentence alone misses it: scan back for the latest question-like sentence.
+ */
+export function latestQuestion(text: string): string {
+  const sentences = text.trim().match(/[^.?!]+[.?!]*/g) ?? [];
+  for (let i = sentences.length - 1; i >= 0; i--) {
+    const s = sentences[i].trim();
+    if (s.split(/\s+/).length >= 3 && looksLikeQuestion(s)) return s;
+  }
+  return "";
+}
+
 interface TrackedQuestion extends DetectedQuestion {
   assisted: boolean;
   /** Transcript line the question came from (lines grow while someone talks). */
@@ -126,11 +140,17 @@ export function QuestionDetector() {
   useEffect(() => {
     const checked = checkedTextRef.current;
     for (const seg of segments) {
-      if (!seg.is_final || checked.get(seg.id) === seg.text) continue;
+      // Groq batches return complete 5 s chunks; Windows loopback stops sending
+      // audio during silence, so a 'Them' line may never be finalized. Check
+      // partial text too (only the newly added part is analysed).
+      if (!seg.text || checked.get(seg.id) === seg.text) continue;
+      const prev = checked.get(seg.id) ?? "";
       checked.set(seg.id, seg.text);
       if (seg.speaker !== "Them" && seg.speaker !== "Interviewer") continue;
-      const sentence = lastSentence(seg.text);
-      if (sentence && looksLikeQuestion(sentence)) {
+      // Only look at what was added since the last check (lines grow).
+      const added = prev && seg.text.startsWith(prev) ? seg.text.slice(prev.length) : seg.text;
+      const sentence = latestQuestion(added);
+      if (sentence) {
         addQuestion({ text: sentence, confidence: 0.8, timestamp_ms: seg.timestamp_ms, source: seg.speaker }, seg.id);
       }
     }

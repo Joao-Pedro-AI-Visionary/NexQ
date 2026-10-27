@@ -1,19 +1,18 @@
 fn main() {
     // Fix CRT linking: ort_sys and whisper_rs_sys are compiled with /MD (dynamic CRT)
     // but Rust uses /MT (static CRT). We need to swap static CRT for dynamic CRT.
-    #[cfg(target_os = "windows")]
-    {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         // Remove static CRT, add dynamic CRT to resolve __imp_* symbols
         println!("cargo:rustc-link-arg=/NODEFAULTLIB:libucrt.lib");
         println!("cargo:rustc-link-arg=/DEFAULTLIB:ucrt.lib");
+        println!("cargo:rustc-link-arg=ucrt.lib");
     }
 
     // Embed one application manifest (Common Controls v6, identical to tauri-build's
     // default) into every link target: the app, unit/integration tests and examples. Without it, test executables that link tauri's dialog code fail to
     // load with STATUS_ENTRYPOINT_NOT_FOUND (comctl32 TaskDialogIndirect needs v6).
     // tauri-build is told not to embed its own copy so the manifests don't collide.
-    #[cfg(target_os = "windows")]
-    {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("windows-app-manifest.xml");
         println!("cargo:rerun-if-changed={}", manifest.display());
